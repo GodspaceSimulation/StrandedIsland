@@ -22,10 +22,13 @@ export const CONDITION_COLORS: Record<string, string> = {
     gone: '#6b7280',
 };
 
-/** Need bar colors. */
+/**
+ * Wellbeing bar colors — keyed by the DISPLAY metric (features/needsDisplay):
+ * fullness (inverted hunger), hydration (inverted thirst), energy.
+ */
 export const NEED_COLORS: Record<string, string> = {
-    hunger: '#d97b3f',
-    thirst: '#3d9be9',
+    fullness: '#d97b3f',
+    hydration: '#3d9be9',
     energy: '#8bc34a',
 };
 

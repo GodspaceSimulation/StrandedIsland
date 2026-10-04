@@ -55,16 +55,25 @@ const MainRow = styled('div', {
     flexWrap: 'wrap',
 });
 
-const GridSection = styled('div', {
-    flex: '1 1 480px',
-    minWidth: 0,
-});
-
-const SideSection = styled('div', {
-    flex: '0 1 320px',
+// Left rail — the castaway roster with compact stat rows, and the inspector
+// directly beneath it (selection opens the inspector in place)
+const CastSection = styled('div', {
+    flex: '0 1 250px',
     display: 'flex',
     flexDirection: 'column',
     gap: 12,
+    minWidth: 0,
+});
+
+// Middle — the island canvas takes the remaining width
+const GridSection = styled('div', {
+    flex: '1 1 460px',
+    minWidth: 0,
+});
+
+// Right rail — the world clock only
+const SideSection = styled('div', {
+    flex: '0 1 320px',
     minWidth: 0,
 });
 
@@ -103,13 +112,15 @@ export const Dashboard = ({ island: mounted }: { island: IslandHandle }) => {
                 <PluginRoster data-testid="plugin-roster">{roster}</PluginRoster>
             </Header>
             <MainRow>
+                <CastSection>
+                    <ActorList />
+                    <ActorPanel />
+                </CastSection>
                 <GridSection>
                     <WorldGrid />
                 </GridSection>
                 <SideSection>
                     <TickerControls />
-                    <ActorList />
-                    <ActorPanel />
                 </SideSection>
             </MainRow>
             <EventLog />

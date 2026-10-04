@@ -1,6 +1,7 @@
 // Tests for the World container (engine/world.ts).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { position3 } from '@godspace/core';
 import { createWorld, NEIGHBOR_OFFSETS } from './world';
 import type { WorldPlugin } from './plugin';
 import type { Actor } from './types';
@@ -17,8 +18,7 @@ describe('createWorld', () => {
     const buildActor = (overrides: Partial<Actor> = {}): Actor => ({
         id: 'actor-1',
         name: 'Ael',
-        x: 0,
-        y: 0,
+        position: position3(0, 0),
         marker: 'A',
         condition: 'well',
         ...overrides,
@@ -30,6 +30,8 @@ describe('createWorld', () => {
         expect(world.canvas).toEqual({ width: 0, height: 0, cells: [] });
         expect(world.actors.size).toBe(0);
         expect(world.ticker.ticks()).toBe(0);
+        // The 3D spatial record of the world starts empty
+        expect(world.coordinates.count()).toBe(0);
     });
 
     it('installs plugins at creation and setup runs immediately', () => {
@@ -55,8 +57,17 @@ describe('createWorld', () => {
 
     it('spawn registers the actor and logs to the event bus', () => {
         const world = createWorld();
-        const actor = world.spawn(buildActor());
+        const actor = world.spawn(buildActor({ position: position3(3, 2) }));
         expect(world.actors.get('actor-1')).toBe(actor);
+        // The coordinate record carries the full display facet
+        expect(world.coordinates.entryOf('actor-1')).toEqual({
+            id: 'actor-1',
+            position: { x: 3, y: 2, z: 0 },
+            kind: 'castaway',
+            name: 'Ael',
+            marker: 'A',
+            state: 'well',
+        });
         const log = world.events.log();
         expect(log.length).toBe(1);
         expect(log[0]).toEqual({
@@ -74,10 +85,31 @@ describe('createWorld', () => {
         world.spawn(buildActor());
         world.despawn('actor-1');
         expect(world.actors.size).toBe(0);
+        // The spatial record leaves with the actor
+        expect(world.coordinates.count()).toBe(0);
         expect(world.events.log()[1]).toMatchObject({ kind: 'despawn', message: 'Ael is no more.' });
         // Unknown id is a silent no-op
         world.despawn('ghost');
         expect(world.events.log().length).toBe(2);
+    });
+
+    it('relocate updates the actor record and the coordinate record together', () => {
+        const world = createWorld();
+        world.spawn(buildActor({ position: position3(1, 1) }));
+        world.relocate('actor-1', position3(4, 5, 0));
+        expect(world.actors.get('actor-1')?.position).toEqual({ x: 4, y: 5, z: 0 });
+        expect(world.coordinates.positionOf('actor-1')).toEqual({ x: 4, y: 5, z: 0 });
+        // Unknown entity is a silent no-op
+        world.relocate('ghost', position3(9, 9));
+        expect(world.coordinates.positionOf('ghost')).toBeUndefined();
+    });
+
+    it('retag updates the display facet of a coordinate record', () => {
+        const world = createWorld();
+        world.spawn(buildActor());
+        world.retag('actor-1', { state: 'weak' });
+        expect(world.coordinates.entryOf('actor-1')?.state).toBe('weak');
+        expect(world.actors.get('actor-1')?.position).toEqual({ x: 0, y: 0, z: 0 });
     });
 
     it('cellAt resolves row-major cells and enforces bounds', () => {
@@ -103,10 +135,14 @@ describe('createWorld', () => {
         expect(world.inBounds(2, 1)).toBe(false);
     });
 
-    it('actorAt finds the actor on a cell', () => {
+    it('actorAt finds the actor at an exact 3D position (Z defaults to ground)', () => {
         const world = createWorld();
-        world.spawn(buildActor({ x: 3, y: 2 }));
+        world.spawn(buildActor({ position: position3(3, 2) }));
         expect(world.actorAt(3, 2)?.id).toBe('actor-1');
+        // Explicit ground level matches too
+        expect(world.actorAt(3, 2, 0)?.id).toBe('actor-1');
+        // Another Z level of the same column is empty for actors
+        expect(world.actorAt(3, 2, 1)).toBeUndefined();
         expect(world.actorAt(0, 0)).toBeUndefined();
     });
 

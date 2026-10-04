@@ -1,10 +1,14 @@
-// Actor inspector — needs, inventory, relationships and the actor's recent
-// history for whichever castaway the god selects.
+// Actor inspector — needs, inventory and bonds for whichever castaway the
+// god selects. Rendered in the LEFT rail (where the roster lives — see
+// dashboard.tsx). The actor's history is hidden behind a toggle: the god
+// clicks "History" to open it, keeping the panel compact otherwise.
 
+import { useToggleHook } from '@presource/react';
 import { styled } from '../styles/styled';
 import { NEED_COLORS, PALETTE } from '../styles/theme';
 import { Panel, PanelTitle } from '../components/panel';
 import { useWorld, useRevision, useSelection } from './worldBridge';
+import { needsDisplay, type NeedsDisplay } from './needsDisplay';
 import { inventoryEntries } from '../plugins/inventory/inventory';
 import { itemLabel } from '../plugins/inventory/items';
 import type { Actor } from '../engine/types';
@@ -68,32 +72,54 @@ const History = styled('div', {
     overflowY: 'auto',
 });
 
-const NEED_ROWS: Array<{ key: 'hunger' | 'thirst' | 'energy'; label: string }> = [
-    { key: 'hunger', label: 'Hunger' },
-    { key: 'thirst', label: 'Thirst' },
+/** Collapsible section header — acts as the toggle button. */
+const HistoryToggle = styled<{ open: string }>('button', {
+    background: 'transparent',
+    border: 'none',
+    padding: 0,
+    margin: 0,
+    fontSize: 11,
+    letterSpacing: 2,
+    textTransform: 'uppercase',
+    fontWeight: 600,
+    color: ({ open }) => (open === 'true' ? PALETTE.text : PALETTE.textDim),
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+    textAlign: 'left',
+});
+
+/** Wellbeing rows — labels match the display metrics (needsDisplay). */
+const NEED_ROWS: Array<{ key: keyof NeedsDisplay; label: string }> = [
+    { key: 'fullness', label: 'Fullness' },
+    { key: 'hydration', label: 'Hydration' },
     { key: 'energy', label: 'Energy' },
 ];
 
 const ActorCard = ({ actor }: { actor: Actor }) => {
     const island = useWorld();
+    // History stays collapsed until the god asks for it
+    const historyOpen = useToggleHook(false);
     if (!island) {
         return null;
     }
     const { inventory, needs, relationship, world } = island;
-    const state = needs.of(actor.id);
+    // Display values: full bar = good (hunger/thirst pressure inverted)
+    const state = needsDisplay(needs.of(actor.id));
     const bag = inventory.of(actor.id);
-    const stock = inventory.cellStock(actor.x, actor.y);
+    const stock = inventory.cellStock(actor.position.x, actor.position.y);
 
-    // Relationship pairs involving this actor
-    const relations = relationship.pairs().map((pair) => {
-        const other = pair.a === actor.id ? pair.b : pair.a;
-        return {
-            other,
-            value: pair.value,
-            level: relationship.level(actor.id, other),
-        };
-    })
-        .filter((relation) => relation.other !== actor.id);
+    // One bond row per fellow castaway — never the actor themselves. Walking
+    // the roster (instead of relationship.pairs()) keeps the list at exactly
+    // castSize − 1: pairs that don't involve this actor can no longer be
+    // mislabelled as theirs, and unacquainted pairs read as neutral (0).
+    const relations = Array.from(world.actors.values())
+        .filter((other) => other.id !== actor.id)
+        .map((other) => ({
+            id: other.id,
+            name: other.name,
+            value: relationship.relation(actor.id, other.id),
+            level: relationship.level(actor.id, other.id),
+        }));
 
     // The actor's own last 8 log lines, newest first
     const history = world
@@ -156,8 +182,8 @@ const ActorCard = ({ actor }: { actor: Actor }) => {
                         </li>
                     ) : (
                         relations.map((relation) => (
-                            <li key={relation.other}>
-                                {world.actors.get(relation.other)?.name ?? relation.other} — {relation.level} (
+                            <li key={relation.id}>
+                                {relation.name} — {relation.level} (
                                 {Math.round(relation.value)})
                             </li>
                         ))
@@ -165,18 +191,26 @@ const ActorCard = ({ actor }: { actor: Actor }) => {
                 </List>
             </div>
             <div>
-                <PanelTitle>History</PanelTitle>
-                <History data-testid="actor-history">
-                    {history.length === 0 ? (
-                        <EmptyNote>Nothing yet.</EmptyNote>
-                    ) : (
-                        history.map((event) => (
-                            <span key={event.id}>
-                                t{event.tick} · {event.message}
-                            </span>
-                        ))
-                    )}
-                </History>
+                <HistoryToggle
+                    data-testid="history-toggle"
+                    open={historyOpen() ? 'true' : 'false'}
+                    onClick={() => historyOpen(!historyOpen())}
+                >
+                    History {historyOpen() ? '▾' : '▸'}
+                </HistoryToggle>
+                {historyOpen() ? (
+                    <History data-testid="actor-history">
+                        {history.length === 0 ? (
+                            <EmptyNote>Nothing yet.</EmptyNote>
+                        ) : (
+                            history.map((event) => (
+                                <span key={event.id}>
+                                    t{event.tick} · {event.message}
+                                </span>
+                            ))
+                        )}
+                    </History>
+                ) : null}
             </div>
         </>
     );

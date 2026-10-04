@@ -4,6 +4,7 @@
 // captured from reference runs — the agent loop is fully deterministic.
 
 import { describe, it, expect } from 'vitest';
+import { position3 } from '@godspace/core';
 import { createWorld } from '../../engine/world';
 import { islandTerrainPlugin } from '../terrain/islandTerrain';
 import { inventoryPlugin } from '../inventory/inventoryPlugin';
@@ -13,7 +14,7 @@ import { behaviorPlugin } from './behaviorPlugin';
 import type { Actor } from '../../engine/types';
 
 const spawn = (world: ReturnType<typeof createWorld>, id: string, name: string, x: number, y: number): Actor => {
-    const actor: Actor = { id, name, x, y, marker: name.slice(0, 1), condition: 'well' };
+    const actor: Actor = { id, name, position: position3(x, y), marker: name.slice(0, 1), condition: 'well' };
     return world.spawn(actor);
 };
 
@@ -170,7 +171,7 @@ describe('behaviorPlugin', () => {
             'Ael moves west.',
             'Ael moves north.',
         ]);
-        expect(world.actors.get('a')).toMatchObject({ x: 8, y: 2 });
+        expect(world.actors.get('a')).toMatchObject({ position: { x: 8, y: 2, z: 0 } });
         expect(inventory.of('a')).toEqual({ flint: 1, berry: 1 });
         expect(needs.of('a')).toEqual({ hunger: 74, thirst: 20, energy: 92 });
     });

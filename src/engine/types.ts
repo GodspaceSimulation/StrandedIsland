@@ -1,10 +1,18 @@
 // Shared type vocabulary for the Stranded Island simulation.
 //
 // Terminology (kept stable across the whole codebase):
-//   canvas — the island itself: a grid of voxel columns (see TerrainCell)
-//   actor  — one stranded person living on the canvas
-//   tick   — one beat of the world clock (engine/ticker.ts); each tick
-//            represents a configurable amount of world time (minutes)
+//   canvas   — the island itself: a grid of voxel columns (see TerrainCell)
+//   actor    — one stranded person living on the canvas
+//   position — a 3D coordinate record from @godspace/core (see Position3D):
+//              the engine keeps every position in X, Y, Z space. Castaways
+//              cannot fly or dig, so their Z is always GROUND_LEVEL (0);
+//              seabirds (plugins/birds) travel the Z axis freely.
+//   tick     — one beat of the world clock (engine/ticker.ts); each tick
+//              represents a configurable amount of world time (minutes)
+
+import type { Position3D } from '@godspace/core';
+
+export { GROUND_LEVEL } from '@godspace/core';
 
 // ── Voxel model ──────────────────────────────────────────────────────────────
 // Each grid cell is a vertical column of voxels. `voxels[0]` is bedrock,
@@ -53,12 +61,12 @@ export type Canvas = {
 /** Physical / life condition of an actor, derived from needs by the needs plugin. */
 export type ActorCondition = 'well' | 'weak' | 'critical' | 'gone';
 
-/** One stranded person. Position is grid coordinates on the canvas. */
+/** One stranded person. Position is a 3D coordinate — Z stays at ground level. */
 export type Actor = {
     id: string;
     name: string;
-    x: number;
-    y: number;
+    /** X, Y, Z position (Position3D from @godspace/core). Z is always 0. */
+    position: Position3D;
     /** Short grid marker (1–2 letters) shown in the god-view. */
     marker: string;
     condition: ActorCondition;

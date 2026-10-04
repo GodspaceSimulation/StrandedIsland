@@ -12,10 +12,15 @@
 //                          gift; either strengthens their relationship
 //   5. Wander            → random passable step
 //
+// Castaways cannot fly or dig: every move goes through world.relocate with a
+// `grounded()` position (Z clamped to the ground plane — see @godspace/core),
+// and neighbour sensing uses planeDistance (the X/Y grid metric, ignoring Z).
+//
 // Depends on the inventory, needs and relationship plugin APIs (passed as
 // options — see scenario/island.ts for the assembly).
 
 import { arrayEach } from '@presource/core';
+import { planeDistance, grounded, position3, type Position3D } from '@godspace/core';
 import { itemDef } from '../inventory/items';
 import { inventoryEntries } from '../inventory/inventory';
 import { NEIGHBOR_OFFSETS } from '../../engine/world';
@@ -47,9 +52,8 @@ const HUNGER_SYMPATHY = 50;
 const DRINK_RELIEF = 35;
 const REST_RECOVERY = 12;
 
-/** Chebyshev distance — the grid step metric for "nearby". */
-const chebyshev = (ax: number, ay: number, bx: number, by: number): number =>
-    Math.max(Math.abs(ax - bx), Math.abs(ay - by));
+/** Chebyshev distance — the grid step metric for "nearby" (plane only). */
+const chebyshev = (a: Position3D, b: Position3D): number => planeDistance(a, b);
 
 export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
     const { inventory, needs, relationship } = options;
@@ -76,7 +80,8 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
         let best: TerrainCell | null = null;
         let bestDistance = Infinity;
         arrayEach(candidates, ({ value: cell }) => {
-            const distance = chebyshev(actor.x, actor.y, cell.x, cell.y);
+            // Cells are plane footprints — compare at ground level (z = 0)
+            const distance = chebyshev(actor.position, position3(cell.x, cell.y));
             if (distance < bestDistance) {
                 best = cell;
                 bestDistance = distance;
@@ -98,8 +103,8 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
     /** One greedy step toward (tx, ty); falls back to any free passable step. */
     const stepToward = (context: PluginContext, actor: Actor, tx: number, ty: number) => {
         const { world } = context;
-        const dx = Math.sign(tx - actor.x);
-        const dy = Math.sign(ty - actor.y);
+        const dx = Math.sign(tx - actor.position.x);
+        const dy = Math.sign(ty - actor.position.y);
 
         // Preferred step directions, most direct first
         const preferred: Array<[number, number]> = [];
@@ -115,19 +120,20 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
 
         const free = (x: number, y: number): boolean => {
             const cell = world.cellAt(x, y);
+            // Ground-level occupancy only — flyers above a cell never block it
             return !!cell && cell.passable && !world.actorAt(x, y);
         };
 
         let moved: [number, number] | null = null;
         arrayEach(preferred, ({ value: step }) => {
-            if (!moved && free(actor.x + step[0], actor.y + step[1])) {
+            if (!moved && free(actor.position.x + step[0], actor.position.y + step[1])) {
                 moved = step;
             }
         });
         // Blocked — try any passable unoccupied neighbour as fallback
         if (!moved) {
             arrayEach(NEIGHBOR_OFFSETS, ({ value: offset }) => {
-                if (!moved && free(actor.x + offset.dx, actor.y + offset.dy)) {
+                if (!moved && free(actor.position.x + offset.dx, actor.position.y + offset.dy)) {
                     moved = [offset.dx, offset.dy];
                 }
             });
@@ -136,8 +142,8 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
             return false;
         }
         const [mdx, mdy] = moved as [number, number];
-        actor.x = actor.x + mdx;
-        actor.y = actor.y + mdy;
+        // Castaways cannot fly or dig — the move lands on the ground plane
+        world.relocate(actor.id, grounded(position3(actor.position.x + mdx, actor.position.y + mdy)));
         needs.moved(actor.id);
         world.events.emit({
             kind: 'move',
@@ -152,8 +158,10 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
         const { world } = context;
         const free: Array<[number, number]> = [];
         arrayEach(NEIGHBOR_OFFSETS, ({ value: offset }) => {
-            const cell = world.cellAt(actor.x + offset.dx, actor.y + offset.dy);
-            if (cell && cell.passable && !world.actorAt(actor.x + offset.dx, actor.y + offset.dy)) {
+            const x = actor.position.x + offset.dx;
+            const y = actor.position.y + offset.dy;
+            const cell = world.cellAt(x, y);
+            if (cell && cell.passable && !world.actorAt(x, y)) {
                 free.push([offset.dx, offset.dy]);
             }
         });
@@ -161,8 +169,8 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
             return;
         }
         const [dx, dy] = free[Math.floor(context.random() * free.length)];
-        actor.x = actor.x + dx;
-        actor.y = actor.y + dy;
+        // Grounded relocate — Z stays 0 for everyone who cannot fly
+        world.relocate(actor.id, grounded(position3(actor.position.x + dx, actor.position.y + dy)));
         needs.moved(actor.id);
         world.events.emit({
             kind: 'move',
@@ -188,13 +196,16 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
         // Hungry neighbours, nearest first
         const neighbours: Actor[] = [];
         world.actors.forEach((other) => {
-            if (other.id !== actor.id && chebyshev(actor.x, actor.y, other.x, other.y) <= 2) {
+            if (other.id !== actor.id && chebyshev(actor.position, other.position) <= 2) {
                 neighbours.push(other);
             }
         });
         const hungry = neighbours
             .filter((other) => needs.of(other.id).hunger >= HUNGER_SYMPATHY)
-            .sort((left, right) => chebyshev(actor.x, actor.y, left.x, left.y) - chebyshev(actor.x, actor.y, right.x, right.y));
+            .sort(
+                (left, right) =>
+                    chebyshev(actor.position, left.position) - chebyshev(actor.position, right.position),
+            );
         const target = hungry[0];
         if (!target) {
             return false;
@@ -249,7 +260,7 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
 
                 // 1 — thirst: drink from the cell's rainwater pool
                 if (state.thirst >= THIRST_TRIGGER) {
-                    const stock = inventory.cellStock(actor.x, actor.y);
+                    const stock = inventory.cellStock(actor.position.x, actor.position.y);
                     if ((stock.water ?? 0) > 0 && inventory.takeFromCell(actor, 'water')) {
                         inventory.consume(actor, 'water');
                         needs.satisfy(actor.id, { thirst: -DRINK_RELIEF });

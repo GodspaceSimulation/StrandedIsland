@@ -3,17 +3,17 @@
 // were captured from a reference run and must never drift.
 
 import { describe, it, expect } from 'vitest';
+import { position3 } from '@godspace/core';
 import { createWorld } from '../../engine/world';
 import { islandTerrainPlugin } from '../terrain/islandTerrain';
 import type { Actor } from '../../engine/types';
 import { inventoryPlugin } from './inventoryPlugin';
 
-// A standard actor fixture placed on a specific cell
+// A standard actor fixture placed on a specific cell (ground plane, z = 0)
 const actor = (id: string, name: string, x: number, y: number): Actor => ({
     id,
     name,
-    x,
-    y,
+    position: position3(x, y),
     marker: name.slice(0, 1),
     condition: 'well',
 });

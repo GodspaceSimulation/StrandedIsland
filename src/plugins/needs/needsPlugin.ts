@@ -181,6 +181,9 @@ export const needsPlugin = (options: NeedsPluginOptions = {}): NeedsPlugin => {
 
                 // Derive the visible condition
                 actor.condition = conditionOf(state);
+                // Mirror the condition into the coordinate record so the
+                // representation plugins (ascii canvas) color the glyph live
+                world.retag(actorId, { state: actor.condition });
             });
         },
     };

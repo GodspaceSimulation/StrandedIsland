@@ -1,17 +1,23 @@
 // The World — the container that ties everything together.
 //
 // A world owns:
-//   canvas  — the island (a grid of voxel columns; built by the terrain plugin)
-//   actors  — the stranded people (id → Actor map)
-//   ticker  — the world clock (one step = tickSize minutes of world time)
-//   events  — the world event bus / log
-//   plugins — the swappable environment behaviour (see engine/plugin.ts)
+//   canvas      — the island (a grid of voxel columns; built by the terrain
+//                 plugin)
+//   coordinates — the 3D spatial record of the entire world (from
+//                 @godspace/core): every entity's X, Y, Z position lives
+//                 here, castaways clamped to the ground plane (Z = 0) and
+//                 birds travelling the Z axis
+//   actors      — the stranded people (id → Actor map)
+//   ticker      — the world clock (one step = tickSize minutes of world time)
+//   events      — the world event bus / log
+//   plugins     — the swappable environment behaviour (see engine/plugin.ts)
 //
 // `step()` is the heartbeat: the ticker advances, then every installed plugin
 // gets a `tick` hook call in registration order. Realtime play/pause/speed
 // simply delegate to the ticker.
 
 import { arrayEach } from '@presource/core';
+import { createCoordinateSystem, GROUND_LEVEL, type CoordinateSystem, type CoordinateFacet, type Position3D } from '@godspace/core';
 import { createEventBus, type EventBus } from './events';
 import { createPluginRegistry, type WorldPlugin } from './plugin';
 import type { Actor, Canvas, TerrainCell } from './types';
@@ -33,6 +39,8 @@ export type World = {
     seed: number;
     /** The island. Mutable — the terrain plugin (re)builds it in `setup`. */
     canvas: Canvas;
+    /** The 3D spatial record of the entire world (@godspace/core). */
+    coordinates: CoordinateSystem;
     /** All living actors by id. */
     actors: Map<string, Actor>;
     /** The world clock. */
@@ -51,12 +59,16 @@ export type World = {
     spawn(actor: Actor): Actor;
     /** Removes an actor (marked 'gone', dropped from the registry). */
     despawn(actorId: string): void;
+    /** Updates an actor's 3D position (registry + coordinate record stay in sync). */
+    relocate(actorId: string, position: Position3D): void;
+    /** Updates an entity's display state in the coordinate record (condition, flight state…). */
+    retag(entityId: string, facet: CoordinateFacet): void;
     /** The cell at grid coordinates, or undefined when out of bounds/empty. */
     cellAt(x: number, y: number): TerrainCell | undefined;
     /** Whether (x, y) is inside the canvas. */
     inBounds(x: number, y: number): boolean;
-    /** The actor standing on (x, y), when any. */
-    actorAt(x: number, y: number): Actor | undefined;
+    /** The actor standing at an exact 3D position (Z defaults to the ground plane). */
+    actorAt(x: number, y: number, z?: number): Actor | undefined;
     /** All currently passable (dry) cells — used for spawn placement. */
     landCells(): TerrainCell[];
 };
@@ -84,6 +96,11 @@ export const createWorld = (options: WorldOptions = {}): World => {
 
     const actors = new Map<string, Actor>();
 
+    // The 3D spatial record — the single position registry of the world.
+    // Castaways are placed here at spawn (kind 'castaway', ground plane),
+    // birds and any other entity a plugin releases join the same space.
+    const coordinates = createCoordinateSystem();
+
     const ticker = createTicker({ tickSize: options.tickSize, speed: options.ticker?.speed });
     const events = createEventBus();
 
@@ -96,6 +113,7 @@ export const createWorld = (options: WorldOptions = {}): World => {
         set canvas(value: Canvas) {
             canvasHolder.current = value;
         },
+        coordinates,
         actors,
         ticker,
         events,
@@ -117,6 +135,16 @@ export const createWorld = (options: WorldOptions = {}): World => {
         running: () => ticker.running(),
         spawn: (actor) => {
             actors.set(actor.id, actor);
+            // The coordinate record carries the display facet the ascii
+            // canvas reads — kind, name, marker and the live condition
+            coordinates.place({
+                id: actor.id,
+                position: actor.position,
+                kind: 'castaway',
+                name: actor.name,
+                marker: actor.marker,
+                state: actor.condition,
+            });
             events.emit({ kind: 'spawn', message: `${actor.name} washes ashore.`, actorId: actor.id });
             return actor;
         },
@@ -126,7 +154,20 @@ export const createWorld = (options: WorldOptions = {}): World => {
                 return;
             }
             actors.delete(actorId);
+            // The spatial record leaves the world with the actor
+            coordinates.remove(actorId);
             events.emit({ kind: 'despawn', message: `${actor.name} is no more.`, actorId });
+        },
+        relocate: (actorId, position) => {
+            const actor = actors.get(actorId);
+            if (!actor) {
+                return;
+            }
+            actor.position = { ...position };
+            coordinates.move(actorId, actor.position);
+        },
+        retag: (entityId, facet) => {
+            coordinates.relabel(entityId, facet);
         },
         cellAt: (x, y) => {
             const grid = canvasHolder.current;
@@ -139,11 +180,17 @@ export const createWorld = (options: WorldOptions = {}): World => {
             const grid = canvasHolder.current;
             return x >= 0 && x < grid.width && y >= 0 && y < grid.height;
         },
-        actorAt: (x, y) => {
+        actorAt: (x, y, z = GROUND_LEVEL) => {
             let found: Actor | undefined;
-            // Block-bodied predicate so no early-return value short-circuits
+            // Block-bodied predicate so no early-return value short-circuits.
+            // Z filters the column: a bird gliding at Z 2 above a cell never
+            // blocks a castaway walking the ground beneath it.
             actors.forEach((candidate) => {
-                if (candidate.x === x && candidate.y === y) {
+                if (
+                    candidate.position.x === x &&
+                    candidate.position.y === y &&
+                    candidate.position.z === z
+                ) {
                     found = candidate;
                 }
             });

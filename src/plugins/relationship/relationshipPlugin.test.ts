@@ -1,6 +1,7 @@
 // Tests for the relationship environment plugin.
 
 import { describe, it, expect } from 'vitest';
+import { position3 } from '@godspace/core';
 import { createWorld } from '../../engine/world';
 import { relationshipPlugin } from './relationshipPlugin';
 
@@ -17,8 +18,8 @@ describe('relationshipPlugin', () => {
     it('relation is symmetric regardless of argument order', () => {
         const relationship = relationshipPlugin();
         const world = createWorld({ seed: 1, plugins: [relationship] });
-        world.spawn({ id: 'b', name: 'Bram', x: 0, y: 0, marker: 'B', condition: 'well' });
-        world.spawn({ id: 'a', name: 'Ael', x: 1, y: 0, marker: 'A', condition: 'well' });
+        world.spawn({ id: 'b', name: 'Bram', position: position3(0, 0), marker: 'B', condition: 'well' });
+        world.spawn({ id: 'a', name: 'Ael', position: position3(1, 0), marker: 'A', condition: 'well' });
         relationship.adjust('a', 'b', 30);
         expect(relationship.relation('b', 'a')).toBe(30);
         expect(relationship.relation('a', 'b')).toBe(30);
@@ -54,8 +55,8 @@ describe('relationshipPlugin', () => {
     it('logs notable moves with the reason', () => {
         const relationship = relationshipPlugin();
         const world = createWorld({ seed: 1, plugins: [relationship] });
-        world.spawn({ id: 'a', name: 'Ael', x: 0, y: 0, marker: 'A', condition: 'well' });
-        world.spawn({ id: 'b', name: 'Bram', x: 1, y: 0, marker: 'B', condition: 'well' });
+        world.spawn({ id: 'a', name: 'Ael', position: position3(0, 0), marker: 'A', condition: 'well' });
+        world.spawn({ id: 'b', name: 'Bram', position: position3(1, 0), marker: 'B', condition: 'well' });
         relationship.adjust('a', 'b', 6, 'trading');
         relationship.adjust('b', 'a', -8, 'theft');
         // Small moves stay unlogged

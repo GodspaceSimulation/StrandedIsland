@@ -143,7 +143,7 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
         },
 
         takeFromCell: (actor, itemId) => {
-            const stock = stockOf(actor.x, actor.y);
+            const stock = stockOf(actor.position.x, actor.position.y);
             if (!inventoryRemove(stock, itemId, 1)) {
                 return false;
             }
@@ -152,7 +152,7 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
         },
 
         gather: (actor) => {
-            const stock = stockOf(actor.x, actor.y);
+            const stock = stockOf(actor.position.x, actor.position.y);
             // First available item — deterministic (insertion order)
             const available = inventoryEntries(stock).map((entry) => entry.item);
             const target = available[0];

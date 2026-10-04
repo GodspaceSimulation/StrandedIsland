@@ -1,12 +1,13 @@
 // Tests for the needs environment plugin (plugins/needs/needsPlugin.ts).
 
 import { describe, it, expect } from 'vitest';
+import { position3 } from '@godspace/core';
 import { createWorld } from '../../engine/world';
 import { needsPlugin } from './needsPlugin';
 import type { Actor } from '../../engine/types';
 
 const spawnActor = (world: ReturnType<typeof createWorld>, id = 'a', name = 'Ael') => {
-    const actor: Actor = { id, name, x: 0, y: 0, marker: name.slice(0, 1), condition: 'well' };
+    const actor: Actor = { id, name, position: position3(0, 0), marker: name.slice(0, 1), condition: 'well' };
     world.spawn(actor);
     return actor;
 };
@@ -98,7 +99,7 @@ describe('needsPlugin', () => {
         expect(world.events.log().filter((event) => event.kind === 'needs').length).toBe(1);
     });
 
-    it('derives the actor condition ladder', () => {
+    it('derives the actor condition ladder and mirrors it into the coordinate record', () => {
         const needs = needsPlugin({ hungerPerMinute: 0, thirstPerMinute: 0, energyPerMinute: 0 });
         const world = createWorld({ seed: 1, tickSize: 10, plugins: [needs] });
         const actor = spawnActor(world);
@@ -107,9 +108,12 @@ describe('needsPlugin', () => {
         needs.satisfy('a', { hunger: 50 }); // 70 → weak
         world.step();
         expect(actor.condition).toBe('weak');
+        // The ascii canvas reads its glyph color from the coordinate record
+        expect(world.coordinates.entryOf('a')?.state).toBe('weak');
         needs.satisfy('a', { hunger: 20 }); // 90 → critical
         world.step();
         expect(actor.condition).toBe('critical');
+        expect(world.coordinates.entryOf('a')?.state).toBe('critical');
     });
 
     it('starvation kills after the doom window and despawns the actor', () => {
