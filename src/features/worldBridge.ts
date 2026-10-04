@@ -6,6 +6,8 @@
 //   revisionSignal— a counter bumped on every world event / tick; components
 //                   read it in render so any world change re-renders them
 //   selectionSignal — which actor the god is inspecting
+//   tileSignal      — which canvas tile the god is inspecting (any tile,
+//                     not just one that holds an actor)
 //
 // Components call useWorld() / useRevision() during render to subscribe;
 // the engine calls bumpRevision() from its own callbacks (never during
@@ -39,10 +41,20 @@ const revisionSignal = asAccessor<number>(signalState<number>(0));
 /** Currently inspected actor id, or null. */
 const selectionSignal = asAccessor<string | null>(signalState<string | null>(null));
 
+/**
+ * Currently inspected canvas tile (its grid column x, y), or null when no
+ * tile is under inspection — the god can click ANY tile, not just one that
+ * holds an actor, to see the terrain, ground stock and residents there.
+ */
+const tileSignal = asAccessor<{ x: number; y: number } | null>(
+    signalState<{ x: number; y: number } | null>(null),
+);
+
 /** Mounts an island into the god-view (re-mounting swaps the world). */
 export const mountWorld = (island: IslandHandle) => {
     worldSignal.value(island);
     selectionSignal.value(null);
+    tileSignal.value(null);
     bumpRevision();
 };
 
@@ -63,4 +75,12 @@ export const useSelection = (): string | null => selectionSignal();
 /** God selects an actor to inspect (null clears). */
 export const selectActor = (actorId: string | null) => {
     selectionSignal.value(actorId);
+};
+
+/** Read during render to subscribe to tile selection changes. */
+export const useTile = (): { x: number; y: number } | null => tileSignal();
+
+/** God selects a canvas tile to inspect (null clears). */
+export const selectTile = (tile: { x: number; y: number } | null) => {
+    tileSignal.value(tile);
 };

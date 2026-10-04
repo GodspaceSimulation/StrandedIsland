@@ -7,14 +7,23 @@
 // the marker letter colored by state, with flying entities (seabirds)
 // carrying their Z altitude as a superscript (K² = 2 voxels up). Hovering
 // shows the voxel column plus every entity standing in that column.
-// Clicking a castaway's tile selects them for the inspector.
+// Clicking ANY tile inspects that column (Tile Inspector below the canvas);
+// when the tile holds a castaway, the god's actor inspector opens for them
+// too (birds and other non-registry residents stay view-only).
 
 import { glyphText } from '@godspace/canvas';
 import type { Biome } from '../engine/types';
 import { PALETTE } from '../styles/theme';
 import { styled } from '../styles/styled';
 import { Panel, PanelTitle } from '../components/panel';
-import { useWorld, useRevision, useSelection, selectActor } from './worldBridge';
+import {
+    useWorld,
+    useRevision,
+    useSelection,
+    selectActor,
+    useTile,
+    selectTile,
+} from './worldBridge';
 
 const Grid = styled<{ columns: number }>('div', {
     display: 'grid',
@@ -72,6 +81,7 @@ export const WorldGrid = () => {
     const island = useWorld();
     const revision = useRevision();
     const selected = useSelection();
+    const inspected = useTile();
     if (!island) {
         return null;
     }
@@ -89,17 +99,40 @@ export const WorldGrid = () => {
                 {frame.tiles.map((tile) => {
                     // Top of the column's glyph stack draws on the tile
                     const glyph = tile.glyphs[0];
-                    const isCastaway = glyph !== undefined && world.actors.has(glyph.id);
+                    // Any castaway in the column opens the actor inspector —
+                    // searching the whole stack (not just the top) so a bird
+                    // gliding above never hides the castaway walking below
+                    const castaway = tile.glyphs.find((entry) => world.actors.has(entry.id));
                     const isSelected = glyph !== undefined && glyph.id === selected;
+                    // The inspected tile (any column — sea, sand, forest) wears
+                    // the accent border so the god sees what the Tile
+                    // Inspector below is reading
+                    const isInspected =
+                        inspected !== null && inspected.x === tile.x && inspected.y === tile.y;
                     return (
                         <Cell
                             key={`${tile.x},${tile.y}`}
                             background={tile.background}
                             border={
-                                isSelected ? `2px solid ${PALETTE.accent}` : '1px solid rgba(0,0,0,0.3)'
+                                isSelected || isInspected
+                                    ? `2px solid ${PALETTE.accent}`
+                                    : '1px solid rgba(0,0,0,0.3)'
                             }
                             title={tile.title}
-                            onClick={() => selectActor(isCastaway ? glyph.id : null)}
+                            data-testid={`grid-tile-${tile.x}-${tile.y}`}
+                            onClick={() => {
+                                // Every click inspects the tile — sea or land,
+                                // empty or crowded
+                                selectTile({ x: tile.x, y: tile.y });
+                                // A castaway on the tile ALSO re-points the
+                                // actor inspector at them; clicking an empty
+                                // or bird-only tile leaves the actor pick
+                                // untouched — tile picks and actor picks are
+                                // independent inspections
+                                if (castaway) {
+                                    selectActor(castaway.id);
+                                }
+                            }}
                         >
                             {glyph ? (
                                 <Marker color={glyph.color}>

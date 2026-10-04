@@ -9,6 +9,7 @@ import { PALETTE } from '../styles/theme';
 import type { IslandHandle } from '../scenario/island';
 import { mountWorld, useWorld, bumpRevision } from './worldBridge';
 import { WorldGrid } from './worldGrid';
+import { TilePanel } from './tilePanel';
 import { TickerControls } from './tickerControls';
 import { ActorList } from './actorList';
 import { ActorPanel } from './actorPanel';
@@ -65,7 +66,8 @@ const CastSection = styled('div', {
     minWidth: 0,
 });
 
-// Middle — the island canvas takes the remaining width
+// Middle — the island canvas with the Tile Inspector beneath it: clicking
+// any tile on the canvas shows the terrain, ground stock and residents there
 const GridSection = styled('div', {
     flex: '1 1 460px',
     minWidth: 0,
@@ -108,7 +110,10 @@ export const Dashboard = ({ island: mounted }: { island: IslandHandle }) => {
         <Shell>
             <Header>
                 <Title>Stranded Island</Title>
-                <Subtitle>god view · seed {world.seed}</Subtitle>
+                {/* The rolled world seed — random every reload (App.tsx) */}
+                <Subtitle>
+                    god view · seed <span data-testid="world-seed">{world.seed}</span>
+                </Subtitle>
                 <PluginRoster data-testid="plugin-roster">{roster}</PluginRoster>
             </Header>
             <MainRow>
@@ -118,6 +123,7 @@ export const Dashboard = ({ island: mounted }: { island: IslandHandle }) => {
                 </CastSection>
                 <GridSection>
                     <WorldGrid />
+                    <TilePanel />
                 </GridSection>
                 <SideSection>
                     <TickerControls />

@@ -1,13 +1,15 @@
 // Tests for the god-view App (src/App.tsx).
-// Renders the full dashboard against the deterministic seed-7 island.
+// Every test pins <App seed={7} /> so assertions run against the
+// deterministic seed-7 island; the random-roll behaviour of an unpinned
+// reload has its own dedicated test below.
 
 import { render, screen, fireEvent } from '@testing-library/react';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { App } from './App';
 
 describe('App', () => {
     it('renders the god view with title, clock and the full island grid', () => {
-        render(<App />);
+        render(<App seed={7} />);
         expect(screen.getByRole('heading', { name: /stranded island/i })).toBeDefined();
         // Seed 7, tickSize 10 — the clock starts at day 1, 00:00
         expect(screen.getByTestId('world-clock').textContent).toBe('Day 1 · 00:00');
@@ -34,7 +36,7 @@ describe('App', () => {
     });
 
     it('every castaway row carries the compact 3-bar wellbeing overview', () => {
-        render(<App />);
+        render(<App seed={7} />);
         // Starting needs: hunger 20, thirst 20, energy 100 → wellbeing bars
         // invert the pressure: fullness 80, hydration 80, energy 100
         const stats = screen.getByTestId('actor-stats-Ael');
@@ -57,7 +59,7 @@ describe('App', () => {
     });
 
     it('the world log stays collapsed until opened', () => {
-        render(<App />);
+        render(<App seed={7} />);
         // Four spawn events + Kiki's arrival, hidden behind the toggle
         expect(screen.queryByTestId('event-log')).toBeNull();
         fireEvent.click(screen.getByTestId('log-toggle'));
@@ -68,7 +70,7 @@ describe('App', () => {
     });
 
     it('stepping one tick advances the clock; the opened log shows the moves', () => {
-        render(<App />);
+        render(<App seed={7} />);
         fireEvent.click(screen.getByTestId('log-toggle'));
         fireEvent.click(screen.getByTestId('step-button'));
         // tickSize 10 → the clock moved 10 world minutes
@@ -80,7 +82,7 @@ describe('App', () => {
     });
 
     it('the inspector opens in the left rail when a castaway is selected', () => {
-        render(<App />);
+        render(<App seed={7} />);
         expect(screen.queryByTestId('actor-inventory')).toBeNull();
         fireEvent.click(screen.getByTestId('actor-chip-Ael'));
         // Inspector shows Ael's condition and starting kit
@@ -99,7 +101,7 @@ describe('App', () => {
     });
 
     it('the bonds list holds exactly one row per fellow castaway — never self, never foreign pairs', () => {
-        render(<App />);
+        render(<App seed={7} />);
         // Fresh world (tick 0): every pair is unacquainted → neutral (0)
         fireEvent.click(screen.getByTestId('actor-chip-Ael'));
         const fresh = screen.getByTestId('actor-relations');
@@ -131,7 +133,7 @@ describe('App', () => {
     });
 
     it('the tick size dial redefines what one tick means', () => {
-        render(<App />);
+        render(<App seed={7} />);
         fireEvent.click(screen.getByTestId('step-button'));
         expect(screen.getByTestId('world-clock').textContent).toBe('Day 1 · 00:10');
         // Switch to hour-long ticks
@@ -139,5 +141,135 @@ describe('App', () => {
         fireEvent.click(screen.getByTestId('step-button'));
         // 10 + 60 world minutes
         expect(screen.getByTestId('world-clock').textContent).toBe('Day 1 · 01:10');
+    });
+
+    it('clicking an empty land tile shows its terrain and ground stock, no residents', () => {
+        render(<App seed={7} />);
+        // Before any click the Tile Inspector waits for a pick
+        expect(screen.getByTestId('tile-empty').textContent).toBe('Click a tile to inspect it.');
+        // Tile (7,0) — a quiet beach: no glyph, coconut + hidden shell
+        fireEvent.click(screen.getByTestId('grid-tile-7-0'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(7, 0) · beach');
+        expect(screen.getByTestId('tile-terrain-meta').textContent).toBe(
+            'height 3 · water line 3 · walkable',
+        );
+        expect(screen.getByTestId('tile-voxels').textContent).toBe('stone, soil, sand');
+        expect(
+            Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
+        ).toEqual(['1 Coconut', '1 Shell']);
+        // Nobody lives here
+        expect(
+            Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
+        ).toEqual(['No one here.']);
+        // A tile without a castaway never opens the actor inspector
+        expect(screen.queryByTestId('actor-inventory')).toBeNull();
+    });
+
+    it('clicking a sea tile shows the submerged voxel column with its fish stock', () => {
+        render(<App seed={7} />);
+        // Tile (0,0) — ocean floor: sand under three water voxels, fish swim here
+        fireEvent.click(screen.getByTestId('grid-tile-0-0'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(0, 0) · ocean');
+        expect(screen.getByTestId('tile-terrain-meta').textContent).toBe(
+            'height 0 · water line 3 · submerged',
+        );
+        expect(screen.getByTestId('tile-voxels').textContent).toBe('sand, water ×3');
+        expect(
+            Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
+        ).toEqual(['1 Fish']);
+        expect(
+            Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
+        ).toEqual(['No one here.']);
+    });
+
+    it('clicking a castaway tile opens both the tile inspector and the actor inspector', () => {
+        render(<App seed={7} />);
+        // Tile (6,0) — Ael's beach, coconut on the ground
+        fireEvent.click(screen.getByTestId('grid-tile-6-0'));
+        // Tile layer: terrain + stock + Ael as the resident
+        expect(screen.getByTestId('tile-position').textContent).toBe('(6, 0) · beach');
+        expect(screen.getByTestId('tile-ground').textContent).toContain('1 Coconut');
+        expect(
+            Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
+        ).toEqual(['Ael — castaway · well']);
+        // Actor layer: the inspector opens for the castaway standing there
+        expect(screen.getByTestId('actor-condition').textContent).toBe('Ael · well');
+        expect(screen.getByTestId('actor-inventory').textContent).toContain('2 Berries');
+    });
+
+    it('clicking a bird tile shows the bird as a resident but no actor card', () => {
+        render(<App seed={7} />);
+        // Tile (6,5) — forest under Kiki the flying gull (z 2)
+        fireEvent.click(screen.getByTestId('grid-tile-6-5'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(6, 5) · forest');
+        // All living things are actors: the bird is listed as a resident
+        expect(
+            Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
+        ).toEqual(['Kiki — bird · flying · z 2']);
+        // Forest floor: berries and wood ("Woods" is the mechanical plural)
+        expect(
+            Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
+        ).toEqual(['1 Berry', '2 Woods']);
+        // …but birds stay out of the castaway inspector — no actor card opens
+        expect(screen.queryByTestId('actor-inventory')).toBeNull();
+        expect(screen.getByTestId('actor-panel-empty').textContent).toBe(
+            'Select a castaway to inspect.',
+        );
+    });
+
+    it('the tile inspector follows every subsequent click', () => {
+        render(<App seed={7} />);
+        // First inspect Dune's forest tile…
+        fireEvent.click(screen.getByTestId('grid-tile-5-6'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(5, 6) · forest');
+        expect(
+            Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
+        ).toEqual(['Dune — castaway · well']);
+        // …then hop over to a bare shallows tile
+        fireEvent.click(screen.getByTestId('grid-tile-0-6'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(0, 6) · shallows');
+        expect(screen.getByTestId('tile-terrain-meta').textContent).toBe(
+            'height 2 · water line 3 · submerged',
+        );
+        expect(screen.getByTestId('tile-voxels').textContent).toBe('soil, sand, water');
+        expect(
+            Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
+        ).toEqual(['1 Fish']);
+        expect(
+            Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
+        ).toEqual(['No one here.']);
+        // The castaway inspector keeps Dune — tile picks and actor picks are
+        // independent inspections
+        expect(screen.getByTestId('actor-condition').textContent).toBe('Dune · well');
+    });
+
+    it('a resident row opens the full actor card for castaways', () => {
+        render(<App seed={7} />);
+        fireEvent.click(screen.getByTestId('grid-tile-6-0'));
+        // The resident row for Ael is a button — click it to focus the
+        // actor inspector on him
+        fireEvent.click(screen.getByText('Ael — castaway · well'));
+        expect(screen.getByTestId('actor-condition').textContent).toBe('Ael · well');
+        expect(screen.getByTestId('actor-inventory').textContent).toContain('2 Berries');
+    });
+
+    it('every reload rolls a completely random seed when none is pinned', () => {
+        // Pin the Math.random stream so the roll is deterministic in the
+        // test: 0.123456 × 1000000 → seed 123456
+        const roll = vi.spyOn(Math, 'random').mockReturnValue(0.123456);
+        try {
+            const first = render(<App />);
+            // The rolled seed shows in the header subtitle
+            expect(screen.getByTestId('world-seed').textContent).toBe('123456');
+            // A remount is a reload: the next roll draws a different value
+            // (0.654321 → seed 654321) → a different island
+            roll.mockReturnValue(0.654321);
+            first.unmount();
+            render(<App />);
+            expect(screen.getByTestId('world-seed').textContent).toBe('654321');
+        } finally {
+            // Restore the real Math.random so no other test sees the fake
+            roll.mockRestore();
+        }
     });
 });

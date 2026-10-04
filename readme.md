@@ -23,7 +23,8 @@ src/
 │   ├── relationship/ Affinity graph between actors with slow drift
 │   └── behavior/     Agent decision loop (eat / drink / gather / trade / rest / wander)
 ├── scenario/      createIslandWorld() — assembles plugins into a ready world
-└── features/      React god-view: grid, ticker controls, actor inspector, log
+└── features/      React god-view: grid, tile inspector, ticker controls,
+                    actor inspector, log
 ```
 
 The engine and every plugin are pure TypeScript with zero React dependency —

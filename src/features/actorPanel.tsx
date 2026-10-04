@@ -233,7 +233,7 @@ export const ActorPanel = () => {
             {actor ? (
                 <ActorCard actor={actor} />
             ) : (
-                <EmptyNote>Select a castaway to inspect.</EmptyNote>
+                <EmptyNote data-testid="actor-panel-empty">Select a castaway to inspect.</EmptyNote>
             )}
         </Panel>
     );
