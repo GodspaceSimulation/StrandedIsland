@@ -1,0 +1,27 @@
+{
+    "name": "@distribution/stranded-island",
+    "version": "0.1.0",
+    "description": "Stranded Island — a god-simulator distribution. Procedural voxel island, stranded actors with inventories and relationships, world running on a ticker. Everything is plugin-shaped so environments can be swapped in and out.",
+    "type": "module",
+    "main": "src/main.tsx",
+    "scripts": {
+        "dev": "vite",
+        "build": "vite build",
+        "preview": "vite preview",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "typecheck": "tsc --noEmit"
+    },
+    "author": "NQQT",
+    "license": "ISC",
+    "dependencies": {
+        "@presource/core": "*",
+        "@presource/react": "*",
+        "react": "^18.2.0",
+        "react-dom": "^18.2.0"
+    },
+    "devDependencies": {
+        "@types/react": "^18.2.0",
+        "@types/react-dom": "^18.2.0"
+    }
+}

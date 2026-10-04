@@ -1,0 +1,21 @@
+// Standalone tsconfig — inlined compiler options (same pattern as
+// distribution/story-generator/tsconfig.json) so this distribution
+// typechecks as a self-contained repository. Keep in sync with the
+// monorepo root tsconfig.json.
+{
+    "compilerOptions": {
+        "module": "ESNext",
+        "target": "ESNext",
+        "moduleResolution": "bundler",
+        "jsx": "react-jsx",
+        "skipLibCheck": true,
+        "allowJs": true,
+        "experimentalDecorators": true,
+        "esModuleInterop": true,
+        "strict": true,
+        "lib": ["decorators", "dom", "es5", "scripthost", "es2015.collection"],
+        "types": ["node", "vitest/globals"]
+    },
+    "exclude": ["node_modules", "**/*.test.ts", "**/*.test.tsx", "**/dist/*"],
+    "include": ["src/**/*", "vite.config.ts", "vitest.config.ts"]
+}
