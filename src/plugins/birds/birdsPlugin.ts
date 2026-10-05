@@ -6,8 +6,8 @@
 // full 3D space: they perch on the ground plane (Z = 0), take off to a
 // cruise altitude (Z 1..ceiling), drift up and down while gliding, and land
 // again. Bird positions live in the world's coordinate system (the 3D
-// spatial record from @godspace/core) with kind 'bird' — the ASCII canvas
-// renders them from there, altitude as a superscript glyph.
+// spatial record from @godspace/core) with kind 'creature' / type 'bird' —
+// the ASCII canvas renders them from there, altitude as a superscript glyph.
 //
 // Birds never enter world.actors (no needs, no behavior loop) — and since
 // the engine's ground occupancy checks scan actors only, a perched bird
@@ -111,7 +111,9 @@ export const birdsPlugin = (options: BirdsPluginOptions = {}): BirdsPlugin => {
             world.coordinates.place({
                 id,
                 position,
-                kind: 'bird',
+                // The two-level taxonomy: a bird is a creature of type bird
+                kind: 'creature',
+                type: 'bird',
                 name: birdName,
                 marker: birdName.slice(0, 1),
                 state: 'flying',

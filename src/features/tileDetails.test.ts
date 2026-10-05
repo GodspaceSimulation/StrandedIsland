@@ -46,7 +46,8 @@ describe('tileOccupants', () => {
             {
                 id: 'actor-1',
                 name: 'Ael',
-                kind: 'castaway',
+                kind: 'sentient',
+                type: 'human',
                 state: 'well',
                 z: 0,
                 actorId: 'actor-1',
@@ -61,7 +62,8 @@ describe('tileOccupants', () => {
             {
                 id: 'bird-1',
                 name: 'Kiki',
-                kind: 'bird',
+                kind: 'creature',
+                type: 'bird',
                 state: 'flying',
                 z: 2,
                 // Birds stay out of the actor registry — view-only residents
@@ -76,7 +78,8 @@ describe('tileOccupants', () => {
         island.world.coordinates.place({
             id: 'bird-x',
             position: { x: 17, y: -11, z: 1 },
-            kind: 'bird',
+            kind: 'creature',
+            type: 'bird',
             name: 'Jask',
             marker: 'J',
             state: 'flying',
@@ -99,17 +102,19 @@ describe('occupantLine', () => {
             occupantLine({
                 id: 'actor-1',
                 name: 'Ael',
-                kind: 'castaway',
+                kind: 'sentient',
+                type: 'human',
                 state: 'well',
                 z: 0,
                 actorId: 'actor-1',
             }),
-        ).toBe('Ael — castaway · well');
+        ).toBe('Ael — human · well');
         expect(
             occupantLine({
                 id: 'bird-1',
                 name: 'Kiki',
-                kind: 'bird',
+                kind: 'creature',
+                type: 'bird',
                 state: 'flying',
                 z: 2,
                 actorId: undefined,
@@ -140,7 +145,8 @@ describe('tileSummary', () => {
                 {
                     id: 'actor-1',
                     name: 'Ael',
-                    kind: 'castaway',
+                    kind: 'sentient',
+                    type: 'human',
                     state: 'well',
                     z: 0,
                     actorId: 'actor-1',

@@ -14,6 +14,8 @@ import { inventoryPlugin } from './inventoryPlugin';
 const actor = (id: string, name: string, x: number, y: number): Actor => ({
     id,
     name,
+    kind: 'sentient',
+    type: 'human',
     position: position3(x, y),
     marker: name.slice(0, 1),
     condition: 'well',

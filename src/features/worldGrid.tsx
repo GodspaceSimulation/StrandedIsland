@@ -1,14 +1,24 @@
 // The island canvas — the @godspace/canvas representation area, now TABBED.
 //
-// Three representations of the SAME world view, one per tab (all loaded as
+// Four representations of the SAME world view, one per tab (all loaded as
 // plugins from @godspace/canvas by the scenario, see scenario/island.ts):
 //   Data    — the data canvas plugin: plain tables of every entity's
-//             coordinates (id/kind/name/state/x/y/z), the terrain census
-//             and the canvas overview
+//             coordinates (id/kind/type/name/state/x/y/z), the terrain
+//             census and the canvas overview
 //   ASCII   — the ascii canvas plugin: one colored tile per ground cell
 //             (surface palette), one glyph letter per entity
-//   Unicode — the unicode canvas plugin: the emoji twin — terrain emoji on
-//             empty tiles, semantic emoji per entity kind, same colors
+//   Unicode — the unicode canvas plugin: the emoji twin — semantic emoji
+//             per entity (resolved from the kind/type taxonomy), terrain
+//             drawn as color only (no per-tile emoji flood), same colors
+//   SVG     — the svg canvas plugin: the vector twin — the world as a
+//             scalable SVG document (one rect per ground cell, one text per
+//             entity, native <title> hovers); geometry on the SAME 26px
+//             tile grid, so every tab occupies the same board footprint
+//
+// TILE OCCUPATION PARITY — every tile canvas draws on the SAME 26px grid
+// (ascii's tile). The unicode tab once painted 30px emoji tiles, which blew
+// this panel wide; all tile tabs now share the ascii size so switching
+// representations never breaks the layout.
 //
 // Every glyph carries its Z altitude as a superscript (K² = 2 voxels up —
 // the shared glyphText helper). Hovering a tile shows the voxel column plus
@@ -16,13 +26,13 @@
 // column (Tile Inspector below the canvas); when the tile holds a castaway,
 // the god's actor inspector opens for them too (birds and other non-registry
 // residents stay view-only). The data tab is read-only — it shows the exact
-// coordinates the other two draw as glyphs.
+// coordinates the other three draw as glyphs.
 
 import { useStateHook } from '@presource/react';
 import {
     glyphText,
-    ASCII_STATE_FALLBACK,
     type AsciiFrame,
+    type SvgFrame,
     type UnicodeFrame,
 } from '@godspace/canvas';
 import type { Biome } from '../engine/types';
@@ -39,14 +49,15 @@ import {
     selectTile,
 } from './worldBridge';
 
-/** The three representations tabs switch between. */
-type CanvasTab = 'data' | 'ascii' | 'unicode';
+/** The four representations tabs switch between. */
+type CanvasTab = 'data' | 'ascii' | 'unicode' | 'svg';
 
 /** Tab order + labels — the fixed ladder across the canvas area. */
 const TABS: Array<{ id: CanvasTab; label: string }> = [
     { id: 'data', label: 'Data' },
     { id: 'ascii', label: 'ASCII' },
     { id: 'unicode', label: 'Unicode' },
+    { id: 'svg', label: 'SVG' },
 ];
 
 const Grid = styled<{ columns: number; size: number }>('div', {
@@ -162,11 +173,11 @@ export const WorldGrid = () => {
     }
     void revision; // subscription pulse — re-render on every world change
 
-    const { world, ascii, unicode, data } = island;
+    const { world, ascii, unicode, svg, data } = island;
 
     // A tile click wires the same two inspections regardless of which canvas
-    // is showing (ascii and unicode frames carry identical coordinates) —
-    // shared so both tile renderers stay behaviorally identical
+    // is showing (all four frames carry identical coordinates) —
+    // shared so every tile renderer stays behaviorally identical
     const inspectTile = (tile: { x: number; y: number }, castawayId: string | undefined) => {
         // Every click inspects the tile — sea or land, empty or crowded
         selectTile({ x: tile.x, y: tile.y });
@@ -233,11 +244,26 @@ export const WorldGrid = () => {
             ) : null}
             {tab() === 'unicode' ? (
                 <UnicodeView
+                    world={world}
                     frame={unicode.frame()}
-                    palette={unicode.palette()}
+                    palette={unicode.palette().tiles}
                     inspected={inspected}
                     selected={selected}
-                    size={30}
+                    // SAME TILE OCCUPATION AS ASCII (26) — the emoji tab once
+                    // painted 30px tiles and blew the panel wide; all tile
+                    // tabs now share the ascii grid so switching never breaks
+                    // the layout
+                    size={26}
+                    onTile={inspectTile}
+                />
+            ) : null}
+            {tab() === 'svg' ? (
+                <SvgView
+                    world={world}
+                    frame={svg.frame()}
+                    palette={svg.palette().tiles}
+                    inspected={inspected}
+                    selected={selected}
                     onTile={inspectTile}
                 />
             ) : null}
@@ -315,6 +341,7 @@ const AsciiView = ({
 // ── Unicode view — the emoji twin ────────────────────────────────────────────
 
 const UnicodeView = ({
+    world,
     frame,
     palette,
     inspected,
@@ -322,8 +349,9 @@ const UnicodeView = ({
     size,
     onTile,
 }: {
+    world: IslandHandle['world'];
     frame: UnicodeFrame;
-    palette: { tiles: Record<string, string>; symbols: Record<string, string> };
+    palette: Record<string, string>;
     inspected: { x: number; y: number } | null;
     selected: string | null;
     size: number;
@@ -333,15 +361,16 @@ const UnicodeView = ({
         <Grid columns={frame.columns} size={size} data-testid="world-grid-unicode">
             {frame.tiles.map((tile) => {
                 const glyph = tile.glyphs[0];
-                const castaway = tile.glyphs.find((entry) => entry.kind === 'castaway');
+                // Same registry rule as the ascii view — any castaway in the
+                // column opens the actor inspector, a bird gliding above
+                // never hides the castaway walking below
+                const castaway = tile.glyphs.find((entry) => world.actors.has(entry.id));
                 const isSelected = glyph !== undefined && glyph.id === selected;
                 const isInspected =
                     inspected !== null && inspected.x === tile.x && inspected.y === tile.y;
-                // Empty tiles draw the terrain emoji in the off-white
-                // terrain color; occupied tiles draw the entity glyph in
-                // its state color (same rule the unicode painter uses)
-                const color = glyph ? glyph.color : ASCII_STATE_FALLBACK;
-                const text = glyph ? glyphText(glyph.glyph, glyph.elevation) : tile.symbol;
+                // Entities draw their emoji in the state color; empty tiles
+                // stay bare — terrain shows through its background color
+                // alone (no per-tile emoji flood)
                 return (
                     <Cell
                         key={`${tile.x},${tile.y}`}
@@ -355,16 +384,146 @@ const UnicodeView = ({
                         data-testid={`unicode-tile-${tile.x}-${tile.y}`}
                         onClick={() => onTile(tile, castaway?.id)}
                     >
-                        {text ? <Marker color={color}>{text}</Marker> : null}
+                        {glyph ? (
+                            <Marker color={glyph.color}>
+                                {glyphText(glyph.glyph, glyph.elevation)}
+                            </Marker>
+                        ) : null}
                     </Cell>
                 );
             })}
         </Grid>
+        {/* Terrain is color-only here — the legend matches the ascii view */}
         <Legend data-testid="grid-legend-unicode">
             {BIOME_ORDER.map((biome) => (
-                <LegendItem key={biome} color={palette.tiles[biome]}>
-                    <LegendSwatch color={palette.tiles[biome]} />
-                    {palette.symbols[biome]} {biome}
+                <LegendItem key={biome} color={palette[biome]}>
+                    <LegendSwatch color={palette[biome]} />
+                    {biome}
+                </LegendItem>
+            ))}
+        </Legend>
+    </>
+);
+
+// ── SVG view — the vector twin ───────────────────────────────────────────────
+
+// The SVG board: a block-level vector canvas that scales DOWN to the panel
+// width (the whole point of the SVG style — the vector document shrinks to
+// fit where the px-bound DOM grids can only overflow). All geometry lives
+// in the viewBox coordinates computed from the frame's tile edge.
+const SvgBoard = styled('svg', {
+    display: 'block',
+    maxWidth: '100%',
+    height: 'auto',
+});
+
+// One tile rect — per-tile geometry and colors arrive as SVG presentation
+// attributes (x/y/width/height/fill/stroke); the styled class carries the
+// shared paint (rounded corners, hairline width, pointer cursor)
+const SvgTile = styled('rect', {
+    rx: 3,
+    strokeWidth: 1,
+    cursor: 'pointer',
+});
+
+// One entity glyph — the styled class carries the static text paint
+// (centered anchor, midline baseline, the shared 13px glyph budget);
+// position and state color arrive as x/y/fill attributes
+const SvgGlyph = styled('text', {
+    textAnchor: 'middle',
+    dominantBaseline: 'central',
+    fontSize: 13,
+    fontWeight: 700,
+});
+
+const SvgView = ({
+    world,
+    frame,
+    palette,
+    inspected,
+    selected,
+    onTile,
+}: {
+    world: IslandHandle['world'];
+    frame: SvgFrame;
+    palette: Record<string, string>;
+    inspected: { x: number; y: number } | null;
+    selected: string | null;
+    onTile: (tile: { x: number; y: number }, castawayId: string | undefined) => void;
+}) => (
+    <>
+        {/* The viewBox spans columns·size × rows·size user units — the SAME
+            26px tile grid the ascii/unicode boards draw, so the board
+            occupies the same footprint in tile units and merely SCALES to
+            the panel (never overflows it) */}
+        <SvgBoard
+            data-testid="world-grid-svg"
+            viewBox={`0 0 ${frame.columns * frame.size} ${frame.rows * frame.size}`}
+            width={frame.columns * frame.size}
+            height={frame.rows * frame.size}
+        >
+            {frame.tiles.map((tile, index) => {
+                // SVG geometry follows the row-major tile ORDER (array index
+                // → column/row) — the exact layout the DOM grids draw. The
+                // engine's own coordinates may be centered (negative), which
+                // would map off-canvas
+                const column = index % frame.columns;
+                const row = Math.floor(index / frame.columns);
+                // Top of the column's glyph stack draws on the tile
+                const glyph = tile.glyphs[0];
+                // Same registry rule as the DOM views — any castaway in the
+                // column opens the actor inspector, a bird gliding above
+                // never hides the castaway walking below
+                const castaway = tile.glyphs.find((entry) => world.actors.has(entry.id));
+                const isSelected = glyph !== undefined && glyph.id === selected;
+                const isInspected =
+                    inspected !== null && inspected.x === tile.x && inspected.y === tile.y;
+                return (
+                    <g
+                        key={`${tile.x},${tile.y}`}
+                        data-testid={`svg-tile-${tile.x}-${tile.y}`}
+                        onClick={() => onTile(tile, castaway?.id)}
+                    >
+                        {/* SVG-native hover: <title> is the vector twin of
+                            the DOM title attribute the other canvases use */}
+                        <title>{tile.title}</title>
+                        {/* Terrain IS the rect fill — the 1-unit inset
+                            reproduces the DOM grids' 2px tile seam; empty
+                            tiles draw no text (the flood fix) */}
+                        <SvgTile
+                            x={column * frame.size + 1}
+                            y={row * frame.size + 1}
+                            width={frame.size - 2}
+                            height={frame.size - 2}
+                            fill={tile.background}
+                            stroke={
+                                isSelected || isInspected
+                                    ? PALETTE.accent
+                                    : 'rgba(0,0,0,0.3)'
+                            }
+                        />
+                        {/* Entities draw their glyph in the state color at
+                            the dead-center of the tile — the same visual
+                            position the flex-centered DOM cells produce */}
+                        {glyph ? (
+                            <SvgGlyph
+                                x={column * frame.size + frame.size / 2}
+                                y={row * frame.size + frame.size / 2}
+                                fill={glyph.color}
+                            >
+                                {glyphText(glyph.glyph, glyph.elevation)}
+                            </SvgGlyph>
+                        ) : null}
+                    </g>
+                );
+            })}
+        </SvgBoard>
+        {/* Terrain is color-only here — the legend matches the ascii view */}
+        <Legend data-testid="grid-legend-svg">
+            {BIOME_ORDER.map((biome) => (
+                <LegendItem key={biome} color={palette[biome]}>
+                    <LegendSwatch color={palette[biome]} />
+                    {biome}
                 </LegendItem>
             ))}
         </Legend>

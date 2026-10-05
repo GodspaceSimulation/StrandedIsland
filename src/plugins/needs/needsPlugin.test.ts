@@ -7,7 +7,7 @@ import { needsPlugin } from './needsPlugin';
 import type { Actor } from '../../engine/types';
 
 const spawnActor = (world: ReturnType<typeof createWorld>, id = 'a', name = 'Ael') => {
-    const actor: Actor = { id, name, position: position3(0, 0), marker: name.slice(0, 1), condition: 'well' };
+    const actor: Actor = { id, name, kind: 'sentient', type: 'human', position: position3(0, 0), marker: name.slice(0, 1), condition: 'well' };
     world.spawn(actor);
     return actor;
 };

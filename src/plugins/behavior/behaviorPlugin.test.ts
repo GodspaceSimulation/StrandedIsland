@@ -14,7 +14,7 @@ import { behaviorPlugin } from './behaviorPlugin';
 import type { Actor } from '../../engine/types';
 
 const spawn = (world: ReturnType<typeof createWorld>, id: string, name: string, x: number, y: number): Actor => {
-    const actor: Actor = { id, name, position: position3(x, y), marker: name.slice(0, 1), condition: 'well' };
+    const actor: Actor = { id, name, kind: 'sentient', type: 'human', position: position3(x, y), marker: name.slice(0, 1), condition: 'well' };
     return world.spawn(actor);
 };
 

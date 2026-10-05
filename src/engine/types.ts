@@ -2,7 +2,10 @@
 //
 // Terminology (kept stable across the whole codebase):
 //   canvas   — the island itself: a grid of voxel columns (see TerrainCell)
-//   actor    — one stranded person living on the canvas
+//   actor    — one living resident of the canvas (see Actor): a two-level
+//              taxonomy classifies every actor — `kind` is WHAT it is
+//              ('creature' | 'sentient'), `type` is WHICH species/race it
+//              is ('bird', 'dog', 'human', 'orc', 'elf', …)
 //   position — a 3D coordinate record from @godspace/core (see Position3D):
 //              the engine keeps every position in X, Y, Z space. Castaways
 //              cannot fly or dig, so their Z is always GROUND_LEVEL (0);
@@ -70,10 +73,32 @@ export type Canvas = {
 /** Physical / life condition of an actor, derived from needs by the needs plugin. */
 export type ActorCondition = 'well' | 'weak' | 'critical' | 'gone';
 
-/** One stranded person. Position is a 3D coordinate — Z stays at ground level. */
+/**
+ * WHAT an actor is — the top taxonomy level. 'creature' covers the
+ * non-sentient fauna (seabirds, any animal a plugin coins); 'sentient'
+ * covers the thinking races (humans, and any fantasy race — orc, elf, …).
+ */
+export type ActorKind = 'creature' | 'sentient';
+
+/**
+ * WHICH an actor is — the species/race within its kind. Creatures are
+ * 'bird' | 'dog' | …; sentients are 'human' | 'orc' | 'elf' | …. Open on
+ * purpose: 'human' is a race like any other ('person' would deny the
+ * orcs and elves of a future plugin a name of their own).
+ */
+export type ActorType = string;
+
+/**
+ * One living resident of the world. Position is a 3D coordinate — sentients
+ * that cannot fly or dig keep Z at ground level (birds travel the Z axis).
+ */
 export type Actor = {
     id: string;
     name: string;
+    /** WHAT the actor is — 'creature' | 'sentient' (see ActorKind). */
+    kind: ActorKind;
+    /** WHICH the actor is — species/race: 'human', 'bird', … (see ActorType). */
+    type: ActorType;
     /** X, Y, Z position (Position3D from @godspace/core). Z is always 0. */
     position: Position3D;
     /** Short grid marker (1–2 letters) shown in the god-view. */

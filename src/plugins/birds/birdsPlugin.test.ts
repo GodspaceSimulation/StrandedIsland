@@ -26,11 +26,12 @@ describe('birdsPlugin', () => {
             // cruise altitude z = 2
             position: { x: 0, y: 0, z: 2 },
         });
-        // The bird lives in the 3D spatial record with kind 'bird'
+        // The bird lives in the 3D spatial record — a creature of type bird
         expect(world.coordinates.entryOf('bird-1')).toEqual({
             id: 'bird-1',
             position: { x: 0, y: 0, z: 2 },
-            kind: 'bird',
+            kind: 'creature',
+            type: 'bird',
             name: 'Kiki',
             marker: 'K',
             state: 'flying',
@@ -142,6 +143,8 @@ describe('birdsPlugin', () => {
         const actor = world.spawn({
             id: 'a',
             name: 'Ael',
+            kind: 'sentient',
+            type: 'human',
             position: { x: -1, y: 0, z: 0 },
             marker: 'A',
             condition: 'well',

@@ -10,9 +10,11 @@
 //               (world.coordinates), not just castaways. Actors are living
 //               things in the broad sense — people, animals (birds), and
 //               anything a future plugin coins (fish shoals, monsters) —
-//               they all live in the same 3D spatial record with a kind
-//               facet, so one column() query lists them all. Grounded
-//               residents list before flyers (column() sorts by ascending Z).
+//               they all live in the same 3D spatial record with the
+//               kind/type taxonomy facets ('sentient'/'human',
+//               'creature'/'bird', …), so one column() query lists them all.
+//               Grounded residents list before flyers (column() sorts by
+//               ascending Z).
 
 import type { VoxelKind } from '../engine/types';
 import type { IslandHandle } from '../scenario/island';
@@ -54,8 +56,10 @@ export const voxelSummary = (voxels: VoxelKind[]): string =>
 export type TileOccupant = {
     id: string;
     name: string;
-    /** Kind facet from the coordinate record — 'castaway', 'bird', … */
+    /** WHAT the resident is — kind facet from the coordinate record: 'sentient', 'creature', … */
     kind: string;
+    /** WHICH the resident is — type facet (species/race): 'human', 'bird', … */
+    type: string;
     /** Display state — condition for castaways, flying/perched for birds. */
     state: string;
     /** Z altitude — 0 = standing on the tile, >0 = above it (flyers). */
@@ -85,17 +89,21 @@ export const tileOccupants = (island: IslandHandle, x: number, y: number): TileO
                 id: entry.id,
                 name: entry.name ?? entry.id,
                 kind: entry.kind ?? 'unknown',
+                // The race reads more specifically than the kind; a record
+                // without a type falls back to its kind label
+                type: entry.type ?? entry.kind ?? 'unknown',
                 state: entry.state ?? '—',
                 z: entry.position.z,
                 actorId: actor ? actor.id : undefined,
             };
         });
 
-/** One occupant display line: "Ael — castaway · well", "Kiki — bird · flying · z 2". */
+/** One occupant display line: "Ael — human · well", "Kiki — bird · flying · z 2". */
 export const occupantLine = (occupant: TileOccupant): string => {
     // Altitude only matters when the resident is off the ground plane
     const altitude = occupant.z > 0 ? ` · z ${occupant.z}` : '';
-    return `${occupant.name} — ${occupant.kind} · ${occupant.state}${altitude}`;
+    // The race/type is the identifying label — 'human', not the generic kind
+    return `${occupant.name} — ${occupant.type} · ${occupant.state}${altitude}`;
 };
 
 // ── Ground stock ─────────────────────────────────────────────────────────────

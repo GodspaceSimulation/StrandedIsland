@@ -16,6 +16,7 @@ describe('createIslandWorld', () => {
             // The @godspace/canvas representation plugins, loaded by the engine
             'ascii-canvas',
             'unicode-canvas',
+            'svg-canvas',
             'data-canvas',
         ]);
         expect(handle.world.ticker.tickSize()).toBe(10);
@@ -79,11 +80,12 @@ describe('createIslandWorld', () => {
             // cruise altitude z = 2
             position: { x: 0, y: 0, z: 2 },
         });
-        // The bird lives in the 3D spatial record with kind 'bird'
+        // The bird lives in the 3D spatial record — a creature of type bird
         expect(handle.world.coordinates.entryOf('bird-1')).toEqual({
             id: 'bird-1',
             position: { x: 0, y: 0, z: 2 },
-            kind: 'bird',
+            kind: 'creature',
+            type: 'bird',
             name: 'Kiki',
             marker: 'K',
             state: 'flying',
@@ -135,6 +137,7 @@ describe('createIslandWorld', () => {
                 birds: false,
                 ascii: false,
                 unicode: false,
+                svg: false,
                 data: false,
             },
             actorCount: 0,
@@ -150,11 +153,12 @@ describe('createIslandWorld', () => {
         expect(grounded.birds.birds()).toEqual([]);
 
         // ASCII canvas off → the ascii sibling is gone from the roster and
-        // its frame is empty (unicode + data still render)
+        // its frame is empty (unicode + svg + data still render)
         const unseen = createIslandWorld({ seed: 7, plugins: { ascii: false } });
         expect(unseen.world.plugins.has('ascii-canvas')).toBe(false);
         expect(unseen.ascii.frame()).toEqual({ columns: 0, rows: 0, tiles: [] });
         expect(unseen.world.plugins.has('unicode-canvas')).toBe(true);
+        expect(unseen.world.plugins.has('svg-canvas')).toBe(true);
         expect(unseen.world.plugins.has('data-canvas')).toBe(true);
 
         // Unicode + data canvases off → only the ascii sibling renders
@@ -163,6 +167,11 @@ describe('createIslandWorld', () => {
         expect(plain.world.plugins.has('data-canvas')).toBe(false);
         expect(plain.unicode.frame()).toEqual({ columns: 0, rows: 0, tiles: [] });
         expect(plain.data.frame()).toEqual({ tables: [] });
+
+        // SVG canvas off → the vector sibling is gone, its frame empty
+        const flat = createIslandWorld({ seed: 7, plugins: { svg: false } });
+        expect(flat.world.plugins.has('svg-canvas')).toBe(false);
+        expect(flat.svg.frame()).toEqual({ columns: 0, rows: 0, size: 26, tiles: [] });
     });
 
     it('the ascii canvas frame mirrors the world: tiles, glyphs and altitude', () => {
@@ -173,15 +182,15 @@ describe('createIslandWorld', () => {
         expect(frame.rows).toBe(25);
         expect(frame.tiles.length).toBe(925);
         // Ael stands on the shore at (17,−11): tile 1×37+35 = 72 carries his
-        // grounded glyph
+        // grounded glyph — a sentient of the human race
         expect(frame.tiles[72].glyphs).toEqual([
-            { id: 'actor-1', glyph: 'A', color: '#5cb85c', elevation: 0, kind: 'castaway', state: 'well' },
+            { id: 'actor-1', glyph: 'A', color: '#5cb85c', elevation: 0, kind: 'sentient', type: 'human', state: 'well' },
         ]);
         expect(frame.tiles[72].title).toBe('beach · height 3 · stone / soil / sand · Ael · well');
         // Kiki wheels at the center (0,0): tile 12×37+18 = 462 carries the
-        // flying glyph with her altitude superscript
+        // flying glyph with her altitude superscript — a creature of type bird
         expect(frame.tiles[462].glyphs).toEqual([
-            { id: 'bird-1', glyph: 'K', color: '#7ec8e3', elevation: 2, kind: 'bird', state: 'flying' },
+            { id: 'bird-1', glyph: 'K', color: '#7ec8e3', elevation: 2, kind: 'creature', type: 'bird', state: 'flying' },
         ]);
         expect(frame.tiles[462].title).toBe(
             'meadow · height 5 · stone / stone / stone / soil / grass · Kiki · flying · z 2',
@@ -195,20 +204,50 @@ describe('createIslandWorld', () => {
         expect(frame.columns).toBe(37);
         expect(frame.rows).toBe(25);
         expect(frame.tiles.length).toBe(925);
-        // Ael renders as the castaway emoji at his shore position (tile 72)
+        // Ael renders as the human emoji at his shore position (tile 72) —
+        // his type 'human' resolves the glyph through the type map
         expect(frame.tiles[72].glyphs).toEqual([
-            { id: 'actor-1', glyph: '🧍', color: '#5cb85c', elevation: 0, kind: 'castaway', state: 'well' },
+            { id: 'actor-1', glyph: '🧍', color: '#5cb85c', elevation: 0, kind: 'sentient', type: 'human', state: 'well' },
+        ]);
+        // Kiki renders as the bird emoji with her altitude superscript —
+        // her type 'bird' resolves through the type map
+        expect(frame.tiles[462].glyphs).toEqual([
+            { id: 'bird-1', glyph: '🐦', color: '#7ec8e3', elevation: 2, kind: 'creature', type: 'bird', state: 'flying' },
+        ]);
+        // Empty sea tiles stay BARE — terrain shows as color only, no
+        // per-tile emoji flood (the unicode fix)
+        expect(frame.tiles[0].glyphs).toEqual([]);
+        // The emoji palettes resolve through the legend source: types carry
+        // the species glyphs, kinds the coarse fallbacks
+        expect(handle.unicode.palette().types.bird).toBe('🐦');
+        expect(handle.unicode.palette().types.human).toBe('🧍');
+        expect(handle.unicode.palette().kinds.creature).toBe('🐾');
+        expect(handle.unicode.palette().kinds.sentient).toBe('🧑');
+    });
+
+    it('the svg canvas frame mirrors the ascii world as a vector document', () => {
+        const handle = createIslandWorld({ seed: 7 });
+        const frame = handle.svg.frame();
+        // Same frame model as the ascii canvas — one tile per cell — plus
+        // the tile edge: the SAME 26px occupation the ascii canvas paints,
+        // so swapping canvases never moves the board
+        expect(frame.columns).toBe(37);
+        expect(frame.rows).toBe(25);
+        expect(frame.size).toBe(26);
+        expect(frame.tiles.length).toBe(925);
+        // Ael renders as the human emoji (unicode glyph ladder) at his shore
+        // position, colored by the shared state palette
+        expect(frame.tiles[72].glyphs).toEqual([
+            { id: 'actor-1', glyph: '🧍', color: '#5cb85c', elevation: 0, kind: 'sentient', type: 'human', state: 'well' },
         ]);
         // Kiki renders as the bird emoji with her altitude superscript
         expect(frame.tiles[462].glyphs).toEqual([
-            { id: 'bird-1', glyph: '🐦', color: '#7ec8e3', elevation: 2, kind: 'bird', state: 'flying' },
+            { id: 'bird-1', glyph: '🐦', color: '#7ec8e3', elevation: 2, kind: 'creature', type: 'bird', state: 'flying' },
         ]);
-        // Empty sea tiles carry the terrain emoji
+        // Terrain is the rect fill — empty sea carries no glyph (flood fix)
         expect(frame.tiles[0].glyphs).toEqual([]);
-        expect(frame.tiles[0].symbol).toBe('🐚');
-        // The palette exposes the terrain symbols for the legend
-        expect(handle.unicode.palette().symbols.ocean).toBe('🌊');
-        expect(handle.unicode.palette().symbols.beach).toBe('🏖');
+        // The legend source shares the ascii tile palette
+        expect(handle.svg.palette().tiles.ocean).toBe('#173a52');
     });
 
     it('the data canvas frame renders plain tables of the live world', () => {
@@ -216,15 +255,16 @@ describe('createIslandWorld', () => {
         const frame = handle.data.frame();
         // Three tables: entity positions, terrain census, canvas overview
         expect(frame.tables.map((table) => table.title)).toEqual(['Positions', 'Terrain', 'Canvas']);
-        // Positions: bird first (kind order), then the cast in id order —
-        // exact centered coordinates and facets per row
-        expect(frame.tables[0].headers).toEqual(['id', 'kind', 'name', 'state', 'x', 'y', 'z']);
+        // Positions: bird first (kind order — 'creature' sorts before
+        // 'sentient'), then the cast in id order — exact centered
+        // coordinates and facets per row
+        expect(frame.tables[0].headers).toEqual(['id', 'kind', 'type', 'name', 'state', 'x', 'y', 'z']);
         expect(frame.tables[0].rows).toEqual([
-            ['bird-1', 'bird', 'Kiki', 'flying', 0, 0, 2],
-            ['actor-1', 'castaway', 'Ael', 'well', 17, -11, 0],
-            ['actor-2', 'castaway', 'Bram', 'well', 14, 2, 0],
-            ['actor-3', 'castaway', 'Cove', 'well', -11, -4, 0],
-            ['actor-4', 'castaway', 'Dune', 'well', -8, 3, 0],
+            ['bird-1', 'creature', 'bird', 'Kiki', 'flying', 0, 0, 2],
+            ['actor-1', 'sentient', 'human', 'Ael', 'well', 17, -11, 0],
+            ['actor-2', 'sentient', 'human', 'Bram', 'well', 14, 2, 0],
+            ['actor-3', 'sentient', 'human', 'Cove', 'well', -11, -4, 0],
+            ['actor-4', 'sentient', 'human', 'Dune', 'well', -8, 3, 0],
         ]);
         // Terrain census: cell counts per biome, alphabetical
         expect(frame.tables[1].rows).toEqual([

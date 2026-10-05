@@ -10,8 +10,11 @@
 //   @godspace/core  — the coordinate system: the world's 3D spatial record
 //                     (World.coordinates); castaways live on the ground
 //                     plane, seabirds travel the Z axis
-//   @godspace/canvas — the ASCII canvas representation plugin, bound and
-//                     loaded by the engine to draw the god-view island
+//   @godspace/canvas — the representation plugins, bound and loaded by the
+//                     engine to draw the god-view island: ASCII (glyph
+//                     letters), Unicode (emoji), SVG (a scalable vector
+//                     document) and Data (plain tables) — all four bind the
+//                     SAME structural slice and stay drop-in interchangeable
 //
 // The returned handle exposes each plugin instance so the god-view (and
 // tests) can drive the environment directly: force exchanges, inspect
@@ -22,9 +25,11 @@ import { position3 } from '@godspace/core';
 import {
     asciiCanvasPlugin,
     unicodeCanvasPlugin,
+    svgCanvasPlugin,
     dataCanvasPlugin,
     type AsciiCanvasPlugin,
     type UnicodeCanvasPlugin,
+    type SvgCanvasPlugin,
     type DataCanvasPlugin,
 } from '@godspace/canvas';
 import { createWorld, type World } from '../engine/world';
@@ -59,6 +64,8 @@ export type IslandOptions = {
         ascii?: boolean;
         /** The @godspace/canvas unicode (emoji) representation. Default on. */
         unicode?: boolean;
+        /** The @godspace/canvas svg (vector) representation. Default on. */
+        svg?: boolean;
         /** The @godspace/canvas data (plain tables) representation. Default on. */
         data?: boolean;
     };
@@ -76,6 +83,8 @@ export type IslandHandle = {
     ascii: AsciiCanvasPlugin;
     /** The unicode canvas sibling — emoji glyphs, same binding contract. */
     unicode: UnicodeCanvasPlugin;
+    /** The svg canvas sibling — a scalable vector document, same binding contract. */
+    svg: SvgCanvasPlugin;
     /** The data canvas sibling — plain position/terrain tables. */
     data: DataCanvasPlugin;
 };
@@ -97,6 +106,7 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         birds: true,
         ascii: true,
         unicode: true,
+        svg: true,
         data: true,
         ...(options.plugins ?? {}),
     };
@@ -131,6 +141,16 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
             return `${column.biome} · height ${column.height} · ${(column.voxels ?? []).join(' / ')}`;
         },
     });
+    // The svg sibling draws the same world as a scalable vector document —
+    // same adapters, glyphs from the unicode ladder, geometry on the shared
+    // 26px tile grid (no layout breakage between canvas tabs)
+    const svg = svgCanvasPlugin({
+        surfaceOf: (cell) => (cell as { biome?: string }).biome,
+        titleOf: (cell) => {
+            const column = cell as { biome?: string; height?: number; voxels?: string[] };
+            return `${column.biome} · height ${column.height} · ${(column.voxels ?? []).join(' / ')}`;
+        },
+    });
     // The data sibling renders plain tables instead of tiles: every entity's
     // coordinates + the terrain census (also biome-keyed)
     const data = dataCanvasPlugin({
@@ -148,6 +168,7 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         ...(toggles.birds ? [birds] : []),
         ...(toggles.ascii ? [ascii] : []),
         ...(toggles.unicode ? [unicode] : []),
+        ...(toggles.svg ? [svg] : []),
         ...(toggles.data ? [data] : []),
     ];
 
@@ -184,6 +205,11 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
             const actor: Actor = {
                 id: `actor-${index + 1}`,
                 name,
+                // The cast are stranded people — sentients of the human race
+                // (kind 'sentient', type 'human'; never the generic 'person',
+                // future plugins may add orcs, elves, …)
+                kind: 'sentient',
+                type: 'human',
                 position: position3(cell.x, cell.y),
                 marker: name.slice(0, 1),
                 condition: 'well',
@@ -198,5 +224,5 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         birds.release();
     }
 
-    return { world, terrain, inventory, needs, relationship, birds, ascii, unicode, data };
+    return { world, terrain, inventory, needs, relationship, birds, ascii, unicode, svg, data };
 };

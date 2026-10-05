@@ -23,9 +23,9 @@ describe('App', () => {
         expect(screen.getByTestId('actor-chip-Cove').textContent).toContain('Cove');
         expect(screen.getByTestId('actor-chip-Dune').textContent).toContain('Dune');
         // The plugin roster shows the mounted environment modules — the
-        // seabirds plugin plus the three @godspace/canvas representations
+        // seabirds plugin plus the four @godspace/canvas representations
         expect(screen.getByTestId('plugin-roster').textContent).toBe(
-            'Island Terrain · Inventories & Exchange · Survival Needs · Relationships · Agent Behavior · Seabirds · ASCII Canvas · Unicode Canvas · Data Canvas',
+            'Island Terrain · Inventories & Exchange · Survival Needs · Relationships · Agent Behavior · Seabirds · ASCII Canvas · Unicode Canvas · SVG Canvas · Data Canvas',
         );
         // Kiki wheels above the island center (0,0) at z 2 — tile index
         // (0+12)×37+(0+18) = 462, her altitude drawn as a superscript glyph
@@ -201,7 +201,7 @@ describe('App', () => {
         expect(screen.getByTestId('tile-ground').textContent).toContain('1 Coconut');
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
-        ).toEqual(['Ael — castaway · well']);
+        ).toEqual(['Ael — human · well']);
         // Actor layer: the inspector opens for the castaway standing there
         expect(screen.getByTestId('actor-condition').textContent).toBe('Ael · well');
         expect(screen.getByTestId('actor-inventory').textContent).toContain('2 Berries');
@@ -234,7 +234,7 @@ describe('App', () => {
         expect(screen.getByTestId('tile-position').textContent).toBe('(-8, 3) · meadow');
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
-        ).toEqual(['Dune — castaway · well']);
+        ).toEqual(['Dune — human · well']);
         // …then hop over to a submerged shallows tile
         fireEvent.click(screen.getByTestId('grid-tile--18--12'));
         expect(screen.getByTestId('tile-position').textContent).toBe('(-18, -12) · shallows');
@@ -258,17 +258,18 @@ describe('App', () => {
         fireEvent.click(screen.getByTestId('grid-tile-17--11'));
         // The resident row for Ael is a button — click it to focus the
         // actor inspector on him
-        fireEvent.click(screen.getByText('Ael — castaway · well'));
+        fireEvent.click(screen.getByText('Ael — human · well'));
         expect(screen.getByTestId('actor-condition').textContent).toBe('Ael · well');
         expect(screen.getByTestId('actor-inventory').textContent).toContain('2 Berries');
     });
 
-    it('the canvas area tabs between Data, ASCII and Unicode representations', () => {
+    it('the canvas area tabs between Data, ASCII, Unicode and SVG representations', () => {
         render(<App seed={7} />);
         // ASCII is the default tab
         expect(screen.getByTestId('canvas-tab-ascii')).toBeDefined();
         expect(screen.getByTestId('world-grid')).toBeDefined();
         expect(screen.queryByTestId('world-grid-unicode')).toBeNull();
+        expect(screen.queryByTestId('world-grid-svg')).toBeNull();
         expect(screen.queryByTestId('data-tables')).toBeNull();
 
         // ── Unicode tab — the emoji twin ──────────────────────────────────
@@ -279,12 +280,37 @@ describe('App', () => {
         // the center (0,0) — tile 462
         const uni = screen.getByTestId('world-grid-unicode');
         expect((uni.children[462] as HTMLElement).textContent).toBe('🐦²');
-        // Ael as the castaway emoji at his shore spot (17,−11) — tile 72
+        // Ael as the human emoji at his shore spot (17,−11) — tile 72
         expect((uni.children[72] as HTMLElement).textContent).toBe('🧍');
-        // Empty sea tile draws the terrain emoji (top-left corner shallows)
-        expect((uni.children[0] as HTMLElement).textContent).toBe('🐚');
+        // Empty tiles stay BARE — no per-tile terrain emoji flood
+        // (top-left corner shallows, tile 0: background color only)
+        expect((uni.children[0] as HTMLElement).textContent).toBe('');
         // Clicks still inspect: Ael's emoji tile opens the actor inspector
         fireEvent.click(screen.getByTestId('unicode-tile-17--11'));
+        expect(screen.getByTestId('actor-condition').textContent).toBe('Ael · well');
+
+        // ── SVG tab — the vector twin ─────────────────────────────────────
+        fireEvent.click(screen.getByTestId('canvas-tab-svg'));
+        const board = screen.getByTestId('world-grid-svg') as SVGSVGElement;
+        // The viewBox spans 37×26 × 25×26 user units — the SAME 26px tile
+        // occupation the ascii/unicode boards draw
+        expect(board.getAttribute('viewBox')).toBe('0 0 962 650');
+        // One tile group per island cell (37×25 = 925)
+        const tiles = board.querySelectorAll('g');
+        expect(tiles.length).toBe(925);
+        // Ael renders as the human emoji text at his shore tile (index 72)
+        expect(tiles[72].querySelector('text')?.textContent).toBe('🧍');
+        // Kiki wheels at the center — her glyph carries the altitude superscript
+        expect(tiles[462].querySelector('text')?.textContent).toBe('🐦²');
+        // Empty sea tiles draw NO text — terrain shows through the rect fill
+        // alone (the flood fix); the fill is the exact biome palette color
+        // (top-left corner: the shallows of tile (-18, −12))
+        expect(tiles[0].querySelector('text')).toBeNull();
+        expect(tiles[0].querySelector('rect')?.getAttribute('fill')).toBe('#265d7d');
+        // Native SVG hover notes ride every tile group
+        expect(tiles[0].querySelector('title')?.textContent).toContain('shallows');
+        // Clicks still inspect: Ael's SVG tile opens the actor inspector
+        fireEvent.click(screen.getByTestId('svg-tile-17--11'));
         expect(screen.getByTestId('actor-condition').textContent).toBe('Ael · well');
 
         // ── Data tab — the plain-tables view ──────────────────────────────
@@ -306,6 +332,38 @@ describe('App', () => {
         fireEvent.click(screen.getByTestId('canvas-tab-ascii'));
         expect(screen.getByTestId('world-grid').children.length).toBe(925);
         expect((screen.getByTestId('world-grid').children[72] as HTMLElement).textContent).toBe('A');
+    });
+
+    it('every tile canvas occupies the SAME tile grid as the ascii canvas', () => {
+        // The layout-parity contract: the unicode tab once painted 30px
+        // emoji tiles and blew this panel wide. Every tile tab now derives
+        // its grid rule from the ascii canvas' 26px tile.
+        render(<App seed={7} />);
+        const css = () =>
+            Array.from(document.querySelectorAll('style'))
+                .map((tag) => tag.textContent ?? '')
+                .join('');
+        // Extracts the emotion grid rule belonging to one mounted board
+        // (whitespace stripped — stylis keeps the space inside
+        // `repeat(37, 26px)` and only minifies around separators)
+        const gridRule = (className: string): string =>
+            (css().match(
+                new RegExp(`\\.${className}[^{]*\\{[^}]*grid-template-columns:[^;}]*`),
+            )?.[0] ?? '').replace(/\s+/g, '');
+        // Capture each board's class while ITS tab is mounted (one canvas at
+        // a time renders, but emotion rules persist across tab switches)
+        const asciiClass = (screen.getByTestId('world-grid') as HTMLElement).className;
+        fireEvent.click(screen.getByTestId('canvas-tab-unicode'));
+        const unicodeClass = (screen.getByTestId('world-grid-unicode') as HTMLElement).className;
+        // Both grids repeat the SAME 26px columns for the 37-wide island
+        expect(gridRule(asciiClass)).toContain('grid-template-columns:repeat(37,26px)');
+        expect(gridRule(unicodeClass)).toContain('grid-template-columns:repeat(37,26px)');
+        // The SVG tab carries its geometry in the viewBox instead — same
+        // 26px tile edge, no CSS grid to overflow
+        fireEvent.click(screen.getByTestId('canvas-tab-svg'));
+        expect(
+            (screen.getByTestId('world-grid-svg') as SVGSVGElement).getAttribute('viewBox'),
+        ).toBe('0 0 962 650');
     });
 
     it('the World Size controls reshape the island in place', () => {

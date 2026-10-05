@@ -18,8 +18,8 @@ describe('relationshipPlugin', () => {
     it('relation is symmetric regardless of argument order', () => {
         const relationship = relationshipPlugin();
         const world = createWorld({ seed: 1, plugins: [relationship] });
-        world.spawn({ id: 'b', name: 'Bram', position: position3(0, 0), marker: 'B', condition: 'well' });
-        world.spawn({ id: 'a', name: 'Ael', position: position3(1, 0), marker: 'A', condition: 'well' });
+        world.spawn({ id: 'b', name: 'Bram', kind: 'sentient', type: 'human', position: position3(0, 0), marker: 'B', condition: 'well' });
+        world.spawn({ id: 'a', name: 'Ael', kind: 'sentient', type: 'human', position: position3(1, 0), marker: 'A', condition: 'well' });
         relationship.adjust('a', 'b', 30);
         expect(relationship.relation('b', 'a')).toBe(30);
         expect(relationship.relation('a', 'b')).toBe(30);
@@ -55,8 +55,8 @@ describe('relationshipPlugin', () => {
     it('logs notable moves with the reason', () => {
         const relationship = relationshipPlugin();
         const world = createWorld({ seed: 1, plugins: [relationship] });
-        world.spawn({ id: 'a', name: 'Ael', position: position3(0, 0), marker: 'A', condition: 'well' });
-        world.spawn({ id: 'b', name: 'Bram', position: position3(1, 0), marker: 'B', condition: 'well' });
+        world.spawn({ id: 'a', name: 'Ael', kind: 'sentient', type: 'human', position: position3(0, 0), marker: 'A', condition: 'well' });
+        world.spawn({ id: 'b', name: 'Bram', kind: 'sentient', type: 'human', position: position3(1, 0), marker: 'B', condition: 'well' });
         relationship.adjust('a', 'b', 6, 'trading');
         relationship.adjust('b', 'a', -8, 'theft');
         // Small moves stay unlogged

@@ -100,8 +100,9 @@ export const createWorld = (options: WorldOptions = {}): World => {
     const actors = new Map<string, Actor>();
 
     // The 3D spatial record — the single position registry of the world.
-    // Castaways are placed here at spawn (kind 'castaway', ground plane),
-    // birds and any other entity a plugin releases join the same space.
+    // Castaways are placed here at spawn (kind 'sentient', type 'human',
+    // ground plane), birds and any other entity a plugin releases join the
+    // same space with their own kind/type pair.
     const coordinates = createCoordinateSystem();
 
     const ticker = createTicker({ tickSize: options.tickSize, speed: options.ticker?.speed });
@@ -138,12 +139,14 @@ export const createWorld = (options: WorldOptions = {}): World => {
         running: () => ticker.running(),
         spawn: (actor) => {
             actors.set(actor.id, actor);
-            // The coordinate record carries the display facet the ascii
-            // canvas reads — kind, name, marker and the live condition
+            // The coordinate record carries the display facet the canvases
+            // read — the kind/type taxonomy, name, marker and the live
+            // condition
             coordinates.place({
                 id: actor.id,
                 position: actor.position,
-                kind: 'castaway',
+                kind: actor.kind,
+                type: actor.type,
                 name: actor.name,
                 marker: actor.marker,
                 state: actor.condition,

@@ -46,21 +46,22 @@ describe('settleAfterResize', () => {
         // 'a' — out of bounds AND its clamp lands on water: (3,1) → clamp
         // (2,1), which is sea → nearest dry cell is (0,0) (Chebyshev 2 vs 3)
         world.spawn({
-            id: 'a', name: 'Ael', position: position3(3, 1), marker: 'A', condition: 'well',
+            id: 'a', name: 'Ael', kind: 'sentient', type: 'human', position: position3(3, 1), marker: 'A', condition: 'well',
         });
         // 'b' — in bounds but standing on water: (0,1) → nearest dry (0,0)
         world.spawn({
-            id: 'b', name: 'Bram', position: position3(0, 1), marker: 'B', condition: 'well',
+            id: 'b', name: 'Bram', kind: 'sentient', type: 'human', position: position3(0, 1), marker: 'B', condition: 'well',
         });
         // 'c' — dry and in bounds: untouched
         world.spawn({
-            id: 'c', name: 'Cove', position: position3(-1, -1), marker: 'C', condition: 'well',
+            id: 'c', name: 'Cove', kind: 'sentient', type: 'human', position: position3(-1, -1), marker: 'C', condition: 'well',
         });
         // A flyer out of bounds — clamped in the spatial record, z kept
         world.coordinates.place({
             id: 'bird-1',
             position: position3(5, 0, 2),
-            kind: 'bird',
+            kind: 'creature',
+            type: 'bird',
             name: 'Kiki',
             marker: 'K',
             state: 'flying',
@@ -87,12 +88,13 @@ describe('settleAfterResize', () => {
         const world = createWorld({ seed: 1 });
         world.canvas = canvas5x5([[0, 0], [1, 1]]);
         world.spawn({
-            id: 'a', name: 'Ael', position: position3(1, 1), marker: 'A', condition: 'well',
+            id: 'a', name: 'Ael', kind: 'sentient', type: 'human', position: position3(1, 1), marker: 'A', condition: 'well',
         });
         world.coordinates.place({
             id: 'bird-1',
             position: position3(0, 0, 2),
-            kind: 'bird',
+            kind: 'creature',
+            type: 'bird',
             name: 'Kiki',
             marker: 'K',
             state: 'flying',

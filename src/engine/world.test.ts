@@ -18,6 +18,9 @@ describe('createWorld', () => {
     const buildActor = (overrides: Partial<Actor> = {}): Actor => ({
         id: 'actor-1',
         name: 'Ael',
+        // The stock castaway: a sentient of the human race
+        kind: 'sentient',
+        type: 'human',
         position: position3(0, 0),
         marker: 'A',
         condition: 'well',
@@ -59,11 +62,13 @@ describe('createWorld', () => {
         const world = createWorld();
         const actor = world.spawn(buildActor({ position: position3(3, 2) }));
         expect(world.actors.get('actor-1')).toBe(actor);
-        // The coordinate record carries the full display facet
+        // The coordinate record carries the full display facet — the
+        // kind/type taxonomy rides along with name, marker and state
         expect(world.coordinates.entryOf('actor-1')).toEqual({
             id: 'actor-1',
             position: { x: 3, y: 2, z: 0 },
-            kind: 'castaway',
+            kind: 'sentient',
+            type: 'human',
             name: 'Ael',
             marker: 'A',
             state: 'well',
