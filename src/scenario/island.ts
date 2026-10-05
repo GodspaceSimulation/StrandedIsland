@@ -2,8 +2,9 @@
 //
 // This is the composition root of the god simulator: choose a seed, a tick
 // size, how many actors wash ashore, and which environment plugins to mount.
-// Every plugin is optional — drop `behavior` and the actors stand still;
-// drop `inventory` and there is nothing to gather, eat or trade.
+// Every plugin is optional — drop `tasks` and the behavior plugin cannot
+// mount at all (the agents plan through the ledger), so the actors stand
+// still; drop `inventory` and there is nothing to gather, eat or trade.
 //
 // Two plugins come from the @godspace workspace packages (imported as
 // dependencies, not source):
@@ -44,7 +45,14 @@ import { ITEM_TYPE_GLYPHS } from '../plugins/inventory/items';
 import { needsPlugin, type NeedsPlugin, type NeedsPluginOptions } from '../plugins/needs/needsPlugin';
 import { relationshipPlugin, type RelationshipPlugin } from '../plugins/relationship/relationshipPlugin';
 import { behaviorPlugin } from '../plugins/behavior/behaviorPlugin';
-import { birdsPlugin, type BirdsPlugin } from '../plugins/birds/birdsPlugin';
+import { tasksPlugin, type TasksPlugin } from '../plugins/tasks/tasksPlugin';
+import { sleepPlugin, type SleepPlugin } from '../plugins/sleep/sleepPlugin';
+import {
+    birdsPlugin,
+    BIRD_ALTITUDE_STATES,
+    type BirdsPlugin,
+} from '../plugins/birds/birdsPlugin';
+import { sharksPlugin, SHARK_TYPE_GLYPH, type SharksPlugin } from '../plugins/sharks/sharksPlugin';
 import type { Actor, TileResources } from '../engine/types';
 
 export type IslandOptions = {
@@ -62,8 +70,14 @@ export type IslandOptions = {
         inventory?: boolean;
         needs?: boolean;
         relationship?: boolean;
+        /** The task ledger the agents plan through. Default on. */
+        tasks?: boolean;
         behavior?: boolean;
+        /** Timed sleep as a ledger behaviour (shadows the rest fallback). Default on. */
+        sleep?: boolean;
         birds?: boolean;
+        /** The sharks — water creatures swimming in past the edge. Default on. */
+        sharks?: boolean;
         /** The @godspace/canvas ASCII representation plugin. Default on. */
         ascii?: boolean;
         /** The @godspace/canvas unicode (emoji) representation. Default on. */
@@ -81,8 +95,18 @@ export type IslandHandle = {
     inventory: InventoryPlugin;
     needs: NeedsPlugin;
     relationship: RelationshipPlugin;
+    /**
+     * The task ledger plugin — behaviours register here and actors work
+     * timed tasks (plugins/tasks/taskLedger.ts). Present on the handle even
+     * when unmounted, matching how the handle exposes every plugin instance.
+     */
+    tasks: TasksPlugin;
+    /** The sleep behaviour plugin — priority-30 timed sleep. */
+    sleep: SleepPlugin;
     /** Seabirds — the Z-axis travelers of the world. */
     birds: BirdsPlugin;
+    /** Sharks — the water creatures that come in past the world edge. */
+    sharks: SharksPlugin;
     /**
      * The view-scale ladder (@godspace/core src/scale) — anchored so scale 0
      * IS the island view (this engine's maximum view) and the ladder
@@ -124,6 +148,15 @@ const SCALE_MINUTES = 10;
 /** World minutes one step covers at the given view scale. */
 export const minutesPerScaleStep = (scale: number): number => SCALE_MINUTES * Math.pow(10, -scale);
 
+/**
+ * ONE TILE takes 10 world minutes at scale 0 — the scale-0 step time
+ * (minutesPerScaleStep(0)): a castaway that plans a move is busy exactly one
+ * scale-0 step, and the move's effect lands on the completing step. The
+ * travel cost is defined by THIS engine, not by @godspace/* — the task
+ * ledger only counts the minutes down (plugins/tasks/taskLedger.ts).
+ */
+export const TRAVEL_MINUTES_PER_TILE = 10;
+
 export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => {
     // Plugin toggles default to all-on
     const toggles = {
@@ -131,8 +164,11 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         inventory: true,
         needs: true,
         relationship: true,
+        tasks: true,
         behavior: true,
+        sleep: true,
         birds: true,
+        sharks: true,
         ascii: true,
         unicode: true,
         svg: true,
@@ -143,21 +179,31 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     // Build the environment modules. Behavior receives the plugin instances
     // it coordinates with — this wiring is the whole point of the plugin
     // architecture: swap any piece by removing it from the list below.
-    // Behavior coordinates with inventory + needs + relationship, so it only
-    // mounts when all three do.
+    // Behavior coordinates with tasks + inventory + needs + relationship, so
+    // it only mounts when all four do. The tasks plugin is the ledger the
+    // agents plan through (plugins/tasks/taskLedger.ts); the sleep plugin
+    // registers its timed-sleep behaviour into it and needs only tasks + needs.
     const terrain = islandTerrainPlugin(options.terrain ?? {});
     const inventory = inventoryPlugin();
     const needs = needsPlugin(options.needs ?? {});
     const relationship = relationshipPlugin();
-    const behavior = behaviorPlugin({ inventory, needs, relationship });
+    const tasks = tasksPlugin();
+    const sleep = sleepPlugin({ needs, tasks });
+    const behavior = behaviorPlugin({
+        inventory,
+        needs,
+        relationship,
+        tasks,
+        travelMinutesPerTile: TRAVEL_MINUTES_PER_TILE,
+    });
 
     // The view-scale ladder — godspace/core owns the scale concept (which
     // depth reads as scale 0, the adjustable anchor); THIS engine anchors
     // scale 0 at its island view and reaches as deep as the terrain plugin
     // generates sub-grids (features/tileDetails.ts scaleView resolves them).
     // The default terrain produces one subtile level: scale 0 (the island,
-    // every tile of it) and scale 1 (each tile's interior sub-grid — same
-    // dimensions, 925×925 = 855,625 tiles on the default island). Bounded
+    //     every tile of it) and scale 1 (each tile's interior sub-grid — same
+    //     dimensions, 425×425 = 180,625 tiles on the default island). Bounded
     // below at 0 — there is no wider view above the island to zoom out to.
     // The core system is wrapped further down (after the world exists) so
     // every scale move can re-time the step clock.
@@ -190,26 +236,32 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         // Tiles appear as the resources they carry (see surfaceOfCell above)
         surfaceOf: surfaceOfCell,
         titleOf: titleOfCell,
+        // The birds' altitude fade bands — flying-N states draw with their
+        // hex-alpha tint (plugins/birds/birdsPlugin.ts BIRD_ALTITUDE_STATES)
+        states: BIRD_ALTITUDE_STATES,
     });
     const birds = birdsPlugin();
+    const sharks = sharksPlugin();
     // The unicode sibling binds the SAME structural slice as the ascii canvas
     // (same surfaceOf/titleOf adapters) — an emoji-skinned twin of the god view.
     // The type palette extends with ITEM_TYPE_GLYPHS so ground-item entries
     // (typed with the item id, see features/tileDetails scaleView) draw their
-    // emoji in every zoomed view
+    // emoji in every zoomed view, plus SHARK_TYPE_GLYPH for the sharks
     const unicode = unicodeCanvasPlugin({
         surfaceOf: surfaceOfCell,
         titleOf: titleOfCell,
-        types: ITEM_TYPE_GLYPHS,
+        types: { ...ITEM_TYPE_GLYPHS, ...SHARK_TYPE_GLYPH },
+        states: BIRD_ALTITUDE_STATES,
     });
     // The svg sibling draws the same world as a scalable vector document —
-    // same adapters, glyphs from the unicode ladder (with the item emoji),
-    // geometry on the shared 26px tile grid (no layout breakage between
-    // canvas tabs)
+    // same adapters, glyphs from the unicode ladder (with the item emoji and
+    // the shark fin), geometry on the shared 26px tile grid (no layout
+    // breakage between canvas tabs)
     const svg = svgCanvasPlugin({
         surfaceOf: surfaceOfCell,
         titleOf: titleOfCell,
-        types: ITEM_TYPE_GLYPHS,
+        types: { ...ITEM_TYPE_GLYPHS, ...SHARK_TYPE_GLYPH },
+        states: BIRD_ALTITUDE_STATES,
     });
     // The data sibling renders plain tables instead of tiles: every entity's
     // coordinates + the terrain census (also resource-keyed)
@@ -222,10 +274,21 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         ...(toggles.inventory ? [inventory] : []),
         ...(toggles.needs ? [needs] : []),
         ...(toggles.relationship ? [relationship] : []),
-        ...(toggles.behavior && toggles.inventory && toggles.needs && toggles.relationship
+        // The ledger advances BEFORE the behavior tick — a completed task's
+        // effect (tasks.ledger.onComplete, see behaviorPlugin setup) lands on
+        // the completing minute, then the idle actor re-plans the same minute
+        ...(toggles.tasks ? [tasks] : []),
+        ...(toggles.behavior && toggles.tasks && toggles.inventory && toggles.needs && toggles.relationship
             ? [behavior]
             : []),
+        // Sleep registers its behaviour into the tasks ledger at setup and
+        // restores energy AFTER the behavior tick (sleeping actors restore
+        // while their task counts down)
+        ...(toggles.sleep && toggles.tasks && toggles.needs ? [sleep] : []),
         ...(toggles.birds ? [birds] : []),
+        // Sharks mount after the birds — the sea creatures tick behind the
+        // air ones (fixed plugin order, scenario roster tests pin it)
+        ...(toggles.sharks ? [sharks] : []),
         ...(toggles.ascii ? [ascii] : []),
         ...(toggles.unicode ? [unicode] : []),
         ...(toggles.svg ? [svg] : []),
@@ -319,5 +382,5 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         birds.release();
     }
 
-    return { world, terrain, inventory, needs, relationship, birds, scale, ascii, unicode, svg, data };
+    return { world, terrain, inventory, needs, relationship, tasks, sleep, birds, sharks, scale, ascii, unicode, svg, data };
 };

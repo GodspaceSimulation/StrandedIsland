@@ -39,8 +39,14 @@
 // tiles, which blew this panel wide; all tile tabs now share the ascii size
 // so switching representations never breaks the layout.
 //
-// Every glyph carries its Z altitude as a superscript (K² = 2 voxels up —
-// the shared glyphText helper). Hovering a tile shows the voxel column plus
+// NO Z-INDEX ON CHARACTERS — the altitude superscript is gone from the
+// glyphs (K² → K): altitude is communicated by the FADE BANDS instead
+// (birds color-fade with altitude, plugins/birds/birdsPlugin.ts
+// BIRD_ALTITUDE_STATES) and by the hover titles, which still read the exact
+// state + z. The elevation field stays in the frame data (inspectors read
+// it); only the drawn glyph dropped it.
+//
+// Hovering a tile shows the voxel column plus
 // every entity standing in that column. Clicking ANY tile inspects that
 // tile AT THE CURRENT SCALE (the selection extends the view path); when the
 // tile holds a castaway, the god's actor inspector opens for them too
@@ -49,7 +55,6 @@
 
 import { useStateHook } from '@presource/react';
 import {
-    glyphText,
     type AsciiFrame,
     type SvgFrame,
     type UnicodeFrame,
@@ -471,7 +476,7 @@ const AsciiView = ({
                     >
                         {glyph ? (
                             <Marker color={glyph.color}>
-                                {glyphText(glyph.glyph, glyph.elevation)}
+                                {glyph.glyph}
                             </Marker>
                         ) : null}
                     </Cell>
@@ -537,7 +542,7 @@ const UnicodeView = ({
                     >
                         {glyph ? (
                             <Marker color={glyph.color}>
-                                {glyphText(glyph.glyph, glyph.elevation)}
+                                {glyph.glyph}
                             </Marker>
                         ) : null}
                     </Cell>
@@ -662,7 +667,7 @@ const SvgView = ({
                                 y={row * frame.size + frame.size / 2}
                                 fill={glyph.color}
                             >
-                                {glyphText(glyph.glyph, glyph.elevation)}
+                                {glyph.glyph}
                             </SvgGlyph>
                         ) : null}
                     </g>

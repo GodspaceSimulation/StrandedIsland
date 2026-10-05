@@ -7,10 +7,11 @@
 // canvas edge is always open sea — the island never touches the border.
 //
 // Every column also carries RESOURCE DEPOSITS (TileResources): wood ×2 on
-// forests, stone ×1 on highlands, iron lodes where the vein noise exceeds
-// IRON_LODE_THRESHOLD, and the UNLIMITED sand ×1 / dirt ×1 on beaches and
-// meadows. Deposits drive the canvas surface (tileSurfaceKey) and seed the
-// inventory plugin's cell stocks.
+// forests (which grow where the moisture noise exceeds
+// FOREST_MOISTURE_THRESHOLD), stone ×1 on highlands, iron lodes where the
+// vein noise exceeds IRON_LODE_THRESHOLD, and the UNLIMITED sand ×1 /
+// dirt ×1 on beaches and meadows. Deposits drive the canvas surface
+// (tileSurfaceKey) and seed the inventory plugin's cell stocks.
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -20,6 +21,7 @@ import {
     tileDepositSummary,
     tileSurfaceKey,
     IRON_LODE_THRESHOLD,
+    FOREST_MOISTURE_THRESHOLD,
 } from './islandTerrain';
 import { createWorld } from '../../engine/world';
 
@@ -52,74 +54,72 @@ describe('generateIsland', () => {
         expect(island.stats).toEqual({ land: 13, water: 22, forest: 3, iron: 0 });
     });
 
-    it('produces the exact biome map for seed 7 at default size (37×25)', () => {
+    it('produces the exact biome map for seed 7 at default size (25×17)', () => {
         const island = generateIsland({ seed: 7 });
-        expect(island.width).toBe(37);
-        expect(island.height).toBe(25);
+        expect(island.width).toBe(25);
+        expect(island.height).toBe(17);
+        // The map is grown at this moisture cutoff — lowering it regrows the
+        // woods (the old inline 0.6 kept the meadows at 52 forests here)
+        expect(FOREST_MOISTURE_THRESHOLD).toBe(0.5);
         // Two-letter biome codes per cell, row-major
         const map = Array.from({ length: island.height }, (_, row) =>
             Array.from({ length: island.width }, (_, col) => island.cells[row * island.width + col].biome.slice(0, 2)).join(''),
         );
         expect(map).toEqual([
-            "shshshshshshococococococococococococshshshshshshshshshshshshshococococococ",
-            "shocococococshbebebebebebebebebebebeshbebebebebebeshshshshshshbeshbebebeoc",
-            "shocshshshshbebeshbebeshshbebebebebebebebebebebebebebeshshshshbebebebebesh",
-            "shocshbebebebeshshbebeshshbebebebebebebebebebebebebebebebeshshbebebebeshsh",
-            "shocshbebebebebebebebebebebebebebebebebebebebebebebebebebebeshbebebeshshsh",
-            "shocshbebebebebebebebebebebebebebebebebebebebebebebebebebebebebebebeshshsh",
-            "shococshbebebebebebebebebebebefofofomefofofofobebebebebefobebebebebeshshsh",
-            "shococshshbebebebebebebebebememememefofofofofobebebefofofofobebebebebebeoc",
-            "shococshshbebebebebemefobefomemememefofomemefofobebememememebebebebebebeoc",
-            "shshshshbebebebebebemefofofomemememefofomememefobebemememememebebebebebeoc",
-            "ocshshbebebebebemememefofomememebemefofomememefobebebemebemebebebebebebesh",
-            "ocbebebebebememefofofomememememememememefofomememememebebebebebebeshshshsh",
-            "ocbemebebebememefofofohihimememememememefofomememememebebebebebeshshshocsh",
-            "ocbebebebebememefofofohihihimemememememefofomememememefobebebebebeshshshsh",
-            "ocbebebebebebemememememehihimememefofofofomemememememememebebebebebeshshsh",
-            "shshbebebebebebememememehihimefofofofofomememefofofobebebebebebebebeshshsh",
-            "shshbebeshbebebememememememememefofofofofofofofofobebebebebebebebeshshocsh",
-            "shshshshshbebebebebemememememememefofofofofofofofobebebebebebebeshshococsh",
-            "shocshshshbebebebebemememememememefobefofofofofomefobebebebebebeshshococsh",
-            "shocococshshshbebebebebebebebebebebebebefofofofomemebebebebebebebebeshshoc",
-            "shshococococshbebebebebebebebebebebebebebebebemememebebebebebebebebebebeoc",
-            "shocococococshbebebebebebebebebebebebebebebebebebebebebebebebebebebebebeoc",
-            "shocshococshshbebebebebebebebebebebebebemebebebebebebebebebebebebebebebeoc",
-            "shocshshshshbebebebebebebebebebebebebebebebebebeshbebebebebebebebebebebeoc",
-            "shshshshocococococococococococococococococococococococococococococococococ",
+            "shshshshshshococococococococococococshshshshshshsh",
+            "shocshococshshbebebebebebebebebebebebeshshshshshsh",
+            "shshshshshbebebebebebebebebebefobebebebeshshbeshsh",
+            "shshshbebebebebebebebebebebefofofofobebebeshshshsh",
+            "ocshshbebebebebebebebebebemefofofofofobebebeshshsh",
+            "ocshbebebebebebememememememefofofofofofobebebeshsh",
+            "shshbebebebebebemefofomememefofofofofofofobebeshsh",
+            "shshbebebebemememefomehihimefofofofofofofofobeshsh",
+            "shbebebebefofofobemehihihihifofobebefofofofobebesh",
+            "shbebebebefofofofomemehihihifofofofomemefobebebesh",
+            "shshbebebebefofomemememememefofofofofofofobebeshsh",
+            "shocshbebebebememememememememebebebefofofobebeshsh",
+            "shococshbebebebebebebemefomebebebebefofofobeshshoc",
+            "shocshshshbebebebebemefofofobebebebebebebebeshshsh",
+            "shshbebeshbebebebebefofofofobebebebebeshshshshshsh",
+            "ocshbebebebebebebebebebebebebebebebeshocococococsh",
+            "ococococococococococococococococococshshshshshshsh",
         ]);
-        expect(island.stats).toEqual({ land: 675, water: 250, forest: 90, iron: 3 });
+        expect(island.stats).toEqual({ land: 282, water: 143, forest: 75, iron: 0 });
     });
 
     it('carries resource deposits: wood on forests, sand/dirt unlimited, bare sea', () => {
         const island = generateIsland({ seed: 7 });
-        // Forest (−3,−6): timber — a finite deposit of 2
-        expect(island.cells.find((cell) => cell.x === -3 && cell.y === -6)?.resources).toEqual({ wood: 2 });
-        // Beach (−10,−11): unlimited sand — a symbolic count the inventory
+        // Forest (3,−6): timber — a finite deposit of 2
+        expect(island.cells.find((cell) => cell.x === 3 && cell.y === -6)?.resources).toEqual({ wood: 2 });
+        // Beach (−4,−7): unlimited sand — a symbolic count the inventory
         // never depletes (UNLIMITED_TILE_RESOURCES)
-        expect(island.cells.find((cell) => cell.x === -10 && cell.y === -11)?.resources).toEqual({ sand: 1 });
-        // Meadow (0,−6): unlimited dirt
-        expect(island.cells.find((cell) => cell.x === 0 && cell.y === -6)?.resources).toEqual({ dirt: 1 });
-        // Sea (−18,−12): no deposits — the sea stocks fish, not tile resources
-        expect(island.cells.find((cell) => cell.x === -18 && cell.y === -12)?.resources).toEqual({});
+        expect(island.cells.find((cell) => cell.x === -4 && cell.y === -7)?.resources).toEqual({ sand: 1 });
+        // Meadow (1,−4): unlimited dirt
+        expect(island.cells.find((cell) => cell.x === 1 && cell.y === -4)?.resources).toEqual({ dirt: 1 });
+        // Sea (−12,−8): no deposits — the sea stocks fish, not tile resources
+        expect(island.cells.find((cell) => cell.x === -12 && cell.y === -8)?.resources).toEqual({});
     });
 
     it('hides iron lodes in the stone highlands (vein noise, seed 7)', () => {
-        const island = generateIsland({ seed: 7 });
-        // Reference run: exactly 3 of the 9 highland cells lode at
-        // IRON_LODE_THRESHOLD = 0.5 (vein samples 0.0756 … 0.5158)
+        // The 37×25 reference board: exactly 3 of the 9 highland cells lode
+        // at IRON_LODE_THRESHOLD = 0.5 (vein samples 0.0756 … 0.5158)
+        const reference = generateIsland({ seed: 7, width: 37, height: 25 });
         expect(IRON_LODE_THRESHOLD).toBe(0.5);
-        expect(island.stats.iron).toBe(3);
-        const lodes = island.cells
+        expect(reference.stats.iron).toBe(3);
+        const lodes = reference.cells
             .filter((cell) => (cell.resources.iron ?? 0) > 0)
             .map((cell) => `${cell.x},${cell.y}`);
         expect(lodes).toEqual(['-7,1', '-5,2', '-5,3']);
         // A lode carries stone AND iron — the ore sits in the rock
-        expect(island.cells.find((cell) => cell.x === -5 && cell.y === 3)?.resources).toEqual({
+        expect(reference.cells.find((cell) => cell.x === -5 && cell.y === 3)?.resources).toEqual({
             stone: 1,
             iron: 1,
         });
         // …while the plain highland next door keeps only its stone
-        expect(island.cells.find((cell) => cell.x === -7 && cell.y === 0)?.resources).toEqual({ stone: 1 });
+        expect(reference.cells.find((cell) => cell.x === -7 && cell.y === 0)?.resources).toEqual({ stone: 1 });
+        // The smaller 25×17 default island keeps every vein sample below the
+        // threshold (0.1552 … 0.4076) — its iron census reads 0
+        expect(generateIsland({ seed: 7 }).stats.iron).toBe(0);
     });
 
     it('derives the canvas surface from the tile deposits (tileSurfaceKey)', () => {
@@ -134,10 +134,12 @@ describe('generateIsland', () => {
         ]);
         // Deposit priority puts the rarest resource first: a stone tile with
         // an iron lode surfaces as iron (37×25 reference cell (−5,3))
-        const full = generateIsland({ seed: 7 });
-        expect(tileSurfaceKey(full.cells.find((cell) => cell.x === -5 && cell.y === 3)!)).toBe('iron');
-        // A deposit-less tile falls back to its plain biome (sea columns)
-        expect(tileSurfaceKey(full.cells.find((cell) => cell.x === -18 && cell.y === -12)!)).toBe('shallows');
+        const reference = generateIsland({ seed: 7, width: 37, height: 25 });
+        expect(tileSurfaceKey(reference.cells.find((cell) => cell.x === -5 && cell.y === 3)!)).toBe('iron');
+        // A deposit-less tile falls back to its plain biome (sea columns —
+        // the default island's edge cell)
+        const current = generateIsland({ seed: 7 });
+        expect(tileSurfaceKey(current.cells.find((cell) => cell.x === -12 && cell.y === -8)!)).toBe('shallows');
         // Gathered-away deposits fall back too — the cell shape only needs
         // biome + resources
         expect(tileSurfaceKey({ biome: 'forest', resources: {} })).toBe('forest');
@@ -158,26 +160,26 @@ describe('generateIsland', () => {
         const island = generateIsland({ seed: 7 });
         const xs = island.cells.map((cell) => cell.x);
         const ys = island.cells.map((cell) => cell.y);
-        expect(Math.min(...xs)).toBe(-18);
-        expect(Math.max(...xs)).toBe(18);
-        expect(Math.min(...ys)).toBe(-12);
-        expect(Math.max(...ys)).toBe(12);
+        expect(Math.min(...xs)).toBe(-12);
+        expect(Math.max(...xs)).toBe(12);
+        expect(Math.min(...ys)).toBe(-8);
+        expect(Math.max(...ys)).toBe(8);
         // The middle cell exists and is exactly (0, 0)
-        expect(island.cells[12 * 37 + 18]).toMatchObject({ x: 0, y: 0 });
+        expect(island.cells[8 * 25 + 12]).toMatchObject({ x: 0, y: 0 });
     });
 
     it('the canvas edge is always open sea — the island never touches the border', () => {
         const island = generateIsland({ seed: 7 });
         // Every outermost-ring cell is submerged water
         const edge = island.cells.filter(
-            (cell) => Math.abs(cell.x) === 18 || Math.abs(cell.y) === 12,
+            (cell) => Math.abs(cell.x) === 12 || Math.abs(cell.y) === 8,
         );
-        expect(edge.length).toBe(2 * 37 + 2 * 23);
+        expect(edge.length).toBe(2 * 25 + 2 * 15);
         expect(edge.every((cell) => !cell.passable)).toBe(true);
         expect(edge.every((cell) => cell.voxels[cell.voxels.length - 1] === 'water')).toBe(true);
         // Reference mix of shallows and ocean on the rim (coarse noise depth)
-        expect(edge.filter((cell) => cell.biome === 'ocean').length).toBe(65);
-        expect(edge.filter((cell) => cell.biome === 'shallows').length).toBe(55);
+        expect(edge.filter((cell) => cell.biome === 'ocean').length).toBe(34);
+        expect(edge.filter((cell) => cell.biome === 'shallows').length).toBe(46);
     });
 
     it('builds voxel columns bottom → top with soil under the surface', () => {
@@ -279,7 +281,7 @@ describe('islandTerrainPlugin', () => {
         expect(world.canvas.height).toBe(13);
         expect(world.canvas.cells.length).toBe(273);
         expect(plugin.size()).toEqual({ width: 21, height: 13 });
-        expect(plugin.stats()).toEqual({ land: 162, water: 111, forest: 36, iron: 0 });
+        expect(plugin.stats()).toEqual({ land: 162, water: 111, forest: 44, iron: 0 });
         // The redraw is announced on the world log
         expect(world.events.log()[events]).toEqual({
             id: events + 1,
@@ -301,7 +303,7 @@ describe('islandTerrainPlugin', () => {
         const plugin = islandTerrainPlugin({ width: 7, height: 5 });
         const small = createWorld({ seed: 7, plugins: [islandTerrainPlugin({ width: 7, height: 5 })] });
         // The reference 7×5 center column, regenerated at default size
-        plugin.resize(37, 25);
+        plugin.resize(25, 17);
         expect(small.cellAt(0, 0)?.biome).toBe('forest');
         expect(small.cellAt(0, 0)?.height).toBe(5);
     });
@@ -332,10 +334,10 @@ describe('islandTerrainPlugin', () => {
         createWorld({ seed: 7, plugins: [plugin] });
         expect(plugin.depth()).toBe(1);
         // Scale 0 is the root grid itself; scale 1 multiplies it by itself —
-        // a 20×20 world would hold 400 root tiles and 400×400 = 160,000
+        // a 25×17 world would hold 425 root tiles and 425×425 = 180,625
         // scale-1 tiles (the sub-grid dims equal the root dims)
-        expect(plugin.tilesAt(0)).toBe(37 * 25);
-        expect(plugin.tilesAt(1)).toBe(37 * 25 * 37 * 25);
+        expect(plugin.tilesAt(0)).toBe(25 * 17);
+        expect(plugin.tilesAt(1)).toBe(25 * 17 * 25 * 17);
         const tiny = islandTerrainPlugin({ width: 5, height: 5, subtiles: 2 });
         createWorld({ seed: 7, plugins: [tiny] });
         expect(tiny.depth()).toBe(2);

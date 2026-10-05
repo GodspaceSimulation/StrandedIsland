@@ -41,6 +41,13 @@ const Dot = styled<{ color: string }>('span', {
     flexShrink: 0,
 });
 
+/** The actor's current task label — a small dim tag next to the name. */
+const TaskTag = styled('span', {
+    fontSize: 11,
+    color: PALETTE.textDim,
+    whiteSpace: 'nowrap',
+});
+
 /** The micro stat strip — three bars, smallest space that still reads. */
 const StatStrip = styled('span', {
     display: 'flex',
@@ -84,7 +91,7 @@ export const ActorList = () => {
     }
     void revision;
 
-    const { world, needs } = island;
+    const { world, needs, tasks } = island;
     const actors = Array.from(world.actors.values());
 
     return (
@@ -96,6 +103,9 @@ export const ActorList = () => {
                 ) : (
                     actors.map((actor) => {
                         const state = needsDisplay(needs.of(actor.id));
+                        // The actor's in-progress task (plugins/tasks/taskLedger.ts)
+                        // — shown only when the tasks plugin is mounted
+                        const task = world.plugins.has('tasks') ? tasks.taskOf(actor.id) : undefined;
                         return (
                             <Chip
                                 key={actor.id}
@@ -106,6 +116,11 @@ export const ActorList = () => {
                                 <NameRow>
                                     <Dot color={CONDITION_COLORS[actor.condition]} />
                                     {actor.marker} {actor.name}
+                                    {task && (
+                                        <TaskTag data-testid={`actor-task-${actor.id}`}>
+                                            · {task.label}
+                                        </TaskTag>
+                                    )}
                                 </NameRow>
                                 <StatStrip data-testid={`actor-stats-${actor.name}`}>
                                     <MicroBar

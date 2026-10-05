@@ -4,15 +4,27 @@
 //
 // One-minute steps keep the reference paths short — one step is one
 // world-minute of flight, one decision per step.
+//
+// The altitude ladder (plugins/birds/birdsPlugin.ts): z 0 perched, z 1 the
+// legacy full-color 'flying', z 2..7 the fading 'flying-N' bands, z 8+
+// (ALTITUDE_FADE_LIMIT) fully invisible — the bird LEAVES the coordinate
+// space while its flock record survives 'aloft', and climbing to z ≥ 10
+// (ALTITUDE_CEILING — the nonexistent scale 2) despawns it for good. Flying
+// birds are NOT clamped to the canvas: a glide out of bounds flies past the
+// edge of the world and vanishes. Birds also ARRIVE: over the sea rim or
+// dropping from the high air, up to the flock cap.
 
 import { describe, it, expect } from 'vitest';
 import { createWorld } from '../../engine/world';
 import { islandTerrainPlugin } from '../terrain/islandTerrain';
-import { birdsPlugin } from './birdsPlugin';
+import { birdsPlugin, ALTITUDE_CEILING, ALTITUDE_FADE_LIMIT, BIRD_ALTITUDE_STATES } from './birdsPlugin';
 
-const buildStack = (options: Parameters<typeof birdsPlugin>[0] = {}) => {
+const buildStack = (
+    options: Parameters<typeof birdsPlugin>[0] = {},
+    seed = 7,
+) => {
     const birds = birdsPlugin(options);
-    const world = createWorld({ seed: 7, tickSize: 1, plugins: [islandTerrainPlugin(), birds] });
+    const world = createWorld({ seed, tickSize: 1, plugins: [islandTerrainPlugin(), birds] });
     return { world, birds };
 };
 
@@ -24,12 +36,15 @@ describe('birdsPlugin', () => {
             id: 'bird-1',
             name: 'Kiki',
             marker: 'K',
+            // The MECHANICAL state is 'flying' — the fade band is display
+            // state and lives in the coordinate facet below
             state: 'flying',
             // World coordinates are centered — the island center IS (0, 0);
             // cruise altitude z = 2
             position: { x: 0, y: 0, z: 2 },
         });
-        // The bird lives in the 3D spatial record — a creature of type bird
+        // The bird lives in the 3D spatial record — a creature of type bird,
+        // its display state the z-2 fade band ('flying-2')
         expect(world.coordinates.entryOf('bird-1')).toEqual({
             id: 'bird-1',
             position: { x: 0, y: 0, z: 2 },
@@ -37,7 +52,7 @@ describe('birdsPlugin', () => {
             type: 'bird',
             name: 'Kiki',
             marker: 'K',
-            state: 'flying',
+            state: 'flying-2',
         });
         // Not a castaway — the actor registry never sees birds
         expect(world.actors.size).toBe(0);
@@ -71,7 +86,9 @@ describe('birdsPlugin', () => {
         const { world, birds } = buildStack();
         birds.release();
         // Reference run (seed 7, per-minute chances): ten minutes of flight —
-        // all glides, the rare per-minute land/altitude rolls never fire
+        // the arrival roll fires never, the land roll never, the altitude
+        // roll ONCE (minute 9, z 2 → 3 — altitude drift is eventless) and
+        // every other minute a glide
         for (let index = 0; index < 10; index++) {
             world.step();
         }
@@ -81,19 +98,18 @@ describe('birdsPlugin', () => {
             .map((event) => event.message);
         expect(path).toEqual([
             'Kiki wheels above the island.',
-            'Kiki glides northwest.',
-            'Kiki glides north.',
+            'Kiki glides southeast.',
             'Kiki glides east.',
-            'Kiki glides north.',
-            'Kiki glides northwest.',
-            'Kiki glides south.',
-            'Kiki glides northwest.',
             'Kiki glides west.',
+            'Kiki glides northeast.',
+            'Kiki glides northwest.',
             'Kiki glides south.',
-            'Kiki glides north.',
+            'Kiki glides southeast.',
+            'Kiki glides east.',
+            'Kiki glides northeast.',
         ]);
-        // Reference end position: ten glides carried Kiki to (−3,−4,2)
-        expect(birds.birdOf('bird-1')?.position).toEqual({ x: -3, y: -4, z: 2 });
+        // Reference end position: nine glides + one altitude drift to z 3
+        expect(birds.birdOf('bird-1')?.position).toEqual({ x: 4, y: 0, z: 3 });
     });
 
     it('lands onto the ground plane (z = 0) and hops while perched', () => {
@@ -137,6 +153,206 @@ describe('birdsPlugin', () => {
         // Reference takeoff altitude (seeded draw): 1 + floor(draw × 3) = 1
         expect(bird?.position).toEqual({ x: 0, y: 0, z: 1 });
         expect(world.events.log().at(-1)?.message).toBe('Kiki takes off.');
+    });
+
+    it('the fade ladder runs z 2..7 with the documented hex-alpha bands', () => {
+        // The fade-band export — the scenario merges it into every canvas'
+        // states option so all representations fade birds the same way
+        expect(BIRD_ALTITUDE_STATES).toEqual({
+            'flying-2': '#7ec8e3bf',
+            'flying-3': '#7ec8e39f',
+            'flying-4': '#7ec8e380',
+            'flying-5': '#7ec8e360',
+            'flying-6': '#7ec8e340',
+            'flying-7': '#7ec8e320',
+        });
+        // The limits are the product owner's numbers: n = 10 (the ceiling —
+        // the nonexistent scale 2), fully invisible at n − 2
+        expect(ALTITUDE_CEILING).toBe(10);
+        expect(ALTITUDE_FADE_LIMIT).toBe(8);
+    });
+
+    it('climbing to z 8 fades the bird out of the coordinate space (aloft)', () => {
+        // Forced climb: the altitude roll fires EVERY minute and the walk
+        // never glides or lands (reference run, seed 7) — the climb bounces
+        // up and down until minute 36 reaches z 8
+        const { world, birds } = buildStack({
+            landChancePerMinute: 0,
+            altitudeChancePerMinute: 1,
+            arriveChancePerMinute: 0,
+        });
+        birds.release();
+        for (let index = 0; index < 36; index++) {
+            world.step();
+        }
+        // Minute 36: z hit 8 — the bird LEAVES the coordinate space (the
+        // memory-stack vanish at render level) while the record survives
+        const record = birds.birdOf('bird-1');
+        expect(record).toEqual({
+            id: 'bird-1',
+            name: 'Kiki',
+            marker: 'K',
+            state: 'aloft',
+            // The private last position — x/y never move without glides
+            position: { x: 0, y: 0, z: 8 },
+        });
+        expect(world.coordinates.all().some((entry) => entry.id === 'bird-1')).toBe(false);
+        expect(world.events.log().at(-1)).toEqual({
+            id: 2,
+            tick: 36,
+            time: 36,
+            kind: 'move',
+            message: 'Kiki soars out of sight.',
+            actorId: 'bird-1',
+        });
+    });
+
+    it('an aloft bird descends back into view below the fade limit', () => {
+        // Reference run (seed 11, forced altitude): the walk oscillates
+        // across the fade limit — out at 24, back at 25, out 26, back 27,
+        // out 28, silent drift 29-30, back at 31 (z 7)
+        const { world, birds } = buildStack(
+            {
+                landChancePerMinute: 0,
+                altitudeChancePerMinute: 1,
+                arriveChancePerMinute: 0,
+            },
+            11,
+        );
+        birds.release();
+        for (let index = 0; index < 31; index++) {
+            world.step();
+        }
+        expect(birds.birdOf('bird-1')).toEqual({
+            id: 'bird-1',
+            name: 'Kiki',
+            marker: 'K',
+            state: 'flying',
+            position: { x: 0, y: 0, z: 7 },
+        });
+        // Back in the coordinate space at the private position, band z 7
+        expect(world.coordinates.entryOf('bird-1')).toEqual({
+            id: 'bird-1',
+            position: { x: 0, y: 0, z: 7 },
+            kind: 'creature',
+            type: 'bird',
+            name: 'Kiki',
+            marker: 'K',
+            state: 'flying-7',
+        });
+        expect(
+            world.events
+                .log()
+                .filter((event) => event.actorId === 'bird-1')
+                .map((event) => `${event.tick}:${event.message}`),
+        ).toEqual([
+            '0:Kiki wheels above the island.',
+            '24:Kiki soars out of sight.',
+            '25:Kiki descends back into view.',
+            '26:Kiki soars out of sight.',
+            '27:Kiki descends back into view.',
+            '28:Kiki soars out of sight.',
+            '31:Kiki descends back into view.',
+        ]);
+    });
+
+    it('climbing to z 10 vanishes the bird into the nonexistent higher scale', () => {
+        // Same forced climb as the fade-out run: the aloft walk continues
+        // 8 → 9 (silent) → 10, and z ≥ ALTITUDE_CEILING despawns for good —
+        // this world has no scale 2 to fly into
+        const { world, birds } = buildStack({
+            landChancePerMinute: 0,
+            altitudeChancePerMinute: 1,
+            arriveChancePerMinute: 0,
+        });
+        birds.release();
+        for (let index = 0; index < 38; index++) {
+            world.step();
+        }
+        // Gone from the record AND the coordinate space — the memory stack
+        // holds nothing left to render
+        expect(birds.birdOf('bird-1')).toBeUndefined();
+        expect(birds.birds()).toEqual([]);
+        expect(world.coordinates.all().some((entry) => entry.id === 'bird-1')).toBe(false);
+        expect(world.events.log().at(-1)).toEqual({
+            id: 3,
+            tick: 38,
+            time: 38,
+            kind: 'despawn',
+            message: 'Kiki climbs into the higher scale and is gone.',
+            actorId: 'bird-1',
+        });
+    });
+
+    it('a glide out of bounds flies past the edge of the world and vanishes', () => {
+        // Pure glide walk (no landing, no altitude drift, no arrivals):
+        // reference run (seed 9) — 49 glides carried Kiki to (11, 8, 2) and
+        // minute 50's glide stepped out of the 25×17 canvas
+        const { world, birds } = buildStack(
+            {
+                landChancePerMinute: 0,
+                altitudeChancePerMinute: 0,
+                arriveChancePerMinute: 0,
+            },
+            9,
+        );
+        birds.release();
+        for (let index = 0; index < 50; index++) {
+            world.step();
+        }
+        // Minute 49 had the bird at (11, 8, 2) — one cell inside the rim;
+        // minute 50's glide stepped past it and the bird is gone for good
+        expect(birds.birdOf('bird-1')).toBeUndefined();
+        expect(world.coordinates.all().some((entry) => entry.id === 'bird-1')).toBe(false);
+        expect(world.events.log().at(-1)).toEqual({
+            // Event 51: the spawn + 49 glide events ran before it
+            id: 51,
+            tick: 50,
+            time: 50,
+            kind: 'despawn',
+            message: 'Kiki wheels past the edge of the world and vanishes.',
+            actorId: 'bird-1',
+        });
+    });
+
+    it('birds arrive over the sea rim and drop from the high air, capped', () => {
+        // Forced arrival roll every minute (reference run, seed 7): minute 1
+        // rolls the HIGH lane (Jask drops aloft at z 9), minutes 2-3 the SEA
+        // lane (Tern, Sula at rim cells z 1); minute 4 the cap (4, counting
+        // the released Kiki) holds the flock closed
+        const { world, birds } = buildStack({
+            landChancePerMinute: 0,
+            altitudeChancePerMinute: 0,
+            arriveChancePerMinute: 1,
+        });
+        birds.release();
+        for (let index = 0; index < 5; index++) {
+            world.step();
+        }
+        expect(birds.birds()).toEqual([
+            { id: 'bird-1', name: 'Kiki', marker: 'K', state: 'flying', position: { x: -3, y: 1, z: 2 } },
+            // The high arrival — aloft at z 9, private position only
+            { id: 'bird-2', name: 'Jask', marker: 'J', state: 'aloft', position: { x: -9, y: -8, z: 9 } },
+            { id: 'bird-3', name: 'Tern', marker: 'T', state: 'flying', position: { x: -6, y: 8, z: 1 } },
+            { id: 'bird-4', name: 'Sula', marker: 'S', state: 'flying', position: { x: 4, y: -8, z: 1 } },
+        ]);
+        // Only the visible birds live in the coordinate space
+        const spaceIds = world.coordinates.all().map((entry) => entry.id);
+        expect(spaceIds).toContain('bird-1');
+        expect(spaceIds).toContain('bird-3');
+        expect(spaceIds).toContain('bird-4');
+        expect(spaceIds).not.toContain('bird-2');
+        expect(
+            world.events
+                .log()
+                .filter((event) => event.kind === 'spawn')
+                .map((event) => `${event.actorId}:${event.message}`),
+        ).toEqual([
+            'bird-1:Kiki wheels above the island.',
+            'bird-2:Jask drops from the high air.',
+            'bird-3:Tern glides in from over the open sea.',
+            'bird-4:Sula glides in from over the open sea.',
+        ]);
     });
 
     it('birds never block castaways — occupancy checks scan actors only', () => {

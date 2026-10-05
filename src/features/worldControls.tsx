@@ -24,7 +24,7 @@ import { settleAfterResize } from './worldSize';
 
 /**
  * Odd size ladder — steps of 4 keep every value odd. Widths 13..85 (19
- * options), heights 9..53 (12 options); the default 37×25 sits mid-ladder.
+ * options), heights 9..53 (12 options); the default 25×17 sits mid-ladder.
  */
 const oddLadder = (start: number, end: number): number[] =>
     // arrayCreate's callback factory generates until undefined — the last

@@ -16,7 +16,7 @@ export function App(
     // rolled seed shows in the header subtitle. Pin `seed` to reproduce a
     // run exactly (tests and stories do: <App seed={7} /> renders the
     // deterministic seed-7 island the whole suite asserts against). Pin
-    // `terrain` to pin the grid size too (the default is the 37×25 island;
+    // `terrain` to pin the grid size too (the default is the 25×17 island;
     // the god can reshape it live through the World Size controls).
     const [island] = useState<IslandHandle>(() =>
         createIslandWorld({ seed: seed ?? Math.floor(Math.random() * SEED_ROLL_RANGE), terrain }),

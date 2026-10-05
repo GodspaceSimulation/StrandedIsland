@@ -21,7 +21,18 @@ src/
 │   ├── inventory/    Item catalog, inventories, gathering, exchange (trade)
 │   ├── needs/        Hunger / thirst / energy decay per tick
 │   ├── relationship/ Affinity graph between actors with slow drift
-│   └── behavior/     Agent decision loop (eat / drink / gather / trade / rest / wander)
+│   ├── tasks/        The task ledger — per-actor FIFO task queues with
+│   │                 WORLD-MINUTE time costs, fed by pluggable behaviour
+│   │                 modules (adding/removing one updates every queue)
+│   ├── behavior/     Agent behaviour modules (thirst / hunger / rest /
+│   │                 social / wander) that QUEUE tasks into the ledger and
+│   │                 apply their effects on completion
+│   ├── sleep/        The timed sleep behaviour (priority 30, shadows the
+│   │                 fallback instant-rest rung)
+│   ├── birds/        Seabirds — the Z-axis travelers: altitude fade bands,
+│   │                 the vanished higher scale (z ≥ 10 leaves the world's
+│   │                 reachable scales), the world edge, and arrivals
+│   └── sharks/       Sharks — water creatures swimming in past the edge
 ├── scenario/      createIslandWorld() — assembles plugins into a ready world
 └── features/      React god-view: grid, tile inspector, ticker controls,
                     actor inspector, log
@@ -30,6 +41,15 @@ src/
 The engine and every plugin are pure TypeScript with zero React dependency —
 fully unit-testable. The React layer only subscribes to the world's event bus
 and ticker state.
+
+## Time and travel
+
+The world sub-steps every tick ONE world-minute at a time (engine/world.ts),
+so all pacing is per-minute and identical at every view scale. ONE TILE of
+travel costs **10 world minutes** at scale 0 — the engine pins this cost
+(scenario/island.ts `TRAVEL_MINUTES_PER_TILE`), not @godspace/*. Every
+behaviour queues tasks with a minute cost; the ledger advances the queue
+heads one minute per tick.
 
 ## Plugins
 

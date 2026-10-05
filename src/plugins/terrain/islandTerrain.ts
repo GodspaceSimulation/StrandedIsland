@@ -23,9 +23,9 @@ import type { PluginContext, WorldPlugin } from '../../engine/plugin';
 import { tilePathKey, type TilePath } from '@godspace/core';
 
 export type IslandTerrainOptions = {
-    /** Grid width in cells (odd — 0,0 is the center). Default 37. */
+    /** Grid width in cells (odd — 0,0 is the center). Default 25. */
     width?: number;
-    /** Grid height in cells (odd — 0,0 is the center). Default 25. */
+    /** Grid height in cells (odd — 0,0 is the center). Default 17. */
     height?: number;
     /** PRNG seed. Defaults to the world seed (passed by the plugin setup). */
     seed?: number;
@@ -38,8 +38,8 @@ export type IslandTerrainOptions = {
     /**
      * How many SUBTILE levels the generator produces below the root grid —
      * the recursive tiling configuration. Every tile of a produced level
-     * opens into a full sub-grid of the SAME dimensions (a 20×20 world with
-     * subtiles 1 holds 400 scale-0 tiles and 400×400 = 160,000 scale-1
+     * opens into a full sub-grid of the SAME dimensions (a 25×17 world with
+     * subtiles 1 holds 425 scale-0 tiles and 425×425 = 180,625 scale-1
      * tiles). Default 1: scale 0 (the island) and scale 1 (each tile's
      * interior). 0 produces no sub-grids at all. The generator itself is
      * level-agnostic (any parent cell yields a sub-grid), so raising this
@@ -59,10 +59,22 @@ export type IslandStats = {
 /**
  * Vein-noise threshold for iron lodes: a dry stone-surface cell whose vein
  * sample exceeds it carries an iron deposit. Calibrated so lodes stay rare
- * landmarks — on the reference seed-7 island 3 of the 9 highland cells
- * lode (vein samples 0.0756 … 0.5158).
+ * landmarks — on the 37×25 seed-7 reference board 3 of the 9 highland cells
+ * lode (vein samples 0.0756 … 0.5158), while the smaller 25×17 default
+ * island keeps all 9 samples below it (0.1552 … 0.4076 — its iron census
+ * reads 0; the tests pin both boards).
  */
 export const IRON_LODE_THRESHOLD = 0.5;
+
+/**
+ * Moisture threshold for forests: a dry grass-surface cell whose moisture
+ * sample exceeds it grows one — timber ×2 stands on the tile (the
+ * deriveBiome ladder and the wood deposit both read `forested` below).
+ * Lowered from the old inline 0.6 so the meadows read as woodland more
+ * often: on the seed-7 25×17 reference island the forest census moves
+ * 52 → 75 (see islandTerrain.test.ts).
+ */
+export const FOREST_MOISTURE_THRESHOLD = 0.5;
 
 /**
  * Lattice value noise with bilinear interpolation and a smoothstep fade.
@@ -149,8 +161,8 @@ export const generateIsland = (
     options: IslandTerrainOptions = {},
 ): Canvas & { stats: IslandStats } => {
     // Odd dims are a hard rule — the center must be exactly (0, 0)
-    const width = oddSize(options.width ?? 37);
-    const height = oddSize(options.height ?? 25);
+    const width = oddSize(options.width ?? 25);
+    const height = oddSize(options.height ?? 17);
     const seaLevel = options.seaLevel ?? 3;
     const maxHeight = options.maxHeight ?? 8;
     const roughness = options.roughness ?? 0.55;
@@ -220,8 +232,9 @@ export const generateIsland = (
                   : groundHeight <= seaLevel + 1
                     ? 'sand'
                     : 'grass';
-            // Forests only grow on grass with enough moisture
-            const forested = surface === 'grass' && moisture(col, row) > 0.6;
+            // Forests only grow on grass wet enough — the moisture map
+            // decides where the woods stand on the meadows
+            const forested = surface === 'grass' && moisture(col, row) > FOREST_MOISTURE_THRESHOLD;
 
             // Build the voxel stack, bottom → top:
             //   stone × (ground-2), soil × 1, surface × 1,
@@ -358,7 +371,7 @@ export const tileDepositSummary = (resources?: TileResources): string =>
  * each sub-grid deterministically from its parent cell (world seed + tile
  * address) and caching it until the parent's deposits change. Sub-grid
  * dims equal the root grid's dims: zooming in never changes the board size
- * (the recursion rule — a 20×20 world holds 400×400 scale-1 tiles with
+ * (the recursion rule — a 25×17 world holds 425×425 scale-1 tiles with
  * subtiles 1). `tilesAt(scale)` counts the tiles of a level, `cellFor(path)`
  * resolves one tile, `depth()` reports the configured subtile levels.
  */
@@ -382,7 +395,7 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
     // Configured grid size — the default, overridable by options and
     // changeable at runtime through resize(). Odd rule enforced here too:
     // (0, 0) must be the exact canvas center.
-    const dims = { width: oddSize(options.width ?? 37), height: oddSize(options.height ?? 25) };
+    const dims = { width: oddSize(options.width ?? 25), height: oddSize(options.height ?? 17) };
     // Subtile levels below the root (the recursive tiling configuration)
     const subtileDepth = options.subtiles ?? 1;
     // The plugin context captured in setup — resize() needs the world (canvas
@@ -392,7 +405,7 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
     // sub-grid generation keys its streams off the same seed
     let resolvedSeed = options.seed ?? 1;
     // Sub-grid cache, keyed by tile path — a zoomed-in view re-renders every
-    // pulse, so regenerating 925 cells each time would burn the frame; the
+    // pulse, so regenerating 425 cells each time would burn the frame; the
     // fingerprint (parent deposits + height + water line) invalidates a
     // cached grid exactly when the parent tile changed (gathering, regrowth)
     const subCanvases = new Map<string, { stamp: string; canvas: Canvas }>();
