@@ -2,6 +2,10 @@
 // Every scenario assembles the full plugin stack exactly like the scenario
 // factory does, then drives it with controlled needs rates. All outcomes were
 // captured from reference runs — the agent loop is fully deterministic.
+//
+// One-minute steps keep the scenarios compact: one step is one world-minute,
+// one decision per actor. The rate overrides are per-minute (the step's
+// world-minutes always run one at a time — engine/world.ts sub-stepping).
 
 import { describe, it, expect } from 'vitest';
 import { position3 } from '@godspace/core';
@@ -20,13 +24,13 @@ const spawn = (world: ReturnType<typeof createWorld>, id: string, name: string, 
 
 // Full stack with rain disabled so injected water is the only source
 const buildStack = (needsOptions: Parameters<typeof needsPlugin>[0] = {}) => {
-    const inventory = inventoryPlugin({ rainChance: 0 });
+    const inventory = inventoryPlugin({ rainChancePerMinute: 0 });
     const needs = needsPlugin({ thirstPerMinute: 0, energyPerMinute: 0, ...needsOptions });
     const relationship = relationshipPlugin();
     const behavior = behaviorPlugin({ inventory, needs, relationship });
     const world = createWorld({
         seed: 7,
-        tickSize: 10,
+        tickSize: 1,
         plugins: [islandTerrainPlugin(), inventory, needs, relationship, behavior],
     });
     return { world, inventory, needs, relationship };
@@ -34,16 +38,16 @@ const buildStack = (needsOptions: Parameters<typeof needsPlugin>[0] = {}) => {
 
 describe('behaviorPlugin', () => {
     it('a hungry actor eats the first food in its bag (berry priority)', () => {
-        const { world, inventory, needs } = buildStack({ hungerPerMinute: 0.6 });
+        const { world, inventory, needs } = buildStack({ hungerPerMinute: 6 });
         spawn(world, 'a', 'Ael', 6, 2);
         inventory.spawnKit('a', { berry: 2, flint: 1 });
         for (let index = 0; index < 7; index++) {
             world.step();
         }
-        // Hunger 20+6×7 = 62 ≥ 60 on tick 7 → eats one berry (−14 nutrition)
+        // Hunger 20+6×7 = 62 ≥ 60 on step 7 → eats one berry (−14 nutrition)
         expect(needs.of('a')).toEqual({ hunger: 48, thirst: 20, energy: 94 });
         expect(inventory.of('a')).toEqual({ berry: 1, flint: 1 });
-        // Six hungry-wander ticks happened before the eating tick
+        // Six hungry-wander minutes happened before the eating minute
         expect(world.events.log().map((event) => event.kind)).toEqual([
             'spawn', 'move', 'move', 'move', 'move', 'move', 'move', 'consume',
         ]);
@@ -51,7 +55,7 @@ describe('behaviorPlugin', () => {
     });
 
     it('a hungry actor with no food gathers from the cell it stands on', () => {
-        const { world, inventory, needs } = buildStack({ hungerPerMinute: 0.6 });
+        const { world, inventory, needs } = buildStack({ hungerPerMinute: 6 });
         spawn(world, 'a', 'Ael', 6, 2);
         inventory.spawnKit('a', { flint: 1 });
         for (let index = 0; index < 7; index++) {
@@ -60,25 +64,26 @@ describe('behaviorPlugin', () => {
         // Wandering carried the actor to a meadow — gathering picked a berry
         expect(inventory.of('a')).toEqual({ flint: 1, berry: 1 });
         expect(needs.of('a').hunger).toBe(62);
-        // Meanwhile the start cell regrew: meadow berry rhythm hit ticks 2 & 5
-        expect(inventory.cellStock(6, 2)).toEqual({ dirt: 1, berry: 3 });
+        // The start cell is untouched: berry regrowth runs on a 30-minute
+        // rhythm (offset 20) — seven minutes never reach it
+        expect(inventory.cellStock(6, 2)).toEqual({ dirt: 1, berry: 2 });
     });
 
     it('a thirsty actor drinks the rainwater pool on its own cell', () => {
         const { world, inventory, needs } = buildStack({});
         spawn(world, 'a', 'Ael', 8, 2);
         inventory.cellStock(8, 2).water = 1;
-        needs.satisfy('a', { thirst: 50 }); // thirst 70 ≥ 65 → drink this tick
+        needs.satisfy('a', { thirst: 50 }); // thirst 70 ≥ 65 → drink this minute
         world.step();
         // −35 thirst relief, the pool is emptied, nothing enters the bag
-        // (hunger 21: the default 0.1/min decay ran one tick)
-        expect(needs.of('a')).toEqual({ hunger: 21, thirst: 35, energy: 100 });
+        // (hunger 20.1: the default 0.1/min decay ran one minute)
+        expect(needs.of('a')).toEqual({ hunger: 20.1, thirst: 35, energy: 100 });
         expect(inventory.cellStock(8, 2)).toEqual({ dirt: 1, berry: 2 });
         expect(inventory.of('a')).toEqual({});
         expect(world.events.log()[1]).toEqual({
             id: 2,
             tick: 1,
-            time: 10,
+            time: 1,
             kind: 'consume',
             message: 'Ael drinks 1 Water.',
             actorId: 'a',
@@ -86,15 +91,15 @@ describe('behaviorPlugin', () => {
     });
 
     it('an exhausted actor rests and recovers energy', () => {
-        const { world, needs } = buildStack({ energyPerMinute: 0.8 });
+        const { world, needs } = buildStack({ energyPerMinute: 8 });
         spawn(world, 'a', 'Ael', 8, 2);
         for (let index = 0; index < 10; index++) {
             world.step();
         }
-        // 100 − 8/tick × 9 ticks − 8 move charges = 20 at tick 9 → rest +12,
-        // then one more wander tick: 32 − 8 − 1 = 23
+        // 100 − 8/min × 9 minutes − 8 move charges = 20 at step 9 → rest +12,
+        // then one more wander minute: 32 − 8 − 1 = 23
         expect(needs.of('a').energy).toBe(23);
-        // The rest happened on tick 9, after 8 wandering moves
+        // The rest happened on step 9, after 8 wandering moves
         expect(world.events.log().map((event) => event.kind)).toEqual([
             'spawn', 'move', 'move', 'move', 'move', 'move', 'move', 'move', 'move', 'rest', 'move',
         ]);
@@ -111,7 +116,7 @@ describe('behaviorPlugin', () => {
         world.step();
         // Ael: no survival triggers → social: trades 1 berry for Bram's shell
         expect(inventory.of('a')).toEqual({ berry: 2, flint: 1, shell: 1 });
-        // Bram: hunger 70 → eats the traded berry in his own tick
+        // Bram: hunger 70 → eats the traded berry in his own minute
         expect(inventory.of('b')).toEqual({});
         expect(relationship.relation('a', 'b')).toBe(6);
         expect(world.events.log().map((event) => event.message)).toEqual([
@@ -144,7 +149,7 @@ describe('behaviorPlugin', () => {
     });
 
     it('a starving actor walks toward the nearest stocked cell', () => {
-        const { world, inventory, needs } = buildStack({ hungerPerMinute: 0.6 });
+        const { world, inventory, needs } = buildStack({ hungerPerMinute: 6 });
         // Drain every land cell, leave a single stocked meadow at (8,2)
         world.landCells().forEach((cell) => {
             const stock = inventory.cellStock(cell.x, cell.y);
@@ -159,8 +164,8 @@ describe('behaviorPlugin', () => {
             world.step();
         }
         // Six hungry wanders, then the greedy walk toward the nearest
-        // stocked cell — berry regrowth re-stocked meadows mid-walk, so the
-        // chase kept redirecting; captured reference path
+        // stocked cell (no regrowth inside nine minutes — the chase runs
+        // straight to (8,2)); captured reference path
         expect(world.events.log().filter((event) => event.kind === 'move').map((event) => event.message)).toEqual([
             'Ael wanders north.',
             'Ael wanders south.',
@@ -189,11 +194,12 @@ describe('behaviorPlugin', () => {
             world.step();
             needs_satisfy(world, 'b', 10);
         }
-        // Gift lands on tick 1 (+10), then drift alone moves the value —
-        // Bram keeps gathering FOOD on his wanders (coconut/berry — gather
-        // is food-only), so no material ever enters his bag for a trade:
-        // 10 − 0.2 × 7 ticks of drift → 8.6. Ael's bag ends at 2 berries.
-        expect(relationship.relation('a', 'b')).toBe(8.600000000000005);
+        // Gift lands on minute 1 (+10), then drift alone moves the value —
+        // Bram keeps gathering and eating FOOD on his minutes (gather is
+        // food-only), so no material ever enters his bag for a trade:
+        // 10 − 0.02 × 7 minutes of drift → 9.860000000000003.
+        // Ael's bag ends at 2 berries.
+        expect(relationship.relation('a', 'b')).toBe(9.860000000000003);
         expect(inventory.of('a')).toEqual({ berry: 2 });
         const socialEvents = world.events.log().filter((event) => event.kind === 'exchange' || event.kind === 'relationship');
         expect(socialEvents.map((event) => event.message)).toEqual([

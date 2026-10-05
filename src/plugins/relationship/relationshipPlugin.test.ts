@@ -68,9 +68,11 @@ describe('relationshipPlugin', () => {
         expect(relationship.relation('a', 'b')).toBe(0);
     });
 
-    it('drifts toward neutral each tick and snaps small values to exactly 0', () => {
-        const relationship = relationshipPlugin({ driftPerTick: 0.2 });
-        const world = createWorld({ seed: 1, plugins: [relationship] });
+    it('drifts toward neutral each minute and snaps small values to exactly 0', () => {
+        // One-minute steps: one drift application per step, so the reference
+        // floats below are single-subtraction chains
+        const relationship = relationshipPlugin({ driftPerMinute: 0.2 });
+        const world = createWorld({ seed: 1, tickSize: 1, plugins: [relationship] });
         relationship.adjust('a', 'b', 6);
         relationship.adjust('c', 'd', -1);
         world.step();

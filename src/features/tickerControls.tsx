@@ -1,20 +1,23 @@
 // Ticker controls — the god's hand on the world clock.
 //
-// Step advances exactly one tick; Play/Pause toggles the realtime loop;
-// tick size redefines what one tick MEANS (minutes of world time); speed
-// scales ticks per real second while playing.
+// Step advances exactly one tick; Auto (play/pause) runs the simulation AS
+// FAST AS POSSIBLE — no ticks-per-second cap, the browser's animation frames
+// batch as many steps as their CPU budget allows. The tick's SIZE is not a
+// free dial: the VIEW SCALE defines it (one zoom rung is one factor of 10 of
+// step time — scale 0 steps 10 minutes, scale +1 steps 1 minute, scale −1
+// would step 100 minutes; see scenario/island.ts minutesPerScaleStep).
 //
-// The calendar readout comes from the @godspace/core temporal system
-// (packages/godspace/core/src/temporal): elapsed world minutes → the
-// year/season/month/day calendar. Standard shape — 3 months per season,
-// 365 days a year — is the temporal default, so the island just feeds it
-// the ticker's elapsed minutes.
+// The calendar readout comes from the island's temporal configuration
+// (scenario/temporal.ts): elapsed world minutes → the year/season/month/day
+// calendar — a TRUE Earth calendar born at 10:00 on January 1, 1609, with
+// Gregorian month lengths and leap years.
 
-import { temporalCalendar, type TemporalCalendarPoint } from '@godspace/core';
+import type { TemporalCalendarPoint } from '@godspace/core';
 import { styled } from '../styles/styled';
 import { PALETTE } from '../styles/theme';
-import { ControlButton, ControlRow, ControlSelect, Panel, PanelTitle } from '../components/panel';
-import { useWorld, useRevision, bumpRevision } from './worldBridge';
+import { ControlButton, ControlRow, Panel, PanelTitle } from '../components/panel';
+import { useWorld, useRevision, useScale, bumpRevision } from './worldBridge';
+import { islandCalendar } from '../scenario/temporal';
 
 const ClockValue = styled('div', {
     fontSize: 22,
@@ -32,7 +35,7 @@ const Padded = (value: number): string => String(value).padStart(2, '0');
 
 /**
  * World clock line from the temporal calendar point, e.g.
- * "Year 1 · Spring · Jan 1 · 00:00" — year, season, month-day, clock face.
+ * "Year 1609 · Winter · Jan 1 · 10:00" — year, season, month-day, clock face.
  */
 export const formatClock = (calendar: TemporalCalendarPoint): string =>
     `Year ${calendar.year} · ${calendar.seasonName} · ${calendar.monthName.slice(0, 3)} ${calendar.dayOfMonth} · ${Padded(calendar.hour)}:${Padded(calendar.minute)}`;
@@ -40,6 +43,9 @@ export const formatClock = (calendar: TemporalCalendarPoint): string =>
 export const TickerControls = () => {
     const island = useWorld();
     const revision = useRevision();
+    // The step time is the VIEW SCALE's — subscribing to the scale keeps
+    // this panel live when the god zooms (a zoom re-times the tick)
+    const scale = useScale();
     if (!island) {
         return null;
     }
@@ -50,18 +56,20 @@ export const TickerControls = () => {
     const running = ticker.running();
     const minutes = ticker.tickSize();
     // The world calendar — derived from the ticker's elapsed minutes through
-    // the @godspace/core temporal system (3 months/season, 365 days/year)
-    const calendar = temporalCalendar(ticker.elapsed());
+    // the island's temporal configuration (scenario/temporal.ts)
+    const calendar = islandCalendar(ticker.elapsed());
 
     return (
         <Panel>
             <PanelTitle>World Ticker</PanelTitle>
             <ClockValue data-testid="world-clock">{formatClock(calendar)}</ClockValue>
-            <TickLabel>
-                {ticker.ticks()} ticks × {minutes} min · {calendar.dayOfYear} / 365 ·{' '}
-                {ticker.elapsed()} world minutes
+            <TickLabel data-testid="tick-label">
+                Scale {scale} · {ticker.ticks()} ticks × {minutes} min · {calendar.dayOfYear} /{' '}
+                {calendar.daysInYear} · {ticker.elapsed()} world minutes
             </TickLabel>
             <ControlRow>
+                {/* AUTO mode — the simulation runs as fast as the browser
+                    allows, no per-second cap. Play/Pause toggles the loop. */}
                 <ControlButton
                     active={running}
                     data-testid="play-button"
@@ -74,49 +82,19 @@ export const TickerControls = () => {
                         bumpRevision();
                     }}
                 >
-                    {running ? '❚❚ Pause' : '▶ Play'}
+                    {running ? '❚❚ Pause' : '▶ Auto'}
                 </ControlButton>
                 <ControlButton
                     data-testid="step-button"
                     onClick={() => {
                         // The full world step: ticker + every plugin tick
+                        // (once per world-minute of the step)
                         world.step();
                         bumpRevision();
                     }}
                 >
                     Step ▸
                 </ControlButton>
-            </ControlRow>
-            <ControlRow>
-                <ControlSelect
-                    data-testid="tick-size"
-                    value={String(minutes)}
-                    onChange={(event) => {
-                        // One tick can be a minute, ten minutes or an hour —
-                        // the god decides what a tick means
-                        const input = event.target as HTMLSelectElement;
-                        ticker.tickSize(Number(input.value));
-                        bumpRevision();
-                    }}
-                >
-                    <option value="1">1 min / tick</option>
-                    <option value="10">10 min / tick</option>
-                    <option value="60">1 hour / tick</option>
-                </ControlSelect>
-                <ControlSelect
-                    data-testid="speed"
-                    value={String(ticker.speed())}
-                    onChange={(event) => {
-                        const input = event.target as HTMLSelectElement;
-                        ticker.speed(Number(input.value));
-                        bumpRevision();
-                    }}
-                >
-                    <option value="1">1× speed</option>
-                    <option value="2">2× speed</option>
-                    <option value="5">5× speed</option>
-                    <option value="10">10× speed</option>
-                </ControlSelect>
             </ControlRow>
         </Panel>
     );

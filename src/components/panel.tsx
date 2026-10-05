@@ -38,7 +38,7 @@ export const ControlButton = styled<{ active?: boolean }>('button', {
     fontFamily: 'inherit',
 });
 
-/** Native select styled to the palette (tick size / speed pickers). */
+/** Native select styled to the palette (world-size pickers). */
 export const ControlSelect = styled('select', {
     background: '#232c37',
     color: PALETTE.text,

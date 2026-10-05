@@ -1,8 +1,8 @@
 // The needs environment plugin — hunger, thirst and energy.
 //
-// Every tick each actor's needs drift by rates scaled to the tick size, so
-// survival pressure stays consistent whether a tick is a minute or an hour
-// (per-minute rates × minutes-per-tick = per-tick decay). Threshold
+// Every tick hook call covers ONE world-minute (engine/world.ts sub-steps a
+// step's minutes one at a time), so the decay rates are plain per-minute
+// rates: survival pressure is identical at every view scale. Threshold
 // crossings are logged to the world event bus, the actor's `condition` is
 // derived here, and actors that stay at 100 hunger/thirst for too long die
 // (condition 'gone' → despawned from the world).
@@ -12,14 +12,17 @@ import type { ActorCondition } from '../../engine/types';
 import type { PluginContext, WorldPlugin } from '../../engine/plugin';
 
 export type NeedsPluginOptions = {
-    /** Hunger points per world minute. Default 0.1 (→ +1 per 10-min tick). */
+    /** Hunger points per world minute. Default 0.1. */
     hungerPerMinute?: number;
     /** Thirst points per world minute. Default 0.15. */
     thirstPerMinute?: number;
     /** Energy drain per world minute. Default 0.06. */
     energyPerMinute?: number;
-    /** Ticks an actor survives at 100 hunger/thirst before dying. Default 3. */
-    doomTicks?: number;
+    /**
+     * Minutes an actor survives at 100 hunger/thirst before dying.
+     * Default 30 (the scale-0 pace: three 10-minute steps).
+     */
+    doomMinutes?: number;
 };
 
 /** The three survival needs, all in 0..100. */
@@ -73,7 +76,7 @@ export const needsPlugin = (options: NeedsPluginOptions = {}): NeedsPlugin => {
     const hungerPerMinute = options.hungerPerMinute ?? 0.1;
     const thirstPerMinute = options.thirstPerMinute ?? 0.15;
     const energyPerMinute = options.energyPerMinute ?? 0.06;
-    const doomTicks = options.doomTicks ?? 3;
+    const doomMinutes = options.doomMinutes ?? 30;
 
     const states = new Map<string, NeedsState & { doom: number }>();
 
@@ -121,11 +124,11 @@ export const needsPlugin = (options: NeedsPluginOptions = {}): NeedsPlugin => {
 
         tick: (context: PluginContext) => {
             const { world } = context;
-            // Per-tick decay = per-minute rate × minutes per tick
-            const minutes = world.ticker.tickSize();
-            const dHunger = hungerPerMinute * minutes;
-            const dThirst = thirstPerMinute * minutes;
-            const dEnergy = energyPerMinute * minutes;
+            // One tick hook call = one world-minute (the world sub-steps its
+            // steps) — the per-minute rates apply directly
+            const dHunger = hungerPerMinute;
+            const dThirst = thirstPerMinute;
+            const dEnergy = energyPerMinute;
 
             // Snapshot the actor ids — despawning during the sweep must not
             // shift the iteration
@@ -162,10 +165,10 @@ export const needsPlugin = (options: NeedsPluginOptions = {}): NeedsPlugin => {
                     }
                 });
 
-                // Doom: consecutive ticks fully starved or dehydrated
+                // Doom: consecutive world-minutes fully starved or dehydrated
                 if (state.hunger >= 100 || state.thirst >= 100) {
                     state.doom = state.doom + 1;
-                    if (state.doom >= doomTicks) {
+                    if (state.doom >= doomMinutes) {
                         world.despawn(actorId);
                         world.events.emit({
                             kind: 'death',

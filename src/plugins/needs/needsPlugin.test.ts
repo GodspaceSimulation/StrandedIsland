@@ -13,15 +13,20 @@ const spawnActor = (world: ReturnType<typeof createWorld>, id = 'a', name = 'Ael
 };
 
 describe('needsPlugin', () => {
-    it('decays needs per tick at the default rates (10-minute ticks)', () => {
+    it('decays needs per minute — a 10-minute step drifts 10 minutes worth', () => {
         const needs = needsPlugin();
         const world = createWorld({ seed: 7, plugins: [needs] });
         spawnActor(world);
         for (let index = 0; index < 3; index++) {
             world.step();
         }
-        // +0.1/min × 10 min hunger, +0.15/min thirst, −0.06/min energy
-        expect(needs.of('a')).toEqual({ hunger: 23, thirst: 24.5, energy: 98.20000000000002 });
+        // 3 steps × 10 world-minutes of per-minute decay (0.1/min hunger,
+        // 0.15/min thirst, −0.06/min energy) — floats pinned from reference
+        expect(needs.of('a')).toEqual({
+            hunger: 23.000000000000043,
+            thirst: 24.499999999999957,
+            energy: 98.19999999999993,
+        });
     });
 
     it('decay scales with tick size — an hour tick moves needs 6× a 10-min tick', () => {
@@ -29,8 +34,33 @@ describe('needsPlugin', () => {
         const world = createWorld({ seed: 7, tickSize: 60, plugins: [needs] });
         spawnActor(world);
         world.step();
-        // 0.1 × 60 = +6 hunger, 0.15 × 60 = +9 thirst, 0.06 × 60 = −3.6 energy
-        expect(needs.of('a')).toEqual({ hunger: 26, thirst: 29, energy: 96.4 });
+        // 60 world-minutes of the same per-minute rates
+        expect(needs.of('a')).toEqual({
+            hunger: 26.000000000000085,
+            thirst: 28.999999999999915,
+            energy: 96.39999999999986,
+        });
+    });
+
+    it('one hour-long step equals sixty 1-minute steps — the smallest-scale rule', () => {
+        // The step size is only a batch: the logic inside always runs one
+        // world-minute at a time, so both worlds end in the same state
+        const stepped = needsPlugin();
+        const hourly = needsPlugin();
+        const minuteWorld = createWorld({ seed: 7, tickSize: 1, plugins: [stepped] });
+        const hourWorld = createWorld({ seed: 7, tickSize: 60, plugins: [hourly] });
+        spawnActor(minuteWorld, 'm');
+        spawnActor(hourWorld, 'h');
+        for (let index = 0; index < 60; index++) {
+            minuteWorld.step();
+        }
+        hourWorld.step();
+        expect(stepped.of('m')).toEqual(hourly.of('h'));
+        expect(stepped.of('m')).toEqual({
+            hunger: 26.000000000000085,
+            thirst: 28.999999999999915,
+            energy: 96.39999999999986,
+        });
     });
 
     it('starting state is a little hungry, not starving', () => {
@@ -69,10 +99,10 @@ describe('needsPlugin', () => {
         const needs = needsPlugin();
         const world = createWorld({ seed: 1, tickSize: 10, plugins: [needs] });
         spawnActor(world);
-        needs.satisfy('a', { hunger: 48 }); // 68 — just below the 70 threshold
-        world.step(); // hunger 69 — no event
+        needs.satisfy('a', { hunger: 48.5 }); // 68.5 — just below the 70 threshold
+        world.step(); // 69.49999999999994 — no event
         expect(world.events.log().filter((event) => event.kind === 'needs').length).toBe(0);
-        world.step(); // hunger 70 — pangs fire
+        world.step(); // 70.49999999999989 — pangs fire
         expect(world.events.log().filter((event) => event.kind === 'needs').map((event) => event.message)).toEqual([
             'Ael feels hunger pangs.',
         ]);
@@ -117,13 +147,14 @@ describe('needsPlugin', () => {
     });
 
     it('starvation kills after the doom window and despawns the actor', () => {
-        const needs = needsPlugin({ hungerPerMinute: 2, thirstPerMinute: 0, energyPerMinute: 0, doomTicks: 2 });
+        const needs = needsPlugin({ hungerPerMinute: 2, thirstPerMinute: 0, energyPerMinute: 0, doomMinutes: 20 });
         const world = createWorld({ seed: 1, tickSize: 10, plugins: [needs] });
         spawnActor(world);
         for (let index = 0; index < 8; index++) {
             world.step();
         }
-        // Hunger hits 100 on tick 4, doom window of 2 → dead on tick 5
+        // Hunger hits 100 during step 4 (+2/min × 40 min), the 20-minute
+        // doom window runs out during step 6
         expect(world.actors.size).toBe(0);
         const messages = world.events.log().map((event) => event.message);
         expect(messages).toEqual([

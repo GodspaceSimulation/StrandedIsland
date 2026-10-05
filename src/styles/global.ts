@@ -40,7 +40,7 @@ body {
 /* ---- Color scheme ------------------------------------------------------ */
 
 /* Native UI surfaces the browser paints for us — scrollbars and native
-   form controls (the tick-size / speed <select> controls) are drawn per
+   form controls (the world-size <select> pickers) are drawn per
    the document's color scheme. Without this dark hint they default to the
    LIGHT scheme (white tracks, grey-on-white popups), which shatters the
    dark dashboard. */

@@ -34,8 +34,8 @@ export type BehaviorPluginOptions = {
     inventory: InventoryPlugin;
     needs: NeedsPlugin;
     relationship: RelationshipPlugin;
-    /** Ticks between social attempts per actor. Default 6. */
-    socialCooldown?: number;
+    /** World-minutes between social attempts per actor. Default 60. */
+    socialCooldownMinutes?: number;
 };
 
 /** Food item priority when eating/gathering (berries first — abundant). */
@@ -57,9 +57,11 @@ const chebyshev = (a: Position3D, b: Position3D): number => planeDistance(a, b);
 
 export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
     const { inventory, needs, relationship } = options;
-    const socialCooldown = options.socialCooldown ?? 6;
+    // Six 10-minute steps at the scale-0 pace — the cooldown is measured in
+    // WORLD MINUTES so the social rhythm never moves with the view scale
+    const socialCooldown = options.socialCooldownMinutes ?? 60;
 
-    // Last social attempt tick per actor id
+    // Last social attempt per actor id, stamped in elapsed world minutes
     const lastSocial = new Map<string, number>();
 
     // ── helpers ─────────────────────────────────────────────────────────────
@@ -180,10 +182,13 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
     };
 
     /** Social priority: help a hungry neighbour within distance 2. */
-    const trySocial = (context: PluginContext, actor: Actor, tick: number): boolean => {
+    const trySocial = (context: PluginContext, actor: Actor): boolean => {
         const { world } = context;
+        // The cooldown runs on world minutes, not tick counts — a zoomed
+        // view changes the step size, never the social rhythm
+        const now = world.ticker.elapsed();
         const last = lastSocial.get(actor.id) ?? -Infinity;
-        if (tick - last < socialCooldown) {
+        if (now - last < socialCooldown) {
             return false;
         }
 
@@ -211,7 +216,7 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
             return false;
         }
 
-        lastSocial.set(actor.id, tick);
+        lastSocial.set(actor.id, now);
         const targetBag = inventory.of(target.id);
         // Try an exchange first: 1 food for the first material they hold
         const material = arrayEach(MATERIALS, ({ value: candidate }) =>
@@ -246,7 +251,6 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
 
         tick: (context: PluginContext) => {
             const { world } = context;
-            const tick = world.ticker.ticks();
 
             // Spawn-order iteration; actors despawned mid-tick are skipped
             const actorIds = Array.from(world.actors.keys());
@@ -310,7 +314,7 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
                 }
 
                 // 4 — social: trade or gift to a hungry neighbour
-                if (trySocial(context, actor, tick)) {
+                if (trySocial(context, actor)) {
                     return;
                 }
 

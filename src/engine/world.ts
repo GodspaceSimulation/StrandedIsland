@@ -15,9 +15,14 @@
 //   events      — the world event bus / log
 //   plugins     — the swappable environment behaviour (see engine/plugin.ts)
 //
-// `step()` is the heartbeat: the ticker advances, then every installed plugin
-// gets a `tick` hook call in registration order. Realtime play/pause/speed
-// simply delegate to the ticker.
+// `step()` is the heartbeat: the ticker advances (one step = `tickSize`
+// minutes of world time — the view scale decides the step size), then the
+// step's world-minutes are processed ONE MINUTE at a time — every installed
+// plugin gets a `tick` hook call per world-minute, so all simulation logic
+// lives at the smallest scale possible and a step behaves exactly like its
+// minutes' worth of one-minute steps at every zoom level. Realtime
+// play/pause simply delegate to the ticker's AUTO loop (as fast as the
+// browser allows — no per-second cap).
 
 import { arrayEach } from '@presource/core';
 import {
@@ -32,17 +37,15 @@ import { createEventBus, type EventBus } from './events';
 import { createPluginRegistry, type WorldPlugin } from './plugin';
 import { randomKeyed } from './random';
 import type { Actor, Canvas, TerrainCell } from './types';
-import { createTicker, type Ticker, type TickerOptions } from './ticker';
+import { createTicker, type Ticker } from './ticker';
 
 export type WorldOptions = {
     /** Simulation seed — drives terrain generation and every plugin RNG. */
     seed?: number;
-    /** Minutes of world time per tick. Default 10. */
+    /** Minutes of world time per tick. Default 10 (the scale-0 step time). */
     tickSize?: number;
     /** Plugins installed at creation, in tick order. */
     plugins?: WorldPlugin[];
-    /** Ticker realtime options (speed in ticks/second). */
-    ticker?: TickerOptions;
 };
 
 export type World = {
@@ -60,7 +63,8 @@ export type World = {
     events: EventBus;
     /** Plugin roster — add/remove at will. */
     plugins: ReturnType<typeof createPluginRegistry>;
-    /** Advances one tick and runs every plugin's `tick` hook. Returns tick no. */
+    /** Advances one tick and runs every plugin's `tick` hook — once per
+     * world-minute of the step (the smallest-scale sub-stepping). */
     step(): number;
     /** Realtime loop passthrough (ticker). */
     play(): void;
@@ -159,7 +163,7 @@ export const createWorld = (options: WorldOptions = {}): World => {
         };
     };
 
-    const ticker = createTicker({ tickSize: options.tickSize, speed: options.ticker?.speed });
+    const ticker = createTicker({ tickSize: options.tickSize });
     const events = createEventBus();
 
     const world: World = {
@@ -178,13 +182,23 @@ export const createWorld = (options: WorldOptions = {}): World => {
         plugins: null as unknown as ReturnType<typeof createPluginRegistry>,
         step: () => {
             const tick = ticker.step();
-            // Plugins run in registration order — order matters (needs decay
-            // before behavior decides, so agents react to fresh values)
-            arrayEach(plugins.list(), ({ value: plugin }) => {
+            // ── Sub-stepping: the step's world-minutes run ONE MINUTE at a
+            // time ── the simulation logic lives at the smallest scale
+            // possible, so a step behaves exactly like its minutes' worth of
+            // one-minute steps at every zoom level (a 100-minute scale −1
+            // step holds the same 100 minutes of logic a scale +1 run would
+            // spread over 100 steps). Plugins run in registration order —
+            // order matters (needs decay before behavior decides, so agents
+            // react to fresh values) — and every plugin tick hook covers
+            // exactly ONE world-minute.
+            const minutes = ticker.tickSize();
+            arrayEach(Array.from({ length: minutes }, (_, index) => index), () => {
                 // Block body so plugin tick return values can't short-circuit.
                 // Context comes from the registry so each plugin keeps its
                 // own persistent deterministic random stream.
-                plugin.tick?.(plugins.context(plugin));
+                arrayEach(plugins.list(), ({ value: plugin }) => {
+                    plugin.tick?.(plugins.context(plugin));
+                });
             });
             return tick;
         },

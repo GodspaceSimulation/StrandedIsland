@@ -7,8 +7,20 @@ import type { WorldPlugin } from './plugin';
 import type { Actor } from './types';
 
 describe('createWorld', () => {
+    // The AUTO loop needs rAF + performance faked (see engine/ticker.test.ts)
     beforeEach(() => {
-        vi.useFakeTimers();
+        vi.useFakeTimers({
+            toFake: [
+                'setTimeout',
+                'clearTimeout',
+                'setInterval',
+                'clearInterval',
+                'Date',
+                'requestAnimationFrame',
+                'cancelAnimationFrame',
+                'performance',
+            ],
+        });
     });
 
     afterEach(() => {
@@ -52,10 +64,47 @@ describe('createWorld', () => {
                 order.push(id);
             },
         });
-        const world = createWorld({ plugins: [makePlugin('first'), makePlugin('second')] });
+        // One-minute steps keep the order array one pass long — the
+        // sub-stepping test below covers the multi-minute batching
+        const world = createWorld({ tickSize: 1, plugins: [makePlugin('first'), makePlugin('second')] });
         expect(world.step()).toBe(1);
         expect(order).toEqual(['first', 'second']);
-        expect(world.ticker.elapsed()).toBe(10);
+        expect(world.ticker.elapsed()).toBe(1);
+    });
+
+    it('a step sub-steps its world-minutes — every plugin tick hook covers one minute', () => {
+        const calls: string[] = [];
+        const world = createWorld({
+            tickSize: 3,
+            plugins: [
+                {
+                    id: 'counter',
+                    tick: () => {
+                        calls.push('tick');
+                    },
+                },
+            ],
+        });
+        // One 3-minute step = 3 tick hook calls (one per world-minute)
+        world.step();
+        expect(calls).toEqual(['tick', 'tick', 'tick']);
+        expect(world.ticker.elapsed()).toBe(3);
+        // And three 1-minute steps make the same three calls
+        const minuteWorld = createWorld({
+            tickSize: 1,
+            plugins: [
+                {
+                    id: 'counter',
+                    tick: () => {
+                        calls.push('tick');
+                    },
+                },
+            ],
+        });
+        minuteWorld.step();
+        minuteWorld.step();
+        minuteWorld.step();
+        expect(calls).toEqual(['tick', 'tick', 'tick', 'tick', 'tick', 'tick']);
     });
 
     it('spawn registers the actor and logs to the event bus', () => {
@@ -192,15 +241,18 @@ describe('createWorld', () => {
         expect(world.landCells().map((cell) => cell.y)).toEqual([1]);
     });
 
-    it('realtime play/pause/speed delegate to the ticker', () => {
+    it('realtime play/pause delegate to the ticker (AUTO — as fast as possible)', () => {
         const world = createWorld();
         world.play();
         expect(world.running()).toBe(true);
         vi.advanceTimersByTime(1000);
-        // Default speed 2 tps
-        expect(world.ticker.ticks()).toBe(2);
+        // The AUTO loop races — 62 animation frames × the 100-step per-frame
+        // cap = 6200 steps in one fake second, no per-second throttle
+        expect(world.ticker.ticks()).toBe(6200);
         world.pause();
         expect(world.running()).toBe(false);
+        vi.advanceTimersByTime(1000);
+        expect(world.ticker.ticks()).toBe(6200);
     });
 
     it('NEIGHBOR_OFFSETS lists 8 directions clockwise from north', () => {

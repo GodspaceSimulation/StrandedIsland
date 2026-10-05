@@ -1,6 +1,9 @@
 // Tests for the seabirds environment plugin (plugins/birds/birdsPlugin.ts).
 // The bird is the engine's Z-axis traveler: everything below is captured
 // from deterministic reference runs (seeded plugin stream) and pinned exactly.
+//
+// One-minute steps keep the reference paths short — one step is one
+// world-minute of flight, one decision per step.
 
 import { describe, it, expect } from 'vitest';
 import { createWorld } from '../../engine/world';
@@ -9,7 +12,7 @@ import { birdsPlugin } from './birdsPlugin';
 
 const buildStack = (options: Parameters<typeof birdsPlugin>[0] = {}) => {
     const birds = birdsPlugin(options);
-    const world = createWorld({ seed: 7, tickSize: 10, plugins: [islandTerrainPlugin(), birds] });
+    const world = createWorld({ seed: 7, tickSize: 1, plugins: [islandTerrainPlugin(), birds] });
     return { world, birds };
 };
 
@@ -67,8 +70,8 @@ describe('birdsPlugin', () => {
     it('flies through 3D space: glides, drifts altitude, lands, takes off', () => {
         const { world, birds } = buildStack();
         birds.release();
-        // Reference run (seed 7): the exact flight path below — glide,
-        // land, hop, take off, glide again… the full Z-axis cycle
+        // Reference run (seed 7, per-minute chances): ten minutes of flight —
+        // all glides, the rare per-minute land/altitude rolls never fire
         for (let index = 0; index < 10; index++) {
             world.step();
         }
@@ -79,23 +82,23 @@ describe('birdsPlugin', () => {
         expect(path).toEqual([
             'Kiki wheels above the island.',
             'Kiki glides northwest.',
-            'Kiki lands.',
-            'Kiki hops south.',
-            'Kiki takes off.',
+            'Kiki glides north.',
+            'Kiki glides east.',
             'Kiki glides north.',
             'Kiki glides northwest.',
-            'Kiki lands.',
-            'Kiki hops west.',
-            'Kiki hops northwest.',
-            'Kiki takes off.',
+            'Kiki glides south.',
+            'Kiki glides northwest.',
+            'Kiki glides west.',
+            'Kiki glides south.',
+            'Kiki glides north.',
         ]);
-        // Reference end position: perched-again cycle left Kiki at (−4,−3,2)
-        expect(birds.birdOf('bird-1')?.position).toEqual({ x: -4, y: -3, z: 2 });
+        // Reference end position: ten glides carried Kiki to (−3,−4,2)
+        expect(birds.birdOf('bird-1')?.position).toEqual({ x: -3, y: -4, z: 2 });
     });
 
     it('lands onto the ground plane (z = 0) and hops while perched', () => {
         // Force the landing instinct: land on the first roll
-        const { world, birds } = buildStack({ landChance: 1 });
+        const { world, birds } = buildStack({ landChancePerMinute: 1 });
         birds.release();
         world.step();
         expect(birds.birdOf('bird-1')).toEqual({
@@ -108,9 +111,9 @@ describe('birdsPlugin', () => {
         expect(world.coordinates.positionOf('bird-1')).toEqual({ x: 0, y: 0, z: 0 });
         expect(world.events.log()[1].message).toBe('Kiki lands.');
 
-        // Perched: takeoff disabled → the gull hops one step per tick
-        const hopper = birdsPlugin({ landChance: 1, takeoffChance: 0 });
-        const hopWorld = createWorld({ seed: 7, tickSize: 10, plugins: [islandTerrainPlugin(), hopper] });
+        // Perched: takeoff disabled → the gull hops one step per minute
+        const hopper = birdsPlugin({ landChancePerMinute: 1, takeoffChancePerMinute: 0 });
+        const hopWorld = createWorld({ seed: 7, tickSize: 1, plugins: [islandTerrainPlugin(), hopper] });
         hopper.release();
         hopWorld.step();
         hopWorld.step();
@@ -125,7 +128,7 @@ describe('birdsPlugin', () => {
 
     it('a perched bird takes off to an altitude within the ceiling', () => {
         // Land on the first tick, then take off on the next
-        const { world, birds } = buildStack({ landChance: 1, takeoffChance: 1 });
+        const { world, birds } = buildStack({ landChancePerMinute: 1, takeoffChancePerMinute: 1 });
         birds.release();
         world.step(); // lands
         world.step(); // takes off
@@ -137,7 +140,7 @@ describe('birdsPlugin', () => {
     });
 
     it('birds never block castaways — occupancy checks scan actors only', () => {
-        const { world, birds } = buildStack({ landChance: 0, takeoffChance: 0 });
+        const { world, birds } = buildStack({ landChancePerMinute: 0, takeoffChancePerMinute: 0 });
         birds.release();
         // A castaway walks onto the bird's column without resistance
         const actor = world.spawn({

@@ -19,12 +19,12 @@ import { NEIGHBOR_OFFSETS } from '../../engine/world';
 import type { PluginContext, WorldPlugin } from '../../engine/plugin';
 
 export type BirdsPluginOptions = {
-    /** Chance per tick a flying bird lands. Default 0.2. */
-    landChance?: number;
-    /** Chance per tick a perched bird takes off. Default 0.4. */
-    takeoffChance?: number;
-    /** Chance per tick a flying bird's altitude drifts ±1. Default 0.25. */
-    altitudeChance?: number;
+    /** Chance per world-minute a flying bird lands. Default 0.02. */
+    landChancePerMinute?: number;
+    /** Chance per world-minute a perched bird takes off. Default 0.05. */
+    takeoffChancePerMinute?: number;
+    /** Chance per world-minute a flying bird's altitude drifts ±1. Default 0.03. */
+    altitudeChancePerMinute?: number;
     /** Cruise altitude ceiling in voxels above the ground plane. Default 3. */
     ceiling?: number;
 };
@@ -67,9 +67,11 @@ const directionWord = (dx: number, dy: number): string => {
 };
 
 export const birdsPlugin = (options: BirdsPluginOptions = {}): BirdsPlugin => {
-    const landChance = options.landChance ?? 0.2;
-    const takeoffChance = options.takeoffChance ?? 0.4;
-    const altitudeChance = options.altitudeChance ?? 0.25;
+    // Chances are per world-minute — every tick hook call covers exactly one
+    // world-minute (engine/world.ts sub-steps), so the rolls apply directly
+    const landChance = options.landChancePerMinute ?? 0.02;
+    const takeoffChance = options.takeoffChancePerMinute ?? 0.05;
+    const altitudeChance = options.altitudeChancePerMinute ?? 0.03;
     const ceiling = options.ceiling ?? 3;
 
     // Bird identity records — positions live in the coordinate space only

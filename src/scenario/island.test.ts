@@ -111,8 +111,10 @@ describe('createIslandWorld', () => {
         const handle = createIslandWorld({ seed: 7 });
         handle.world.step();
         expect(handle.world.ticker.ticks()).toBe(1);
-        // Every castaway moved (wander path) + Kiki's first glide
-        expect(handle.world.events.log().filter((event) => event.kind === 'move').length).toBe(5);
+        // One step = 10 world-minutes, run one minute at a time: every
+        // castaway wanders once per minute (4 × 10 moves) and Kiki glides
+        // once per minute (10 moves) — the smallest-scale rule
+        expect(handle.world.events.log().filter((event) => event.kind === 'move').length).toBe(50);
     });
 
     it('plugin toggles swap environment behaviour out entirely', () => {
@@ -324,6 +326,25 @@ describe('createIslandWorld', () => {
         // Back to the default view
         expect(handle.scale.zoomOut()).toBe(0);
         expect(handle.scale.atBase()).toBe(true);
+    });
+
+    it('the view scale defines the step time — one rung is a factor of 10', () => {
+        const handle = createIslandWorld({ seed: 7 });
+        // Scale 0 steps 10 minutes; zooming in (scale 1) refines to 1 minute;
+        // a scale −1 (out of this engine's reach) would step 100 minutes
+        expect(handle.world.ticker.tickSize()).toBe(10);
+        handle.scale.zoomIn();
+        expect(handle.world.ticker.tickSize()).toBe(1);
+        // A step at scale 1 advances exactly one world-minute
+        handle.world.step();
+        expect(handle.world.ticker.elapsed()).toBe(1);
+        handle.scale.zoomOut();
+        expect(handle.world.ticker.tickSize()).toBe(10);
+        // The scale system's own mutators re-time the clock too
+        handle.scale.set(1);
+        expect(handle.world.ticker.tickSize()).toBe(1);
+        handle.scale.set(0);
+        expect(handle.world.ticker.tickSize()).toBe(10);
     });
 
     it('generates the recursive tile ladder: every scale-0 tile opens into a full sub-grid', () => {

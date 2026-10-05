@@ -1,12 +1,32 @@
-// Tests for the world clock (engine/ticker.ts).
-// Fake timers are used for the realtime loop; manual stepping is time-free.
+﻿// Tests for the world clock (engine/ticker.ts).
+// Fake timers drive the AUTO loop — requestAnimationFrame (the browser loop
+// the ticker schedules on) plus performance (the frame CPU budget's clock)
+// are faked explicitly, so every frame is deterministic: with performance
+// frozen the per-frame batch always runs the FRAME_STEP_CAP of 100 steps,
+// and a fake second holds 62 animation frames → 62 × 100 = 6200 steps.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createTicker } from './ticker';
 
+// The fake timer set the AUTO loop needs: rAF schedules the frames,
+// performance.now budgets each frame's batch
+const fakeTimers = () =>
+    vi.useFakeTimers({
+        toFake: [
+            'setTimeout',
+            'clearTimeout',
+            'setInterval',
+            'clearInterval',
+            'Date',
+            'requestAnimationFrame',
+            'cancelAnimationFrame',
+            'performance',
+        ],
+    });
+
 describe('createTicker', () => {
     beforeEach(() => {
-        vi.useFakeTimers();
+        fakeTimers();
     });
 
     afterEach(() => {
@@ -39,14 +59,14 @@ describe('createTicker', () => {
         expect(ticker.elapsed()).toBe(70);
     });
 
-    it('clock derives day/hour/minute from accumulated world minutes', () => {
-        // 23 ticks × 60 min = 23:00, then one 15-min tick → 23:15, day 1
+    it('clock derives day/hour/minute within a 24-hour day', () => {
         const ticker = createTicker({ tickSize: 60 });
         for (let index = 0; index < 23; index++) {
             ticker.step();
         }
         ticker.tickSize(15);
         ticker.step();
+        // 23 ticks × 60 min = 23:00, then one 15-min tick → 23:15, day 1
         expect(ticker.clock()).toEqual({ day: 1, hour: 23, minute: 15 });
     });
 
@@ -69,42 +89,48 @@ describe('createTicker', () => {
         expect(seen).toEqual([1, 2]);
     });
 
-    it('realtime loop fires at the configured speed', () => {
-        const ticker = createTicker({ speed: 2 });
+    // ── AUTO mode — the simulation runs as fast as possible ────────────────
+
+    it('AUTO runs steps back-to-back with no per-second cap', () => {
+        const ticker = createTicker();
+        expect(ticker.running()).toBe(false);
         ticker.play();
-        // 2 ticks per second → 4 ticks after 2 seconds
-        vi.advanceTimersByTime(2000);
-        expect(ticker.ticks()).toBe(4);
         expect(ticker.running()).toBe(true);
+        // One fake second = 62 animation frames (the first fires at t = 0)
+        // × the 100-step per-frame cap (performance is frozen, so the CPU
+        // budget never binds) — the loop races, no ticks-per-second throttle
+        vi.advanceTimersByTime(1000);
+        expect(ticker.ticks()).toBe(6200);
         ticker.pause();
         expect(ticker.running()).toBe(false);
-        vi.advanceTimersByTime(5000);
-        // Paused — no more ticks
-        expect(ticker.ticks()).toBe(4);
+        vi.advanceTimersByTime(1000);
+        // Paused — no more steps
+        expect(ticker.ticks()).toBe(6200);
     });
 
-    it('play is idempotent (no stacked intervals)', () => {
-        const ticker = createTicker({ speed: 2 });
+    it('play is idempotent (no stacked loops)', () => {
+        const ticker = createTicker();
         ticker.play();
         ticker.play();
         vi.advanceTimersByTime(1000);
-        expect(ticker.ticks()).toBe(2);
+        expect(ticker.ticks()).toBe(6200);
     });
 
-    it('changing speed while running reschedules the interval', () => {
-        const ticker = createTicker({ speed: 1 });
+    it('pause mid-run stops the loop and play resumes it', () => {
+        const ticker = createTicker();
         ticker.play();
-        vi.advanceTimersByTime(1000);
-        expect(ticker.ticks()).toBe(1);
-        ticker.speed(4);
-        vi.advanceTimersByTime(1000);
-        // 4 more ticks at 4 tps
-        expect(ticker.ticks()).toBe(5);
-        expect(ticker.speed()).toBe(4);
+        vi.advanceTimersByTime(500);
+        const halfway = ticker.ticks();
+        ticker.pause();
+        vi.advanceTimersByTime(500);
+        expect(ticker.ticks()).toBe(halfway);
+        ticker.play();
+        vi.advanceTimersByTime(500);
+        expect(ticker.ticks()).toBeGreaterThan(halfway);
     });
 
-    it('bindPulse replaces the realtime pulse with the full world step', () => {
-        const ticker = createTicker({ speed: 2 });
+    it('bindPulse replaces the auto pulse with the full world step', () => {
+        const ticker = createTicker();
         let fullSteps = 0;
         // The world binds its step() here — a "full step" also advances the
         // clock, so the pulse must not double-count
@@ -114,7 +140,7 @@ describe('createTicker', () => {
         });
         ticker.play();
         vi.advanceTimersByTime(1000);
-        expect(fullSteps).toBe(2);
-        expect(ticker.ticks()).toBe(2);
+        expect(fullSteps).toBe(6200);
+        expect(ticker.ticks()).toBe(6200);
     });
 });

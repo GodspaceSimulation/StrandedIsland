@@ -12,9 +12,9 @@ describe('App', () => {
     it('renders the god view with title, clock and the full island grid', () => {
         render(<App seed={7} />);
         expect(screen.getByRole('heading', { name: /stranded island/i })).toBeDefined();
-        // Seed 7, tickSize 10 — the temporal calendar starts Year 1, Spring,
-        // January 1 at 00:00
-        expect(screen.getByTestId('world-clock').textContent).toBe('Year 1 · Spring · Jan 1 · 00:00');
+        // Seed 7, tickSize 10 — the island's calendar is born at 10:00 on
+        // January 1, 1609 (scenario/temporal.ts), January opens Winter
+        expect(screen.getByTestId('world-clock').textContent).toBe('Year 1609 · Winter · Jan 1 · 10:00');
         // Default view is the unicode (emoji) canvas — 925 voxel cells
         expect(screen.getByTestId('world-grid-unicode').children.length).toBe(925);
         // All four castaways are on the board
@@ -76,15 +76,18 @@ describe('App', () => {
         render(<App seed={7} />);
         fireEvent.click(screen.getByTestId('log-toggle'));
         fireEvent.click(screen.getByTestId('step-button'));
-        // tickSize 10 → the clock moved 10 world minutes
-        expect(screen.getByTestId('world-clock').textContent).toBe('Year 1 · Spring · Jan 1 · 00:10');
-        // Five arrivals + four castaway wanders + Kiki's first glide
-        expect(screen.getAllByTestId('event-row').length).toBe(10);
+        // tickSize 10 → the clock moved 10 world minutes (from the 10:00 birth)
+        expect(screen.getByTestId('world-clock').textContent).toBe('Year 1609 · Winter · Jan 1 · 10:10');
+        // Five arrivals + 50 moves: every castaway wanders once per
+        // world-minute (4 × 10) and Kiki glides once per minute (10) — the
+        // step's minutes run one at a time (the smallest-scale rule).
+        // The log view shows the newest 30 of the 55 events.
+        expect(screen.getAllByTestId('event-row').length).toBe(30);
         // Newest first: the seabird glided last (birds tick after behavior)
-        expect(screen.getAllByTestId('event-row')[0].textContent).toContain('Kiki glides northwest.');
-        // Temporal calendar stamps on the log rows: tick 1 = 10 minutes into
-        // January 1 of Year 1
-        expect(screen.getAllByTestId('event-row')[0].textContent).toContain('Jan 1 · 00:10');
+        expect(screen.getAllByTestId('event-row')[0].textContent).toContain('Kiki glides north.');
+        // Temporal calendar stamps on the log rows: every step-1 event is
+        // stamped 10 minutes past the 10:00 birth, January 1 of Year 1609
+        expect(screen.getAllByTestId('event-row')[0].textContent).toContain('Jan 1 · 10:10');
     });
 
     it('the inspector opens in the left rail when a castaway is selected', () => {
@@ -117,18 +120,17 @@ describe('App', () => {
             Array.from(fresh.children).map((child) => child.textContent),
         ).toEqual(['Bram — neutral (0)', 'Cove — neutral (0)', 'Dune — neutral (0)']);
 
-        // 60 seeded ticks (seed 7) — drift and socials move the values
+        // 60 seeded steps (seed 7) — drift and socials move the values
         for (let tick = 0; tick < 60; tick++) {
             fireEvent.click(screen.getByTestId('step-button'));
         }
-        // Exactly castSize − 1 rows, roster order, Ael's own name absent.
         // Values captured from the deterministic run (relationship drift
-        // 0.2/tick + behavior socials): 24.2→24, 30.2→30 — Dune crossed the
-        // friendliness threshold (≥ 30)
+        // 0.02/min + behavior socials): 25.02→25, 12→12 — Cove crossed the
+        // friendliness threshold (≥ 25)
         const stepped = screen.getByTestId('actor-relations');
         expect(
             Array.from(stepped.children).map((child) => child.textContent),
-        ).toEqual(['Bram — neutral (24)', 'Cove — neutral (0)', 'Dune — friendly (30)']);
+        ).toEqual(['Bram — neutral (0)', 'Cove — friendly (25)', 'Dune — neutral (12)']);
 
         // A different selection never shows its own name either — the list is
         // always the OTHER castaways, so pairs between third parties cannot
@@ -137,19 +139,31 @@ describe('App', () => {
         fireEvent.click(screen.getByTestId('actor-chip-Bram'));
         const bram = screen.getByTestId('actor-relations');
         const bramRows = Array.from(bram.children).map((child) => child.textContent);
-        expect(bramRows).toEqual(['Ael — neutral (24)', 'Cove — friendly (26)', 'Dune — neutral (0)']);
+        expect(bramRows).toEqual(['Ael — neutral (0)', 'Cove — neutral (6)', 'Dune — neutral (21)']);
         expect(bramRows.join('|')).not.toContain('Bram');
     });
 
-    it('the tick size dial redefines what one tick means', () => {
+    it('the view scale defines the step time — zooming in refines the tick', () => {
         render(<App seed={7} />);
         fireEvent.click(screen.getByTestId('step-button'));
-        expect(screen.getByTestId('world-clock').textContent).toBe('Year 1 · Spring · Jan 1 · 00:10');
-        // Switch to hour-long ticks
-        fireEvent.change(screen.getByTestId('tick-size'), { target: { value: '60' } });
+        expect(screen.getByTestId('world-clock').textContent).toBe('Year 1609 · Winter · Jan 1 · 10:10');
+        // Scale 0: one tick is 10 minutes — the scale line names both
+        expect(screen.getByTestId('tick-label').textContent).toContain('Scale 0');
+        expect(screen.getByTestId('tick-label').textContent).toContain('× 10 min');
+        // Zoom into a tile: scale 1 → one tick is now ONE minute
+        fireEvent.click(screen.getByTestId('unicode-tile-17--11'));
+        fireEvent.click(screen.getByTestId('zoom-in'));
+        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 1');
+        expect(screen.getByTestId('tick-label').textContent).toContain('Scale 1');
+        expect(screen.getByTestId('tick-label').textContent).toContain('× 1 min');
+        // A step at scale 1 advances exactly one world minute
         fireEvent.click(screen.getByTestId('step-button'));
-        // 10 + 60 world minutes
-        expect(screen.getByTestId('world-clock').textContent).toBe('Year 1 · Spring · Jan 1 · 01:10');
+        expect(screen.getByTestId('world-clock').textContent).toBe('Year 1609 · Winter · Jan 1 · 10:11');
+        // Zoom back out: the step widens to 10 minutes again
+        fireEvent.click(screen.getByTestId('zoom-out'));
+        expect(screen.getByTestId('tick-label').textContent).toContain('× 10 min');
+        fireEvent.click(screen.getByTestId('step-button'));
+        expect(screen.getByTestId('world-clock').textContent).toBe('Year 1609 · Winter · Jan 1 · 10:21');
     });
 
     it('clicking an empty land tile shows its terrain and ground stock, no residents', () => {

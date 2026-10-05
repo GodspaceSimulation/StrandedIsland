@@ -3,16 +3,17 @@
 // Collapsed by default: the header row shows the event count and acts as
 // the toggle. Clicking it expands the stream (newest first).
 //
-// Timestamps come from the @godspace/core temporal calendar (Year · Month
-// day · clock face) — the same calendar the World Ticker renders, so log
-// lines and the big clock always agree on "when".
+// Timestamps come from the island's temporal configuration (scenario/
+// temporal.ts — Year · Month day · clock face) — the same calendar the
+// World Ticker renders, so log lines and the big clock always agree
+// on "when".
 
-import { temporalCalendar } from '@godspace/core';
 import { useToggleHook } from '@presource/react';
 import { styled } from '../styles/styled';
 import { PALETTE } from '../styles/theme';
 import { Panel, PanelTitle } from '../components/panel';
 import { useWorld, useRevision } from './worldBridge';
+import { islandCalendar } from '../scenario/temporal';
 
 /** Clickable header row for the collapsible panel. */
 const HeaderRow = styled<{ open: string }>('button', {
@@ -96,8 +97,8 @@ export const EventLog = () => {
                         </LogRow>
                     ) : (
                         events.map((event) => {
-                            // Temporal calendar stamp — "Year 1 · Jan 1 · 00:10"
-                            const stamp = temporalCalendar(event.time);
+                            // Temporal calendar stamp — "Year 1609 · Jan 1 · 10:10"
+                            const stamp = islandCalendar(event.time);
                             return (
                                 <LogRow key={event.id} data-testid="event-row">
                                     <LogTick>

@@ -1,10 +1,13 @@
 // The world clock (ticker).
 //
 // The whole simulation runs on this beat: every `step()` advances world time
-// by `tickSize` minutes. `tickSize` is configurable at any moment — a tick can
-// represent a minute, ten minutes or an hour depending on how the god sets it
-// up. On top of manual stepping there is an optional realtime loop driven by
-// setInterval with a speed multiplier (ticks per real second).
+// by `tickSize` minutes. `tickSize` is configurable at any moment — the VIEW
+// SCALE drives it (scenario/island.ts binds scale → tick size: one zoom rung
+// is one factor of 10 of step time, scale 0 = 10 min, scale +1 = 1 min,
+// scale −1 = 100 min). On top of manual stepping there is the AUTO loop:
+// play() runs the simulation AS FAST AS POSSIBLE — no ticks-per-second cap,
+// each animation frame processes a batch of steps bounded only by a small
+// CPU budget so the browser keeps breathing and the god-view keeps painting.
 
 import { arrayEach } from '@presource/core';
 
@@ -12,10 +15,8 @@ import { arrayEach } from '@presource/core';
 export type TickerListener = (tick: number) => void;
 
 export type TickerOptions = {
-    /** Minutes of world time per tick. Default 10. */
+    /** Minutes of world time per tick. Default 10 (the scale-0 step time). */
     tickSize?: number;
-    /** Realtime speed in ticks per second. Default 2. */
-    speed?: number;
 };
 
 export type Ticker = {
@@ -31,32 +32,51 @@ export type Ticker = {
      */
     tickSize(): number;
     tickSize(minutes: number): void;
-    /** Starts the realtime loop (no-op when already running). */
+    /**
+     * Starts the AUTO loop — the simulation runs as fast as the browser
+     * allows (no per-second cap). No-op when already running.
+     */
     play(): void;
-    /** Stops the realtime loop (no-op when already paused). */
+    /** Stops the AUTO loop (no-op when already paused). */
     pause(): void;
-    /** Whether the realtime loop is currently running. */
+    /** Whether the AUTO loop is currently running. */
     running(): boolean;
-    /** Ticks per real second. Read with no argument, set with a number. */
-    speed(): number;
-    speed(value: number): void;
     /** Calendar derivation from elapsed minutes: day is 1-based. */
     clock(): { day: number; hour: number; minute: number };
     /** Subscribes to every tick; returns the unsubscribe function. */
     subscribe(listener: TickerListener): () => void;
     /**
-     * Overrides what the realtime loop executes per pulse. The world binds
-     * its full `step()` here so realtime ticks also run plugin ticks —
+     * Overrides what the AUTO loop executes per pulse. The world binds
+     * its full `step()` here so auto ticks also run plugin ticks —
      * without this, play() would advance the clock but the world would
      * stand still. Unbound, the pulse is a plain internal step.
      */
     bindPulse(pulse: () => void): void;
 };
 
-/** Fallback when no tickSize is provided. */
+/** Fallback when no tickSize is provided — the scale-0 step time. */
 const DEFAULT_TICK_SIZE = 10;
-/** Fallback realtime speed — 2 ticks per second feels lively for a small map. */
-const DEFAULT_SPEED = 2;
+
+// ── AUTO loop constants ──────────────────────────────────────────────────────
+// Each animation frame runs a batch of steps: as many as fit the frame's CPU
+// budget (the simulation races), capped so a frozen clock (fake timers) can
+// never spin the batch forever.
+
+/** CPU budget per animation frame, in milliseconds. */
+const FRAME_BUDGET_MS = 10;
+/** Hard cap of steps per frame — the frozen-clock safety valve. */
+const FRAME_STEP_CAP = 100;
+
+/** Millisecond reader — performance.now when present, Date.now otherwise. */
+const nowMs = (): number => {
+    if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+        return performance.now();
+    }
+    return Date.now();
+};
+
+/** A scheduled auto pulse plus how to cancel it (rAF id or timeout id). */
+type AutoHandle = { cancel(): void };
 
 export const createTicker = (options: TickerOptions = {}): Ticker => {
     // Simulation state — `minutes` accumulates every step so a mid-run
@@ -64,16 +84,20 @@ export const createTicker = (options: TickerOptions = {}): Ticker => {
     let count = 0;
     let minutes = 0;
     let minutesPerTick = options.tickSize ?? DEFAULT_TICK_SIZE;
-    let ticksPerSecond = options.speed ?? DEFAULT_SPEED;
-    let timer: ReturnType<typeof setInterval> | null = null;
 
     // Subscriber set — insertion order preserved, listeners run oldest first
     const listeners = new Set<TickerListener>();
 
-    // Bound pulse — set by the world so realtime ticks run the full step
+    // Bound pulse — set by the world so auto ticks run the full step
     let boundPulse: (() => void) | null = null;
 
-    // Internal: fires one realtime tick when the loop is active
+    // AUTO loop state — `autoActive` is the loop's on/off bit (pause() may
+    // land mid-batch, after the frame handle was already consumed);
+    // `autoHandle` is the PENDING frame between scheduling and firing
+    let autoActive = false;
+    let autoHandle: AutoHandle | null = null;
+
+    // Internal: fires one auto tick when the loop is active
     const pulse = () => {
         if (boundPulse) {
             boundPulse();
@@ -82,15 +106,43 @@ export const createTicker = (options: TickerOptions = {}): Ticker => {
         }
     };
 
-    // Internal: (re)schedule the realtime interval at the current speed
-    const schedule = () => {
-        if (timer !== null) {
-            clearInterval(timer);
-            timer = null;
+    // Internal: queues the next auto frame — requestAnimationFrame in the
+    // browser (the loop yields to rendering, the browser's fastest safe
+    // cadence), a zero-delay timeout anywhere else (tests, workers)
+    const scheduleAuto = () => {
+        const raf = (globalThis as { requestAnimationFrame?: (cb: () => void) => number }).requestAnimationFrame;
+        const cancelRaf = (globalThis as { cancelAnimationFrame?: (id: number) => void }).cancelAnimationFrame;
+        if (typeof raf === 'function' && typeof cancelRaf === 'function') {
+            const id = raf(() => autoPulse());
+            autoHandle = { cancel: () => cancelRaf(id) };
+            return;
         }
-        if (ticksPerSecond > 0) {
-            // Interval is the reciprocal of speed: 2 tps → 500ms per tick
-            timer = setInterval(pulse, 1000 / ticksPerSecond);
+        const timeout = setTimeout(() => autoPulse(), 0);
+        autoHandle = { cancel: () => clearTimeout(timeout) };
+    };
+
+    // Internal: one auto frame — a batch of pulses bounded by the CPU
+    // budget (and the cap). Each pulse is a FULL step.
+    const autoPulse = () => {
+        // The frame handle is consumed the moment it fires
+        autoHandle = null;
+        if (!autoActive) {
+            return;
+        }
+        const start = nowMs();
+        let ran = 0;
+        while (ran < FRAME_STEP_CAP) {
+            pulse();
+            ran = ran + 1;
+            // Budget spent — hand the remainder of the frame back to the
+            // browser so rendering and input never starve
+            if (nowMs() - start >= FRAME_BUDGET_MS) {
+                break;
+            }
+        }
+        // Pause may have landed mid-batch — only continue when still active
+        if (autoActive) {
+            scheduleAuto();
         }
     };
 
@@ -117,31 +169,26 @@ export const createTicker = (options: TickerOptions = {}): Ticker => {
             minutesPerTick = minutes;
         }) as Ticker['tickSize'],
         play: () => {
-            // Already running — do not stack a second interval
-            if (timer !== null) {
+            // Already running — do not stack a second loop
+            if (autoActive) {
                 return;
             }
-            schedule();
+            autoActive = true;
+            scheduleAuto();
         },
         pause: () => {
-            if (timer === null) {
+            if (!autoActive) {
                 return;
             }
-            clearInterval(timer);
-            timer = null;
+            autoActive = false;
+            // A pending frame (between scheduling and firing) is cancelled;
+            // mid-batch pauses simply let the batch end without rescheduling
+            if (autoHandle !== null) {
+                autoHandle.cancel();
+                autoHandle = null;
+            }
         },
-        running: () => timer !== null,
-        speed: ((value?: number) => {
-            if (value === undefined) {
-                return ticksPerSecond;
-            }
-            ticksPerSecond = value;
-            // Reschedule only when the loop is active; a paused ticker keeps
-            // its paused state and simply uses the new speed when played.
-            if (timer !== null) {
-                schedule();
-            }
-        }) as Ticker['speed'],
+        running: () => autoActive,
         clock: () => {
             // World day = 24 × 60 minutes; day 1 starts at minute 0
             const day = Math.floor(minutes / 1440) + 1;

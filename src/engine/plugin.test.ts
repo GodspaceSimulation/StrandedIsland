@@ -50,7 +50,8 @@ describe('createPluginRegistry', () => {
     });
 
     it('context.random is persistent per plugin (not re-seeded per tick)', () => {
-        const world = buildWorld();
+        // One-minute steps: one tick hook call per step
+        const world = createWorld({ seed: 5, tickSize: 1 });
         const plugin: WorldPlugin = {
             id: 'streamer',
             tick: (context) => {

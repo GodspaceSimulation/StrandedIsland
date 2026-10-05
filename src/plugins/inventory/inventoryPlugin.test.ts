@@ -39,7 +39,7 @@ const actor = (id: string, name: string, x: number, y: number): Actor => ({
 //   (−5,3)    highland stock {stone:1, iron:1, flint:1} (iron lode + 30% flint draw hit)
 //   (−7,1)    highland stock {iron:1, stone:1}     (iron lode, flint draw missed)
 const buildWorld = () => {
-    const island = inventoryPlugin({ rainChance: 0 });
+    const island = inventoryPlugin({ rainChancePerMinute: 0 });
     const world = createWorld({ seed: 7, plugins: [islandTerrainPlugin(), island] });
     return { world, island };
 };
@@ -231,11 +231,13 @@ describe('inventoryPlugin', () => {
         const { world, island } = buildWorld();
         const ael = world.spawn(actor('a', 'Ael', 0, -6));
         void ael;
-        // Meadow cell (0,−6): cap 3, rhythm every 3 ticks at offset 2
+        // Meadow cell (0,−6): cap 3, rhythm every 30 minutes at offset 20 —
+        // a 10-minute step sweeps minutes 1-10 (silent), the next one
+        // crosses minute 20 and regrows
         island.cellStock(0, -6).berry = 0;
-        world.step(); // tick 1 → 1 % 3 = 1, no regrow
+        world.step(); // minutes 1-10 → no minute hits the offset
         expect(island.cellStock(0, -6).berry ?? 0).toBe(0);
-        world.step(); // tick 2 → 2 % 3 = 2, +1
+        world.step(); // minutes 11-20 → minute 20 regrows one berry
         expect(island.cellStock(0, -6).berry).toBe(1);
         // Cap respected: parked at cap, regrowth does not exceed 3
         island.cellStock(0, -6).berry = 3;
@@ -253,12 +255,14 @@ describe('inventoryPlugin', () => {
         island.takeFromCell(ael, 'wood');
         expect(island.cellStock(-3, -6)).toEqual({ wood: 1, berry: 1 });
         expect(world.cellAt(-3, -6)?.resources).toEqual({ wood: 1 });
-        // Wood rhythm: every 6 ticks at offset 4 — ticks 1-4 pass silently…
+        // Wood rhythm: every 60 minutes at offset 40 — steps 1-3 (minutes
+        // 1-30) pass silently…
         world.step();
         world.step();
         world.step();
         expect(island.cellStock(-3, -6).wood).toBe(1);
-        // …tick 4 regrows one unit into the stock AND the tile deposit
+        // …step 4 (minute 40) regrows one unit into the stock AND the tile
+        // deposit
         world.step();
         expect(island.cellStock(-3, -6).wood).toBe(2);
         expect(world.cellAt(-3, -6)?.resources).toEqual({ wood: 2 });
@@ -305,8 +309,9 @@ describe('inventoryPlugin', () => {
             world.step();
         }
         unsubscribe();
-        // Reference run: three rains in the first 60 ticks, on ticks 33, 52, 53
-        expect(rains).toEqual([33, 52, 53]);
+        // Reference run: the per-minute rain roll (0.0127/min ≈ 0.12 per
+        // 10-minute step) fired on steps 19, 22, 23, 41, 43, 51, 57
+        expect(rains).toEqual([19, 22, 23, 41, 43, 51, 57]);
         // Beach (−11,−11): coconut regrew to cap 2; two rains pooled water;
         // the unlimited sand pile never moved
         expect(island.cellStock(-11, -11)).toEqual({ sand: 1, coconut: 2, water: 2 });

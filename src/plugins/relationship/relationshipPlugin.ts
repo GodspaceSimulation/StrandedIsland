@@ -9,8 +9,8 @@ import { arrayEach } from '@presource/core';
 import type { PluginContext, WorldPlugin } from '../../engine/plugin';
 
 export type RelationshipPluginOptions = {
-    /** Drift toward 0 per tick. Default 0.2. */
-    driftPerTick?: number;
+    /** Drift toward 0 per world-minute. Default 0.02 (0.2 per 10-min step). */
+    driftPerMinute?: number;
 };
 
 export type RelationLevel = 'hostile' | 'strained' | 'neutral' | 'friendly' | 'bonded';
@@ -50,7 +50,9 @@ const levelOf = (value: number): RelationLevel => {
 const pairKey = (a: string, b: string): string => (a <= b ? `${a}|${b}` : `${b}|${a}`);
 
 export const relationshipPlugin = (options: RelationshipPluginOptions = {}): RelationshipPlugin => {
-    const driftPerTick = options.driftPerTick ?? 0.2;
+    // Per world-minute — each tick hook call covers exactly one minute
+    // (engine/world.ts sub-steps), so the drift applies directly
+    const driftPerMinute = options.driftPerMinute ?? 0.02;
 
     const relations = new Map<string, number>();
 
@@ -105,8 +107,8 @@ export const relationshipPlugin = (options: RelationshipPluginOptions = {}): Rel
                 if (value === 0) {
                     return;
                 }
-                const drifted = value > 0 ? value - driftPerTick : value + driftPerTick;
-                relations.set(key, Math.abs(drifted) < driftPerTick ? 0 : drifted);
+                const drifted = value > 0 ? value - driftPerMinute : value + driftPerMinute;
+                relations.set(key, Math.abs(drifted) < driftPerMinute ? 0 : drifted);
             });
             void context;
         },

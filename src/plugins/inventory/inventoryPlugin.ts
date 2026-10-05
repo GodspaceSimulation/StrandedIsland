@@ -34,8 +34,9 @@ import {
 } from './inventory';
 
 export type InventoryPluginOptions = {
-    /** Chance per tick that rain fills water stocks on all land. Default 0.12. */
-    rainChance?: number;
+    /** Chance per world-minute that rain fills water stocks on all land.
+     * Default 0.0127 (≈ 0.12 per 10-minute step at the scale-0 pace). */
+    rainChancePerMinute?: number;
 };
 
 /** Regrowth caps per item — stocks never exceed these counts. */
@@ -49,12 +50,16 @@ const REGROW_CAPS: Record<string, number> = {
     // sand / dirt are unlimited — never depleted, never regrown
 };
 
-/** Regrowth rhythm per item: fires when `tick % every === offset`. */
+/**
+ * Regrowth rhythm per item, in WORLD MINUTES: fires when
+ * `minute % every === offset`. (The minute-based values keep the scale-0
+ * pace of the original tick rhythm: one old 10-minute tick = 10 minutes.)
+ */
 const REGROW_RHYTHM: Record<string, { every: number; offset: number }> = {
-    berry: { every: 3, offset: 2 },
-    wood: { every: 6, offset: 4 },
-    fish: { every: 4, offset: 0 },
-    coconut: { every: 6, offset: 1 },
+    berry: { every: 30, offset: 20 },
+    wood: { every: 60, offset: 40 },
+    fish: { every: 40, offset: 0 },
+    coconut: { every: 60, offset: 10 },
 };
 
 /** What each biome stocks as FOOD when the island is surveyed. The tile
@@ -102,11 +107,19 @@ export type InventoryPlugin = WorldPlugin & {
 };
 
 export const inventoryPlugin = (options: InventoryPluginOptions = {}): InventoryPlugin => {
-    const rainChance = options.rainChance ?? 0.12;
+    // Rain chance per world-minute — each tick hook call covers exactly one
+    // world-minute (engine/world.ts sub-steps), so the roll applies directly
+    const rainChance = options.rainChancePerMinute ?? 0.0127;
 
     // Actor bags and cell stocks, keyed by id / "x,y"
     const bags = new Map<string, Inventory>();
     const stocks = new Map<string, Inventory>();
+
+    // The plugin's fine clock — one world-minute per tick hook call (the
+    // world sub-steps its steps). The regrowth rhythm reads THIS, not the
+    // ticker's step count: the ticker only counts steps, and within one
+    // step every minute must see its own time.
+    let minute = 0;
 
     // The world reference arrives with setup; action hooks (exchange/give)
     // need it for event emission and canvas lookups before any tick runs.
@@ -378,20 +391,23 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             // is gone entirely, exactly what a plugin swap means
             bags.clear();
             stocks.clear();
+            // The fine clock resets with the environment
+            minute = 0;
             world = null;
             surveyContext = null;
         },
 
         tick: (context: PluginContext) => {
             const { world: active } = context;
-            const tick = active.ticker.ticks();
+            // One tick hook call = one world-minute — advance the fine clock
+            minute = minute + 1;
 
             // Regrowth sweep over all stocked cells (deposits grow back
             // with their stocks — see regrow/growDeposit)
             stocks.forEach((stock, key) => {
                 const [x, y] = key.split(',').map(Number);
                 arrayEach(Object.keys(stock), ({ value: itemId }) => {
-                    regrow(stock, itemId, tick, x, y);
+                    regrow(stock, itemId, minute, x, y);
                 });
             });
 
