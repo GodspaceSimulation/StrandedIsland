@@ -2,10 +2,10 @@
 //
 // Step advances exactly one tick; Auto (play/pause) runs the simulation AS
 // FAST AS POSSIBLE — no ticks-per-second cap, the browser's animation frames
-// batch as many steps as their CPU budget allows. The tick's SIZE is not a
-// free dial: the VIEW SCALE defines it (one zoom rung is one factor of 10 of
-// step time — scale 0 steps 10 minutes, scale +1 steps 1 minute, scale −1
-// would step 100 minutes; see scenario/island.ts minutesPerScaleStep).
+// batch as many steps as their CPU budget allows. The tick's SIZE is the
+// island's own pacing rule (the Scale-0 rule, scenario/island.ts): one tick
+// carries ONE world minute at every view — the scale ladder is a pure view
+// ladder and does not re-time the clock.
 //
 // The calendar readout comes from the island's temporal configuration
 // (scenario/temporal.ts): elapsed world minutes → the year/season/month/day
@@ -43,8 +43,8 @@ export const formatClock = (calendar: TemporalCalendarPoint): string =>
 export const TickerControls = () => {
     const island = useWorld();
     const revision = useRevision();
-    // The step time is the VIEW SCALE's — subscribing to the scale keeps
-    // this panel live when the god zooms (a zoom re-times the tick)
+    // The view scale rides along in the label — the ladder is a pure view
+    // ladder (zooming re-renders the world, never the clock)
     const scale = useScale();
     if (!island) {
         return null;

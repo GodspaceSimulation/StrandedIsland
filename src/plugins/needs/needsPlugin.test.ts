@@ -13,19 +13,19 @@ const spawnActor = (world: ReturnType<typeof createWorld>, id = 'a', name = 'Ael
 };
 
 describe('needsPlugin', () => {
-    it('decays needs per minute — a 10-minute step drifts 10 minutes worth', () => {
+    it('decays needs per minute — three 1-minute steps drift 3 minutes worth', () => {
         const needs = needsPlugin();
         const world = createWorld({ seed: 7, plugins: [needs] });
         spawnActor(world);
         for (let index = 0; index < 3; index++) {
             world.step();
         }
-        // 3 steps × 10 world-minutes of per-minute decay (0.1/min hunger,
+        // 3 steps × 1 world-minute of per-minute decay (0.1/min hunger,
         // 0.15/min thirst, −0.06/min energy) — floats pinned from reference
         expect(needs.of('a')).toEqual({
-            hunger: 23.000000000000043,
-            thirst: 24.499999999999957,
-            energy: 98.19999999999993,
+            hunger: 20.300000000000004,
+            thirst: 20.449999999999996,
+            energy: 99.82,
         });
     });
 

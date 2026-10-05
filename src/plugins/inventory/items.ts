@@ -101,12 +101,14 @@ export const itemLabel = (itemId: string, count: number): string => {
 // ── Item categories — the generalization ladder of the zoom scale ───────────
 //
 // Every item carries a category, and the category is the COARSEST level of
-// the ground-item granularity ladder the zoom scales read:
-//   scale 0 (and every scale "above" it — a space engine's −100 …) lists
-//     the CATEGORY ("Foods"), never the item;
-//   scale 1 lists the ITEM ("1 Berry") and draws it as a canvas object at
-//     its subtile position;
-//   scale 2+ shows WHERE each unit stands (canvas objects at exact spots).
+// the ground-item granularity ladder the zoom scales read (the ladder counts
+// UP from the interior ground):
+//   the island view (a length-1 path; scale 1 on this engine — and every
+//     wider view above it) lists the CATEGORY ("Foods"), never the item;
+//   scale 0 (the tile interior) lists the ITEM ("1 Berry") and draws it as a
+//     canvas object at its subtile position;
+//   deeper levels show WHERE each unit stands (canvas objects at exact
+//     spots).
 // Berries are foods: zoomed all the way out, the god still reads "foods".
 
 /** The category kinds — fixed order, the display order of category lists. */
@@ -138,8 +140,8 @@ export type ItemCategoryStack = {
 
 /**
  * Aggregates an inventory into its category stacks, in ITEM_KINDS order —
- * the generalization the scale-0 Tile Inspector lists (and any zoomed-out
- * scale above it). Zero categories drop out.
+ * the generalization the island-view Tile Inspector lists (and any wider
+ * view above it). Zero categories drop out.
  */
 export const inventoryCategories = (inventory: Inventory): ItemCategoryStack[] => {
     const totals = new Map<ItemKind, number>();

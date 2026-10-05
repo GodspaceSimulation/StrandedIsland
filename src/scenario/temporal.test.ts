@@ -25,7 +25,7 @@ describe('islandCalendar — the 1609 epoch', () => {
         });
     });
 
-    it('one 10-minute step reads 10:10 on the same day', () => {
+    it('ten world minutes read 10:10 on the same day', () => {
         const point = islandCalendar(10);
         expect(point.year).toBe(1609);
         expect(point.dayOfYear).toBe(1);

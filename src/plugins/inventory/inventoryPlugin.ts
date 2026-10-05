@@ -21,7 +21,7 @@
 import { arrayEach } from '@presource/core';
 import type { Actor, TerrainCell, TileResource } from '../../engine/types';
 import { TILE_RESOURCES, UNLIMITED_TILE_RESOURCES } from '../../engine/types';
-import type { PluginContext, WorldPlugin } from '../../engine/plugin';
+import type { PluginContext, WorldPlugin } from '@godspace/core';
 import type { World } from '../../engine/world';
 import { itemDef, itemLabel } from './items';
 import {
@@ -35,7 +35,7 @@ import {
 
 export type InventoryPluginOptions = {
     /** Chance per world-minute that rain fills water stocks on all land.
-     * Default 0.0127 (≈ 0.12 per 10-minute step at the scale-0 pace). */
+     * Default 0.0127 (≈ 0.76 rains per world hour). */
     rainChancePerMinute?: number;
 };
 
@@ -52,8 +52,8 @@ const REGROW_CAPS: Record<string, number> = {
 
 /**
  * Regrowth rhythm per item, in WORLD MINUTES: fires when
- * `minute % every === offset`. (The minute-based values keep the scale-0
- * pace of the original tick rhythm: one old 10-minute tick = 10 minutes.)
+ * `minute % every === offset`. (The values pin the rhythm to WORLD MINUTES,
+ * so the view scale never moves it.)
  */
 const REGROW_RHYTHM: Record<string, { every: number; offset: number }> = {
     berry: { every: 30, offset: 20 },
@@ -83,7 +83,7 @@ const isUnlimitedResource = (itemId: string): boolean =>
 /** Human readable "1 Fish"/"2 Berries" fragment for log lines. */
 const label = itemLabel;
 
-export type InventoryPlugin = WorldPlugin & {
+export type InventoryPlugin = WorldPlugin<World> & {
     /** An actor's bag — auto-created (empty) on first touch. */
     of(actorId: string): Inventory;
     /** Resource stock standing on a canvas cell. */
@@ -126,7 +126,7 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
     let world: World | null = null;
     // The plugin context captured in setup — resurvey() re-runs the canvas
     // survey with the same deterministic random stream after a regeneration
-    let surveyContext: PluginContext | null = null;
+    let surveyContext: PluginContext<World> | null = null;
 
     const bagOf = (actorId: string): Inventory => {
         const existing = bags.get(actorId);
@@ -216,7 +216,7 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
      * reproducible per seed. `canvas` is passed explicitly so the routine
      * works both in setup and after a terrain regeneration (resurvey).
      */
-    const survey = (context: PluginContext, canvas: World['canvas']) => {
+    const survey = (context: PluginContext<World>, canvas: World['canvas']) => {
         arrayEach(canvas.cells, ({ value: cell }) => {
             const stock = stockOf(cell.x, cell.y);
             // The deposits ARE the tile's resources — seed their piles
@@ -365,7 +365,7 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             return found;
         },
 
-        setup: (context: PluginContext) => {
+        setup: (context: PluginContext<World>) => {
             // Remember the context — resurvey() re-runs the survey with the
             // same deterministic stream after the terrain regenerates
             world = context.world;
@@ -397,7 +397,7 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             surveyContext = null;
         },
 
-        tick: (context: PluginContext) => {
+        tick: (context: PluginContext<World>) => {
             const { world: active } = context;
             // One tick hook call = one world-minute — advance the fine clock
             minute = minute + 1;

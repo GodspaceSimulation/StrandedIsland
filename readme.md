@@ -3,23 +3,29 @@
 A god-simulator distribution: a small procedurally generated island (the
 **canvas**), a handful of stranded people (the **actors**) with inventories
 and relationships, and a whole world that runs on a **ticker** — every tick
-can be a minute, ten minutes, or an hour of simulated time.
+carries ONE world minute of simulated time.
 
 ## Architecture
 
-Everything is plugin-shaped so environments can be swapped in and out:
+The generic engine core lives in `@godspace/core` (`packages/godspace/core`
+src/engine): the world container (3D coordinate record + entity registry +
+ticker + event bus + plugin roster + the fine-movement ladder) that THIS
+distribution inserts its entities and terrain into. The visualization comes
+from `@godspace/canvas` (representation plugins bound by the scenario). What
+remains here is the distribution's own vocabulary — entities, fruits, items,
+terrain — plus the adapter that dresses the engine world with the island
+surface:
 
 ```
 src/
-├── engine/        Framework-free simulation core
-│   ├── ticker.ts     World clock — tick size (minutes/tick), realtime speed
-│   ├── events.ts     World event bus / log
-│   ├── plugin.ts     Plugin registry (add / remove / list — swap in & out)
-│   └── world.ts      The World: canvas + actors + plugins + ticker + events
+├── engine/        The distribution's half of the @godspace/core contract
+│   ├── types.ts     The island's domain types (Actor, TerrainCell, Canvas, …)
+│   └── world.ts     The adapter: island entities + canvas surface +
+│                     narrative hooks onto the generic engine world
 ├── plugins/       Swappable environment plugins
 │   ├── terrain/      Procedural voxel island generation (seeded, deterministic)
 │   ├── inventory/    Item catalog, inventories, gathering, exchange (trade)
-│   ├── needs/        Hunger / thirst / energy decay per tick
+│   ├── needs/        Hunger / thirst / energy decay per minute
 │   ├── relationship/ Affinity graph between actors with slow drift
 │   ├── tasks/        The task ledger — per-actor FIFO task queues with
 │   │                 WORLD-MINUTE time costs, fed by pluggable behaviour
@@ -42,14 +48,20 @@ The engine and every plugin are pure TypeScript with zero React dependency —
 fully unit-testable. The React layer only subscribes to the world's event bus
 and ticker state.
 
-## Time and travel
+## Time, distance and scale
 
-The world sub-steps every tick ONE world-minute at a time (engine/world.ts),
-so all pacing is per-minute and identical at every view scale. ONE TILE of
-travel costs **10 world minutes** at scale 0 — the engine pins this cost
-(scenario/island.ts `TRAVEL_MINUTES_PER_TILE`), not @godspace/*. Every
-behaviour queues tasks with a minute cost; the ledger advances the queue
-heads one minute per tick.
+- **Time per tick** — ONE world minute (`TICK_MINUTES`, engine/world.ts): the
+  ticker steps 1 minute at a time, and a step's minutes always sub-step one
+  at a time (the engine core's `step()`), so all pacing is per-minute.
+- **Distance per tick** — ONE SCALE-0 TILE move per tick
+  (`TRAVEL_MINUTES_PER_TILE`, scenario/island.ts): the simulation runs at
+  Scale 0, the LOWEST level of the view ladder — the tile interiors, where
+  the entities move around (one subtile cell per completed move task,
+  `world.relocateFine` flowing across tile boundaries).
+- **The view ladder** — counts UP from the lowest level (@godspace/core
+  src/scale): scale 0 the tile interior (the simulation ground), scale 1 the
+  island — THE DEFAULT VIEW, which shows where the Scale-0 entities stand.
+  The ladder is a PURE VIEW ladder: zooming never re-times the clock.
 
 ## Plugins
 

@@ -6,7 +6,8 @@
 // plugin drives these) and slowly drift back toward neutral over time.
 
 import { arrayEach } from '@presource/core';
-import type { PluginContext, WorldPlugin } from '../../engine/plugin';
+import type { PluginContext, WorldPlugin } from '@godspace/core';
+import type { World } from '../../engine/world';
 
 export type RelationshipPluginOptions = {
     /** Drift toward 0 per world-minute. Default 0.02 (0.2 per 10-min step). */
@@ -15,7 +16,7 @@ export type RelationshipPluginOptions = {
 
 export type RelationLevel = 'hostile' | 'strained' | 'neutral' | 'friendly' | 'bonded';
 
-export type RelationshipPlugin = WorldPlugin & {
+export type RelationshipPlugin = WorldPlugin<World> & {
     /** Affinity between two actors (−100..100). Unacquainted pairs are 0. */
     relation(a: string, b: string): number;
     /** Named level for the affinity value. */
@@ -57,7 +58,7 @@ export const relationshipPlugin = (options: RelationshipPluginOptions = {}): Rel
     const relations = new Map<string, number>();
 
     // Actor name lookup for log lines — filled at setup
-    let world: PluginContext['world'] | null = null;
+    let world: PluginContext<World>['world'] | null = null;
     const nameOf = (actorId: string): string => world?.actors.get(actorId)?.name ?? actorId;
 
     return {
@@ -92,7 +93,7 @@ export const relationshipPlugin = (options: RelationshipPluginOptions = {}): Rel
             return list;
         },
 
-        setup: (context: PluginContext) => {
+        setup: (context: PluginContext<World>) => {
             world = context.world;
         },
 
@@ -101,7 +102,7 @@ export const relationshipPlugin = (options: RelationshipPluginOptions = {}): Rel
             world = null;
         },
 
-        tick: (context: PluginContext) => {
+        tick: (context: PluginContext<World>) => {
             // Drift toward neutral — small affinities snap back exactly to 0
             relations.forEach((value, key) => {
                 if (value === 0) {

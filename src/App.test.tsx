@@ -12,8 +12,9 @@ describe('App', () => {
     it('renders the god view with title, clock and the full island grid', () => {
         render(<App seed={7} />);
         expect(screen.getByRole('heading', { name: /stranded island/i })).toBeDefined();
-        // Seed 7, tickSize 10 — the island's calendar is born at 10:00 on
-        // January 1, 1609 (scenario/temporal.ts), January opens Winter
+        // Seed 7, tickSize 1 (one world minute per tick) — the island's
+        // calendar is born at 10:00 on January 1, 1609 (scenario/temporal.ts),
+        // January opens Winter
         expect(screen.getByTestId('world-clock').textContent).toBe('Year 1609 · Winter · Jan 1 · 10:00');
         // Default view is the unicode (emoji) canvas — 425 voxel cells
         expect(screen.getByTestId('world-grid-unicode').children.length).toBe(425);
@@ -78,21 +79,19 @@ describe('App', () => {
         render(<App seed={7} />);
         fireEvent.click(screen.getByTestId('log-toggle'));
         fireEvent.click(screen.getByTestId('step-button'));
-        // tickSize 10 → the clock moved 10 world minutes (from the 10:00 birth)
-        expect(screen.getByTestId('world-clock').textContent).toBe('Year 1609 · Winter · Jan 1 · 10:10');
-        // The task-driven rhythm: every castaway QUEUED a 10-minute wander
+        // One tick = ONE world minute (the Scale-0 pace) — the clock moved
+        // one minute past the 10:00 birth
+        expect(screen.getByTestId('world-clock').textContent).toBe('Year 1609 · Winter · Jan 1 · 10:01');
+        // The task-driven rhythm: every castaway QUEUED a 1-minute wander
         // task at minute 1 (no move yet — the first ledger decrement lands at
-        // minute 2), while Kiki glides nine minutes and drifts altitude one
-        // (eventless) and the seeded rain sweeps the island mid-step. The
-        // log view shows the newest 30 of the 15 events.
-        expect(screen.getAllByTestId('event-row').length).toBe(15);
+        // minute 2), while Kiki glided once. The log view shows all 6 events
+        // (5 spawns + the glide; the first seeded rain falls at minute 10).
+        expect(screen.getAllByTestId('event-row').length).toBe(6);
         // Newest first: the seabird glided last (birds tick after behavior)
-        expect(screen.getAllByTestId('event-row')[0].textContent).toContain('Kiki glides northeast.');
-        // The rain pools of step 1 sit in the middle of the log
-        expect(screen.getAllByTestId('event-row')[1].textContent).toContain('Rain sweeps the island.');
-        // Temporal calendar stamps on the log rows: every step-1 event is
-        // stamped 10 minutes past the 10:00 birth, January 1 of Year 1609
-        expect(screen.getAllByTestId('event-row')[0].textContent).toContain('Jan 1 · 10:10');
+        expect(screen.getAllByTestId('event-row')[0].textContent).toContain('Kiki glides southeast.');
+        // Temporal calendar stamps on the log rows: the minute-1 event is
+        // stamped 1 minute past the 10:00 birth, January 1 of Year 1609
+        expect(screen.getAllByTestId('event-row')[0].textContent).toContain('Jan 1 · 10:01');
         // The roster rows now carry the actors' current task labels
         expect(screen.getByTestId('actor-task-actor-1').textContent).toBe('· wanders');
         expect(screen.getByTestId('actor-task-actor-4').textContent).toBe('· wanders');
@@ -118,8 +117,8 @@ describe('App', () => {
     });
 
     it('the bonds list holds exactly one row per fellow castaway — never self, never foreign pairs', () => {
-        // The cast must sit close together for socials to fire within 60
-        // steps — pin an 11×7 island (spread positions captured below)
+        // Pin an 11×7 island (the compact board keeps the cast near enough
+        // for socials once hunger reaches the sympathy line, ~minute 300)
         render(<App seed={7} terrain={{ width: 11, height: 7 }} />);
         // Fresh world (tick 0): every pair is unacquainted → neutral (0)
         fireEvent.click(screen.getByTestId('actor-chip-Ael'));
@@ -128,18 +127,16 @@ describe('App', () => {
             Array.from(fresh.children).map((child) => child.textContent),
         ).toEqual(['Bram — neutral (0)', 'Cove — neutral (0)', 'Dune — neutral (0)']);
 
-        // 60 seeded steps (seed 7) — drift and plan-time socials move the
-        // values: hunger crosses the sympathy line around step 31, Ael and
-        // Dune trade berries for flint, and the drift (0.02/min) grinds the
-        // bonds down again. Values captured from the deterministic run
-        // (rendered rounded): Ael–Bram 3.7 → 4, Ael–Cove 0, Ael–Dune 18.06 → 18
+        // 60 seeded steps (seed 7, one world minute each) — hunger only
+        // reaches 26 (the sympathy line sits at 50, minute ~300), so no
+        // social fires yet and the 0.02/min drift holds every bond at 0
         for (let tick = 0; tick < 60; tick++) {
             fireEvent.click(screen.getByTestId('step-button'));
         }
         const stepped = screen.getByTestId('actor-relations');
         expect(
             Array.from(stepped.children).map((child) => child.textContent),
-        ).toEqual(['Bram — neutral (4)', 'Cove — neutral (0)', 'Dune — neutral (18)']);
+        ).toEqual(['Bram — neutral (0)', 'Cove — neutral (0)', 'Dune — neutral (0)']);
 
         // A different selection never shows its own name either — the list is
         // always the OTHER castaways, so pairs between third parties cannot
@@ -148,31 +145,33 @@ describe('App', () => {
         fireEvent.click(screen.getByTestId('actor-chip-Bram'));
         const bram = screen.getByTestId('actor-relations');
         const bramRows = Array.from(bram.children).map((child) => child.textContent);
-        expect(bramRows).toEqual(['Ael — neutral (4)', 'Cove — neutral (12)', 'Dune — neutral (14)']);
+        expect(bramRows).toEqual(['Ael — neutral (0)', 'Cove — neutral (0)', 'Dune — neutral (0)']);
         expect(bramRows.join('|')).not.toContain('Bram');
     });
 
-    it('the view scale defines the step time — zooming in refines the tick', () => {
+    it('the tick carries its fixed world minute at every view — the scale ladder is a pure view', () => {
         render(<App seed={7} />);
         fireEvent.click(screen.getByTestId('step-button'));
-        expect(screen.getByTestId('world-clock').textContent).toBe('Year 1609 · Winter · Jan 1 · 10:10');
-        // Scale 0: one tick is 10 minutes — the scale line names both
-        expect(screen.getByTestId('tick-label').textContent).toContain('Scale 0');
-        expect(screen.getByTestId('tick-label').textContent).toContain('× 10 min');
-        // Zoom into Ael's shore tile (−11,0): scale 1 → one tick is ONE minute
-        fireEvent.click(screen.getByTestId('unicode-tile--11-0'));
-        fireEvent.click(screen.getByTestId('zoom-in'));
-        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 1');
+        // One tick = ONE world minute at the default (island) view
+        expect(screen.getByTestId('world-clock').textContent).toBe('Year 1609 · Winter · Jan 1 · 10:01');
+        // Scale 1 (the island) — one tick is 1 minute, the scale line names both
         expect(screen.getByTestId('tick-label').textContent).toContain('Scale 1');
         expect(screen.getByTestId('tick-label').textContent).toContain('× 1 min');
-        // A step at scale 1 advances exactly one world minute
+        // Zoom into Ael's shore tile (−11,0): scale 0, the tile interior —
+        // the tick is UNCHANGED (the view ladder never re-times the clock)
+        fireEvent.click(screen.getByTestId('unicode-tile--11-0'));
+        fireEvent.click(screen.getByTestId('zoom-in'));
+        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 0');
+        expect(screen.getByTestId('tick-label').textContent).toContain('Scale 0');
+        expect(screen.getByTestId('tick-label').textContent).toContain('× 1 min');
+        // A step at scale 0 advances exactly one world minute
         fireEvent.click(screen.getByTestId('step-button'));
-        expect(screen.getByTestId('world-clock').textContent).toBe('Year 1609 · Winter · Jan 1 · 10:11');
-        // Zoom back out: the step widens to 10 minutes again
+        expect(screen.getByTestId('world-clock').textContent).toBe('Year 1609 · Winter · Jan 1 · 10:02');
+        // Zoom back out: the step carries the same single minute
         fireEvent.click(screen.getByTestId('zoom-out'));
-        expect(screen.getByTestId('tick-label').textContent).toContain('× 10 min');
+        expect(screen.getByTestId('tick-label').textContent).toContain('× 1 min');
         fireEvent.click(screen.getByTestId('step-button'));
-        expect(screen.getByTestId('world-clock').textContent).toBe('Year 1609 · Winter · Jan 1 · 10:21');
+        expect(screen.getByTestId('world-clock').textContent).toBe('Year 1609 · Winter · Jan 1 · 10:03');
     });
 
     it('clicking an empty land tile shows its terrain and ground stock, no residents', () => {
@@ -301,10 +300,10 @@ describe('App', () => {
 
     it('zooming into an inspected tile opens its sub-grid — the same UI, one level down', () => {
         render(<App seed={7} />);
-        // Scale 0 — the island view. Zoom-out is unreachable at the floor
-        // (there is no wider view above the island) and zoom-in needs an
-        // inspected tile — the zoom's target
-        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 0');
+        // Scale 1 — the island view (the default). Zoom-out is unreachable at
+        // the ladder's top (there is no wider view above the island) and
+        // zoom-in needs an inspected tile — the zoom's target
+        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 1');
         expect((screen.getByTestId('zoom-out') as HTMLButtonElement).disabled).toBe(true);
         expect((screen.getByTestId('zoom-in') as HTMLButtonElement).disabled).toBe(true);
         // Ael's shore tile (−11, 0) becomes the zoom target
@@ -312,9 +311,11 @@ describe('App', () => {
         expect((screen.getByTestId('zoom-in') as HTMLButtonElement).disabled).toBe(false);
         // Zoom in: the SAME unicode tab renders the tile's sub-grid — the
         // identical dimensions (25×17 = 425 tiles), identical interactions,
-        // the tiles now SUBTILES. The selection moved to the center subtile.
+        // the tiles now SUBTILES. The scale descends to 0 — the tile
+        // interior, the simulation ground. The selection moved to the center
+        // subtile.
         fireEvent.click(screen.getByTestId('zoom-in'));
-        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 1');
+        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 0');
         expect(screen.getByTestId('world-grid-unicode').children.length).toBe(425);
         expect(screen.getByTestId('tile-position').textContent).toBe('(-11, 0) · (0, 0) · sand');
         // The zoomed tiles are the beach's interior: every subtile carries
@@ -323,13 +324,15 @@ describe('App', () => {
         const aelSubtile = screen.getByTestId('unicode-tile--8-0');
         expect(aelSubtile.textContent).toBe('🧍');
         expect(aelSubtile.title).toContain('Ael · well');
-        // The ground items become VISIBLE canvas objects at scale 1: the
-        // coconut lies at its scattered subtile (−11, 5), drawn as its emoji
+        // The ground items become VISIBLE canvas objects in the interior
+        // view: the coconut lies at its scattered subtile (−11, 5), drawn as
+        // its emoji
         const coconut = screen.getByTestId('unicode-tile--11-5');
         expect(coconut.textContent).toBe('🥥');
         expect(coconut.title).toContain('Coconut');
-        // The sub-grid keeps every inspection working exactly like scale 0:
-        // clicking the inspected subtile opens the Tile Inspector's lineage
+        // The sub-grid keeps every inspection working exactly like the
+        // island view: clicking the inspected subtile opens the Tile
+        // Inspector's lineage
         fireEvent.click(screen.getByTestId('unicode-tile-0-0'));
         expect(screen.getByTestId('tile-position').textContent).toBe('(-11, 0) · (0, 0) · sand');
         expect(screen.getByTestId('tile-resources').textContent).toBe('sand ×∞');
@@ -346,22 +349,23 @@ describe('App', () => {
         // Zoom out: the island returns with the parent tile still inspected
         // (the zoom lineage pops one step)
         fireEvent.click(screen.getByTestId('zoom-out'));
-        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 0');
+        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 1');
         expect(screen.getByTestId('world-grid-unicode').children.length).toBe(425);
         expect(screen.getByTestId('tile-position').textContent).toBe('(-11, 0) · sand');
         expect((screen.getByTestId('zoom-in') as HTMLButtonElement).disabled).toBe(false);
     });
 
-    it('ground items appear as canvas objects only from scale 1 up', () => {
+    it('ground items appear as canvas objects only in the interior view (scale 0)', () => {
         render(<App seed={7} />);
-        // Scale 0: the meadow tile (1,−4) shows nothing but terrain — the
-        // berries stay list-only (the category read), never canvas objects
+        // Scale 1 (the island view): the meadow tile (1,−4) shows nothing but
+        // terrain — the berries stay list-only (the category read), never
+        // canvas objects
         expect((screen.getByTestId('unicode-tile-1--4').textContent)).toBe('');
-        // Zoom into the meadow: its two berries stand at their scattered
-        // subtiles (5,1) and (7,−6) as visible objects
+        // Zoom into the meadow: the interior view (scale 0) — its two berries
+        // stand at their scattered subtiles (5,1) and (7,−6) as visible objects
         fireEvent.click(screen.getByTestId('unicode-tile-1--4'));
         fireEvent.click(screen.getByTestId('zoom-in'));
-        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 1');
+        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 0');
         expect(screen.getByTestId('unicode-tile-5-1').textContent).toBe('🍒');
         expect(screen.getByTestId('unicode-tile-7--6').textContent).toBe('🍒');
         // The berry subtiles list their berries by name (item granularity)

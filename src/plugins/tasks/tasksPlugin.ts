@@ -14,9 +14,10 @@
 // plugins/inventory/inventoryPlugin.ts dispose).
 
 import { createTaskLedger, type ActiveTask, type TaskBehaviour, type TaskLedger } from './taskLedger';
-import type { WorldPlugin } from '../../engine/plugin';
+import type { WorldPlugin } from '@godspace/core';
+import type { World } from '../../engine/world';
 
-export type TasksPlugin = WorldPlugin & {
+export type TasksPlugin = WorldPlugin<World> & {
     /** The raw ledger (see taskLedger.ts) — behaviour registration, queues, tick. */
     ledger: TaskLedger;
     /** The actor's in-progress task (the queue head), or undefined. */

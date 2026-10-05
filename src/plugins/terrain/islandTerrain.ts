@@ -16,10 +16,11 @@
 // which is what the tests assert. `@presource/core` has no seeded PRNG, so the
 // stream comes from engine/random.ts (mulberry32).
 
-import { randomCreate, randomKeyed, type RandomSource } from '../../engine/random';
+import { randomCreate, randomKeyed, type RandomSource } from '@godspace/core';
 import type { Biome, Canvas, TerrainCell, TileResource, TileResources, VoxelKind } from '../../engine/types';
 import { TILE_RESOURCES, UNLIMITED_TILE_RESOURCES } from '../../engine/types';
-import type { PluginContext, WorldPlugin } from '../../engine/plugin';
+import type { PluginContext, WorldPlugin } from '@godspace/core';
+import type { World } from '../../engine/world';
 import { tilePathKey, type TilePath } from '@godspace/core';
 
 export type IslandTerrainOptions = {
@@ -39,9 +40,10 @@ export type IslandTerrainOptions = {
      * How many SUBTILE levels the generator produces below the root grid —
      * the recursive tiling configuration. Every tile of a produced level
      * opens into a full sub-grid of the SAME dimensions (a 25×17 world with
-     * subtiles 1 holds 425 scale-0 tiles and 425×425 = 180,625 scale-1
-     * tiles). Default 1: scale 0 (the island) and scale 1 (each tile's
-     * interior). 0 produces no sub-grids at all. The generator itself is
+     * subtiles 1 holds 425 island tiles — the scale-1 view — and
+     * 425×425 = 180,625 interior tiles — the scale-0 view). Default 1:
+     * scale 0 (each tile's interior — the simulation ground) and scale 1
+     * (the island). 0 produces no sub-grids at all. The generator itself is
      * level-agnostic (any parent cell yields a sub-grid), so raising this
      * number — and the world's scale ladder with it — goes arbitrarily deep.
      */
@@ -371,11 +373,13 @@ export const tileDepositSummary = (resources?: TileResources): string =>
  * each sub-grid deterministically from its parent cell (world seed + tile
  * address) and caching it until the parent's deposits change. Sub-grid
  * dims equal the root grid's dims: zooming in never changes the board size
- * (the recursion rule — a 25×17 world holds 425×425 scale-1 tiles with
- * subtiles 1). `tilesAt(scale)` counts the tiles of a level, `cellFor(path)`
- * resolves one tile, `depth()` reports the configured subtile levels.
+ * (the recursion rule — a 25×17 world holds 425×425 scale-0 tiles with
+ * subtiles 1). `tilesAt(scale)` counts the tiles of a ladder level (the
+ * ladder counts UP from the interior ground: scale 0 the deepest generated
+ * level, scale = depth the island root), `cellFor(path)` resolves one tile,
+ * `depth()` reports the configured subtile levels.
  */
-export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPlugin & {
+export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPlugin<World> & {
     stats(): IslandStats | undefined;
     /** Current grid size (as configured — the canvas is regenerated to match). */
     size(): { width: number; height: number };
@@ -383,7 +387,7 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
     resize(width: number, height: number): void;
     /** How many subtile levels the generator produces below the root grid. */
     depth(): number;
-    /** Tile count of one scale level (scale 0 → the root grid itself). */
+    /** Tile count of one ladder level (scale = depth → the island root itself). */
     tilesAt(scale: number): number;
     /** The grid at a tile address — the root canvas for the empty path. */
     canvasFor(path: TilePath): Canvas | undefined;
@@ -400,7 +404,7 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
     const subtileDepth = options.subtiles ?? 1;
     // The plugin context captured in setup — resize() needs the world (canvas
     // swap + event emission) between lifecycle hooks
-    let bound: PluginContext | null = null;
+    let bound: PluginContext<World> | null = null;
     // The seed the last generation resolved (options.seed ?? world seed) —
     // sub-grid generation keys its streams off the same seed
     let resolvedSeed = options.seed ?? 1;
@@ -413,7 +417,7 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
     const SUB_CANVAS_CACHE = 32;
 
     /** One generation pass: builds the canvas and installs it on the world. */
-    const regenerate = (context: PluginContext) => {
+    const regenerate = (context: PluginContext<World>) => {
         // Default seed: the world seed, so one global seed drives everything
         resolvedSeed = options.seed ?? context.world.seed;
         const generated = generateIsland({
@@ -574,7 +578,7 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
     return {
         id: 'island-terrain',
         label: 'Island Terrain',
-        setup: (context: PluginContext) => {
+        setup: (context: PluginContext<World>) => {
             // Remember the context so resize() can regenerate outside setup
             bound = context;
             regenerate(context);
@@ -604,7 +608,12 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
             });
         },
         depth: () => subtileDepth,
-        tilesAt: (scale) => Math.pow(dims.width * dims.height, scale + 1),
+        // The ladder counts UP from the interior ground: scale 0 the deepest
+        // generated level ((w·h)^(depth+1) tiles), scale = depth the island
+        // root (w·h tiles). Above the island the exponent clamps at 0 — the
+        // island as ONE tile of a still-wider (ungenerated) space.
+        tilesAt: (scale) =>
+            Math.pow(dims.width * dims.height, Math.max(0, subtileDepth + 1 - scale)),
         canvasFor: (path) => canvasAtPath(path),
         cellFor: (path) => {
             if (path.length === 0) {

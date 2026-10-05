@@ -1,6 +1,6 @@
 // Tests for the item catalog's category system (plugins/inventory/items.ts).
 // The category is the coarsest level of the ground-item granularity ladder
-// the zoom scales read: scale 0 (and every scale above it) lists categories,
+// the zoom scales read: the island view (and every wider one) lists categories,
 // scale 1 lists items, scale 2+ shows positions.
 
 import { describe, it, expect } from 'vitest';

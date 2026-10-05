@@ -61,7 +61,7 @@ describe('voxelRuns / voxelSummary', () => {
 });
 
 describe('tileOccupants', () => {
-    it('lists the castaway standing on a scale-0 tile, linked to the actor registry', () => {
+    it('lists the castaway standing on an island tile, linked to the actor registry', () => {
         expect(tileOccupants(island, [{ x: -11, y: 0 }])).toEqual([
             {
                 id: 'actor-1',
@@ -162,7 +162,7 @@ describe('occupantLine', () => {
 });
 
 describe('tileGround', () => {
-    it('generalizes the scale-0 stock into its item categories', () => {
+    it('generalizes the island-view stock into its item categories', () => {
         // Sea: one fish → Foods ×1
         expect(tileGround(island, [{ x: -12, y: -8 }])).toEqual([
             { category: 'food', label: 'Foods', count: 1 },
@@ -215,7 +215,7 @@ describe('tileGround', () => {
         ]);
     });
 
-    it('reflects gathering at scale 0 in every zoomed view', () => {
+    it('reflects gathering at the island view in every zoomed view', () => {
         // The berry stock is live — dropping it to 1 moves one berry's
         // scatter (the derivation reads the parent stock per call): the
         // (7,−6) subtile empties, (5,1) keeps the surviving unit
@@ -253,7 +253,7 @@ describe('tileResources', () => {
 });
 
 describe('tileSummary', () => {
-    it('assembles the full sand column under Ael at scale 0 (deposits + surface key)', () => {
+    it('assembles the full sand column under Ael at the island view (deposits + surface key)', () => {
         expect(tileSummary(island, [{ x: -11, y: 0 }])).toEqual({
             path: [{ x: -11, y: 0 }],
             x: -11,
@@ -355,7 +355,7 @@ describe('tileSummary', () => {
 });
 
 describe('scaleView', () => {
-    it('binds the live root world at scale 0', () => {
+    it('binds the live root world at the island view', () => {
         const slice = scaleView(island, []);
         expect(slice?.canvas).toBe(island.world.canvas);
         // The root coordinates are the live coordinate space itself

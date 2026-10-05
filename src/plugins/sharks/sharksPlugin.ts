@@ -14,9 +14,14 @@
 // Everything is deterministic from the plugin's own keyed random stream.
 
 import { arrayEach } from '@presource/core';
-import { position3, type Position3D } from '@godspace/core';
-import { NEIGHBOR_OFFSETS } from '../../engine/world';
-import type { PluginContext, WorldPlugin } from '../../engine/plugin';
+import {
+    NEIGHBOR_OFFSETS,
+    position3,
+    type PluginContext,
+    type WorldPlugin,
+    type Position3D,
+} from '@godspace/core';
+import type { World } from '../../engine/world';
 
 export type SharksPluginOptions = {
     /** Chance per world-minute a shark swims in past the edge. Default 0.008. */
@@ -35,7 +40,7 @@ export type SharkRecord = {
     position: Position3D;
 };
 
-export type SharksPlugin = WorldPlugin & {
+export type SharksPlugin = WorldPlugin<World> & {
     /** Places one shark at a rim water cell (the god-view manual release). */
     release(name?: string): SharkRecord;
     /** One shark's record, or undefined. */
@@ -80,8 +85,8 @@ export const sharksPlugin = (options: SharksPluginOptions = {}): SharksPlugin =>
     // The world + the plugin's persistent random stream arrive with setup —
     // release() draws its rim pick from the SAME stream the tick rolls use
     // (the registry caches one context per plugin id, engine/plugin.ts)
-    let world: PluginContext['world'] | null = null;
-    let random: PluginContext['random'] | null = null;
+    let world: PluginContext<World>['world'] | null = null;
+    let random: PluginContext<World>['random'] | null = null;
 
     /** Composes the public record: identity + live position from the space. */
     const recordOf = (id: string): SharkRecord | undefined => {
@@ -119,7 +124,7 @@ export const sharksPlugin = (options: SharksPluginOptions = {}): SharksPlugin =>
      * never reused), roster name, full facet into the coordinate space (never
      * into world.actors). */
     const spawnShark = (
-        active: NonNullable<PluginContext['world']>,
+        active: NonNullable<PluginContext<World>['world']>,
         cell: { x: number; y: number },
         name?: string,
     ): SharkRecord => {
@@ -150,7 +155,7 @@ export const sharksPlugin = (options: SharksPluginOptions = {}): SharksPlugin =>
         id: 'sharks',
         label: 'Sharks',
 
-        setup: (context: PluginContext) => {
+        setup: (context: PluginContext<World>) => {
             world = context.world;
             random = context.random;
         },
@@ -186,7 +191,7 @@ export const sharksPlugin = (options: SharksPluginOptions = {}): SharksPlugin =>
             random = null;
         },
 
-        tick: (context: PluginContext) => {
+        tick: (context: PluginContext<World>) => {
             if (!world) {
                 return;
             }

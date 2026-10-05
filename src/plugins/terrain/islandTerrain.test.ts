@@ -333,17 +333,21 @@ describe('islandTerrainPlugin', () => {
         const plugin = islandTerrainPlugin();
         createWorld({ seed: 7, plugins: [plugin] });
         expect(plugin.depth()).toBe(1);
-        // Scale 0 is the root grid itself; scale 1 multiplies it by itself —
-        // a 25×17 world would hold 425 root tiles and 425×425 = 180,625
-        // scale-1 tiles (the sub-grid dims equal the root dims)
-        expect(plugin.tilesAt(0)).toBe(25 * 17);
-        expect(plugin.tilesAt(1)).toBe(25 * 17 * 25 * 17);
+        // The ladder counts UP from the interior ground: scale 0 (the
+        // simulation ground) multiplies the grid by itself, scale 1 (the
+        // ladder's top) is the island root — a 25×17 world holds 425×425 =
+        // 180,625 interior tiles and 425 root tiles (the sub-grid dims
+        // equal the root dims)
+        expect(plugin.tilesAt(0)).toBe(25 * 17 * 25 * 17);
+        expect(plugin.tilesAt(1)).toBe(25 * 17);
         const tiny = islandTerrainPlugin({ width: 5, height: 5, subtiles: 2 });
         createWorld({ seed: 7, plugins: [tiny] });
         expect(tiny.depth()).toBe(2);
-        expect(tiny.tilesAt(0)).toBe(25);
+        // Two subtile levels: scale 0 the deepest interior (25⁴), scale 1
+        // the first interior (25²), scale 2 the island root (25)
+        expect(tiny.tilesAt(0)).toBe(15625);
         expect(tiny.tilesAt(1)).toBe(625);
-        expect(tiny.tilesAt(2)).toBe(15625);
+        expect(tiny.tilesAt(2)).toBe(25);
     });
 
     it('generates a sub-grid with the ROOT grid dimensions from the parent cell', () => {

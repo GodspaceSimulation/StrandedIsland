@@ -24,7 +24,7 @@ describe('createIslandWorld', () => {
             'svg-canvas',
             'data-canvas',
         ]);
-        expect(handle.world.ticker.tickSize()).toBe(10);
+        expect(handle.world.ticker.tickSize()).toBe(1);
         // The canvas exists after terrain setup — the default 25×17 island
         // in centered coordinates ((0, 0) the exact middle)
         expect(handle.world.canvas).toEqual({
@@ -113,18 +113,17 @@ describe('createIslandWorld', () => {
         expect(Array.from(handle.world.actors.keys())).toEqual(['actor-1', 'actor-2']);
     });
 
-    it('runs: one 10-minute wander task per castaway per 10 elapsed minutes', () => {
+    it('runs: one Scale-0 tile per tick — the cast fine-wanders every minute', () => {
         const handle = createIslandWorld({ seed: 7 });
         handle.world.step();
         expect(handle.world.ticker.ticks()).toBe(1);
-        // One step = 10 world-minutes, run one minute at a time. The task
-        // rhythm: the cast queued their 10-minute wander tasks at minute 1,
-        // so the first ledger decrement lands at minute 2 — after ONE step
-        // every wander task still holds one minute and nobody has moved;
-        // Kiki glides nine times (one of her ten minutes was an eventless
-        // altitude drift — the fade ladder, plugins/birds/birdsPlugin.ts)
-        // and the seeded rain of step 1 fills the pools
-        expect(handle.world.events.log().filter((event) => event.kind === 'move').length).toBe(9);
+        // One step = ONE world minute (the Scale-0 pace). The task rhythm:
+        // the cast queued their 1-minute wander tasks at minute 1, so the
+        // first ledger decrement lands at minute 2 — after ONE step every
+        // wander task still holds one minute and nobody has moved; Kiki
+        // glides once and the seeded rain of minute 1 fills the pools
+        expect(handle.world.ticker.elapsed()).toBe(1);
+        expect(handle.world.events.log().filter((event) => event.kind === 'move').length).toBe(1);
         expect(Array.from(handle.world.actors.values()).map((actor) => ({ ...actor.position }))).toEqual([
             { x: -11, y: 0, z: 0 },
             { x: 9, y: -1, z: 0 },
@@ -137,21 +136,63 @@ describe('createIslandWorld', () => {
             { actorId: 'actor-3', kind: 'move', label: 'wanders', remaining: 1 },
             { actorId: 'actor-4', kind: 'move', label: 'wanders', remaining: 1 },
         ]);
-        // The SECOND step carries the completing minutes: each castaway moves
-        // exactly ONE tile (their wander task completes on its 10th decrement)
+        // The SECOND minute carries the completing tasks: each castaway
+        // fine-steps exactly ONE Scale-0 tile (their wander task completes on
+        // its decrement). The simulation runs at Scale 0 — the steps stay
+        // INSIDE the tiles (interior moves), so the island view's coarse
+        // positions do not move yet; the fine spots do.
         handle.world.step();
-        expect(handle.world.events.log().filter((event) => event.kind === 'move').length).toBe(23);
+        expect(handle.world.ticker.elapsed()).toBe(2);
+        expect(handle.world.events.log().filter((event) => event.kind === 'move').length).toBe(6);
         expect(handle.world.events.log().filter((event) => event.kind === 'move' && event.actorId?.startsWith('actor')).map((event) => ({ message: event.message, time: event.time }))).toEqual([
-            { message: 'Ael wanders northeast.', time: 20 },
-            { message: 'Bram wanders south.', time: 20 },
-            { message: 'Cove wanders south.', time: 20 },
-            { message: 'Dune wanders east.', time: 20 },
+            { message: 'Ael wanders north.', time: 2 },
+            { message: 'Bram wanders south.', time: 2 },
+            { message: 'Cove wanders south.', time: 2 },
+            { message: 'Dune wanders east.', time: 2 },
         ]);
         expect(Array.from(handle.world.actors.values()).map((actor) => ({ ...actor.position }))).toEqual([
-            { x: -10, y: -1, z: 0 },
-            { x: 9, y: 0, z: 0 },
-            { x: 1, y: 6, z: 0 },
-            { x: 6, y: -1, z: 0 },
+            { x: -11, y: 0, z: 0 },
+            { x: 9, y: -1, z: 0 },
+            { x: 1, y: 5, z: 0 },
+            { x: 5, y: -1, z: 0 },
+        ]);
+        expect(Array.from(handle.world.actors.keys()).map((id) => handle.world.subOf(id))).toEqual([
+            { x: -8, y: -1 },
+            { x: -9, y: -4 },
+            { x: -2, y: 4 },
+            { x: -10, y: 8 },
+        ]);
+        // Eighteen more minutes: the cast keeps milling inside their tiles —
+        // an occasional fine step wraps off a tile edge and the ISLAND
+        // position moves with it (the world flows across its boundaries).
+        // 76 castaway fine steps + 19 Kiki glides over 19 minutes.
+        for (let index = 0; index < 18; index++) {
+            handle.world.step();
+        }
+        expect(handle.world.ticker.elapsed()).toBe(20);
+        expect(handle.world.events.log().filter((event) => event.kind === 'move').length).toBe(95);
+        expect(handle.world.events.log().filter((event) => event.kind === 'move' && event.actorId?.startsWith('actor')).length).toBe(76);
+        expect(handle.world.events.log().filter((event) => event.kind === 'move' && event.actorId?.startsWith('actor')).slice(0, 8).map((event) => ({ message: event.message, time: event.time }))).toEqual([
+            { message: 'Ael wanders north.', time: 2 },
+            { message: 'Bram wanders south.', time: 2 },
+            { message: 'Cove wanders south.', time: 2 },
+            { message: 'Dune wanders east.', time: 2 },
+            { message: 'Ael wanders northeast.', time: 3 },
+            { message: 'Bram wanders northwest.', time: 3 },
+            { message: 'Cove wanders northeast.', time: 3 },
+            { message: 'Dune wanders northeast.', time: 3 },
+        ]);
+        expect(Array.from(handle.world.actors.values()).map((actor) => ({ ...actor.position }))).toEqual([
+            { x: -11, y: 0, z: 0 },
+            { x: 8, y: -1, z: 0 },
+            { x: 1, y: 5, z: 0 },
+            { x: 4, y: -1, z: 0 },
+        ]);
+        expect(Array.from(handle.world.actors.keys()).map((id) => handle.world.subOf(id))).toEqual([
+            { x: -12, y: 0 },
+            { x: 12, y: -6 },
+            { x: 3, y: 4 },
+            { x: 8, y: 3 },
         ]);
     });
 
@@ -226,21 +267,31 @@ describe('createIslandWorld', () => {
         expect(handle.world.plugins.has('sleep')).toBe(false);
         expect(handle.world.plugins.has('tasks')).toBe(true);
         expect(handle.world.plugins.has('behavior')).toBe(true);
-        // Drain Dune to the rest trigger (energy ≤ 22) and run two scale-0
-        // steps (20 world minutes — the rest task is planned at minute 1 and
-        // completes at minute 11, inside step 2)
+        // Drain Dune to the rest trigger (energy ≤ 22) and run 20 steps
+        // (20 world minutes — the rest task is planned at minute 1 and
+        // completes at minute 11, then Dune fine-wanders on)
         handle.needs.satisfy('actor-4', { energy: -80 });
-        handle.world.step();
-        handle.world.step();
+        for (let index = 0; index < 20; index++) {
+            handle.world.step();
+        }
         // The priority-25 rest rung of the behavior ladder handled it: the
         // 10-minute rest task with the one-shot +12 recovery (no per-minute
-        // sleep restore), and Dune has not moved yet (the follow-up wander
-        // task still holds one minute)
-        expect(handle.needs.of('actor-4').energy).toBe(30.800000000000026);
+        // sleep restore)
+        expect(handle.needs.of('actor-4').energy).toBe(28.800000000000026);
+        // After the rest, Dune wanders again (1-minute tasks)
         expect(handle.tasks.taskOf('actor-4')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 1 });
         expect(handle.world.events.log().filter((event) => event.actorId === 'actor-4').map((event) => ({ kind: event.kind, message: event.message, time: event.time }))).toEqual([
             { kind: 'spawn', message: 'Dune washes ashore.', time: 0 },
-            { kind: 'rest', message: 'Dune rests for a while.', time: 20 },
+            { kind: 'rest', message: 'Dune rests for a while.', time: 11 },
+            { kind: 'move', message: 'Dune wanders northwest.', time: 12 },
+            { kind: 'move', message: 'Dune wanders northwest.', time: 13 },
+            { kind: 'move', message: 'Dune wanders northwest.', time: 14 },
+            { kind: 'move', message: 'Dune wanders south.', time: 15 },
+            { kind: 'move', message: 'Dune wanders northwest.', time: 16 },
+            { kind: 'move', message: 'Dune wanders northeast.', time: 17 },
+            { kind: 'move', message: 'Dune wanders east.', time: 18 },
+            { kind: 'move', message: 'Dune wanders northeast.', time: 19 },
+            { kind: 'move', message: 'Dune wanders north.', time: 20 },
         ]);
     });
 
@@ -379,62 +430,69 @@ describe('createIslandWorld', () => {
         ]);
     });
 
-    it('anchors the view-scale ladder at scale 0 with the generated subtile depth', () => {
+    it('anchors the view-scale ladder: scale 0 the tile interior, scale 1 the island default view', () => {
         const handle = createIslandWorld({ seed: 7 });
-        // The island view IS scale 0 — this engine's maximum view — and the
-        // ladder reaches as deep as the terrain generates sub-grids (one
-        // level by default: scale 1, each tile's interior)
+        // The ladder counts UP from the lowest level: scale 0 is the tile
+        // interior (the simulation ground, where the castaways move around)
+        // and scale 1 is the island — THE DEFAULT VIEW, showing where the
+        // Scale-0 entities stand. The ladder reaches as deep as the terrain
+        // generates sub-grids (one level by default).
         expect(handle.scale.base()).toBe(0);
-        expect(handle.scale.current()).toBe(0);
-        expect(handle.scale.atBase()).toBe(true);
-        expect(handle.scale.range()).toEqual({ min: 0, max: 1 });
-        // Zooming out at the floor is a no-op — no wider view above the island
-        expect(handle.scale.canZoomOut()).toBe(false);
-        expect(handle.scale.zoomOut()).toBe(0);
-        // One step in reaches the tile interior; the ceiling clamps
-        expect(handle.scale.zoomIn()).toBe(1);
-        expect(handle.scale.canZoomIn()).toBe(false);
-        expect(handle.scale.zoomIn()).toBe(1);
+        expect(handle.scale.current()).toBe(1);
         expect(handle.scale.atBase()).toBe(false);
-        // Back to the default view
-        expect(handle.scale.zoomOut()).toBe(0);
+        expect(handle.scale.range()).toEqual({ min: 0, max: 1 });
+        // Zooming OUT from the island (the widest view) is a no-op — there is
+        // no wider view above this island in the simulation
+        expect(handle.scale.canZoomOut()).toBe(false);
+        expect(handle.scale.zoomOut()).toBe(1);
+        // One step IN descends into the tile interior — the simulation ground;
+        // zooming in at the floor clamps
+        expect(handle.scale.zoomIn()).toBe(0);
+        expect(handle.scale.canZoomIn()).toBe(false);
+        expect(handle.scale.zoomIn()).toBe(0);
         expect(handle.scale.atBase()).toBe(true);
+        // Back to the default view
+        expect(handle.scale.zoomOut()).toBe(1);
+        expect(handle.scale.atBase()).toBe(false);
     });
 
-    it('the view scale defines the step time — one rung is a factor of 10', () => {
+    it('the tick carries its fixed world minute at every view (the Scale-0 pacing rule)', () => {
         const handle = createIslandWorld({ seed: 7 });
-        // Scale 0 steps 10 minutes; zooming in (scale 1) refines to 1 minute;
-        // a scale −1 (out of this engine's reach) would step 100 minutes
-        expect(handle.world.ticker.tickSize()).toBe(10);
+        // ONE world minute per tick — StrandedIsland's time-per-tick rule.
+        // The scale ladder is a pure VIEW ladder: zooming never re-times the
+        // clock.
+        expect(handle.world.ticker.tickSize()).toBe(1);
         handle.scale.zoomIn();
         expect(handle.world.ticker.tickSize()).toBe(1);
-        // A step at scale 1 advances exactly one world-minute
+        // A step at scale 0 (the tile interior) advances exactly one
+        // world-minute — the simulation always runs at the Scale-0 pace
         handle.world.step();
         expect(handle.world.ticker.elapsed()).toBe(1);
         handle.scale.zoomOut();
-        expect(handle.world.ticker.tickSize()).toBe(10);
-        // The scale system's own mutators re-time the clock too
+        expect(handle.world.ticker.tickSize()).toBe(1);
+        // The scale system's own mutators leave the clock untouched too
+        handle.scale.set(0);
+        expect(handle.world.ticker.tickSize()).toBe(1);
         handle.scale.set(1);
         expect(handle.world.ticker.tickSize()).toBe(1);
-        handle.scale.set(0);
-        expect(handle.world.ticker.tickSize()).toBe(10);
     });
 
-    it('generates the recursive tile ladder: every scale-0 tile opens into a full sub-grid', () => {
+    it('generates the recursive tile ladder: every island tile opens into a full sub-grid', () => {
         const handle = createIslandWorld({ seed: 7 });
-        // The default island (25×17 = 425 root tiles) holds 425 × 425 =
-        // 180,625 scale-1 tiles — the same math that gives a 20×20 world its
-        // 400 root tiles and 400×400 = 160,000 scale-1 tiles
-        expect(handle.terrain.tilesAt(0)).toBe(425);
-        expect(handle.terrain.tilesAt(1)).toBe(425 * 425);
+        // The default island (25×17 = 425 root tiles — the scale-1 view)
+        // holds 425 × 425 = 180,625 interior tiles (the scale-0 ground) —
+        // the same math that gives a 20×20 world its 400 root tiles and
+        // 400×400 = 160,000 interior tiles
+        expect(handle.terrain.tilesAt(1)).toBe(425);
+        expect(handle.terrain.tilesAt(0)).toBe(425 * 425);
         expect(handle.terrain.depth()).toBe(1);
         // One tile's sub-grid, materialized: the SAME dimensions as the root
         const sub = handle.terrain.canvasFor([{ x: -11, y: 0 }]);
         expect(sub?.width).toBe(25);
         expect(sub?.height).toBe(17);
         expect(sub?.cells.length).toBe(425);
-        // …a scale-1 subtile resolves through cellFor (the tile itself),
-        // while a scale-2 GRID is beyond the generated depth
+        // …an interior subtile resolves through cellFor (the tile itself),
+        // while a deeper GRID is beyond the generated depth
         expect(handle.terrain.cellFor([{ x: -11, y: 0 }, { x: 0, y: 0 }])).toBeDefined();
         expect(handle.terrain.canvasFor([{ x: -11, y: 0 }, { x: 0, y: 0 }])).toBeUndefined();
         expect(handle.terrain.canvasFor([{ x: -11, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }])).toBeUndefined();

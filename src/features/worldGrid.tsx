@@ -8,7 +8,10 @@
 // re-renders the SAME components over the zoomed slice (features/tileDetails
 // scaleView) instead of switching to a special board. The scale bar zooms:
 // Zoom In needs an inspected tile (it descends into that tile's sub-grid and
-// inspects its center), Zoom Out pops back up the lineage.
+// inspects its center), Zoom Out pops back up the lineage. The ladder counts
+// UP from the lowest level: scale 0 is the tile interior — the simulation
+// ground, where the entities move around — and scale 1 is the island, THE
+// DEFAULT VIEW, which shows where those entities are.
 //
 // Four representations of the CURRENT view, one per tab (all loaded as
 // plugins from @godspace/canvas by the scenario, see scenario/island.ts):
@@ -27,12 +30,13 @@
 //             26px tile grid, so every tab occupies the same board
 //             footprint
 //
-// At scale 0 the canvases render their bound root view (frame()); deeper
-// levels re-bind through frameFor with the zoomed slice — the zoom seam
-// (@godspace/canvas AsciiFrameSource). Zoomed in, the tiles are SUBTILES:
-// the parent tile's deposits stand distributed on them (a forest tile's
-// wood ×2 scatters into two wood subtiles — the trees, visible at last),
-// and its residents stand at their fine positions (world.subOf).
+// At the island view (scale 1 = the ladder's top) the canvases render their
+// bound root view (frame()); deeper levels re-bind through frameFor with the
+// zoomed slice — the zoom seam (@godspace/canvas AsciiFrameSource). Zoomed
+// in, the tiles are SUBTILES: the parent tile's deposits stand distributed
+// on them (a forest tile's wood ×2 scatters into two wood subtiles — the
+// trees, visible at last), and its residents stand at their fine positions
+// (world.subOf).
 //
 // TILE OCCUPATION PARITY — every tile canvas draws on the SAME 26px grid
 // (ascii's tile) at every scale. The unicode tab once painted 30px emoji
@@ -237,7 +241,8 @@ export const WorldGrid = () => {
     const revision = useRevision();
     const selected = useSelection();
     // The inspected tile's FULL path down the recursive ladder (null when
-    // nothing is picked) and the view scale — 0 the island, 1+ zoomed in
+    // nothing is picked) and the view scale — 0 the tile interior (the
+    // simulation ground), 1 the island (the default view)
     const inspected = useTile();
     const scale = useScale();
     // Active representation tab — the emoji (unicode) view is the default
@@ -251,20 +256,24 @@ export const WorldGrid = () => {
     // The scale ladder lives on the island handle (@godspace/core src/scale)
     // — the signal carries the current rung, the system owns the clamps
     const zoom = island.scale;
+    // The ladder's TOP — the island view's scale (the terrain's subtile
+    // depth: one level below the island by default)
+    const depth = zoom.range().max;
 
     // The CURRENT VIEW's address: the inspected path truncated to the view
-    // depth — empty at scale 0 (the root island), length 1 at scale 1 (the
-    // inspected parent tile's sub-grid), and so on. The zoom lineage keeps
-    // the inspected tile addressable inside its view.
-    const viewPath: TilePath = inspected ? inspected.slice(0, scale) : [];
+    // depth — empty at the island view (scale 1 = the root island), length 1
+    // at scale 0 (the inspected parent tile's sub-grid), and so on. The zoom
+    // lineage keeps the inspected tile addressable inside its view.
+    const viewPath: TilePath = inspected ? inspected.slice(0, depth - scale) : [];
 
-    // The zoomed slice (null at scale 0 — the canvases render their bound
-    // root view there). The SAME components render every level: the sub-grid
-    // has the world grid's dimensions, so the board never changes shape.
-    const slice = scale === 0 ? null : scaleView(island, viewPath);
+    // The zoomed slice (null at the island view — the canvases render their
+    // bound root view there). The SAME components render every level: the
+    // sub-grid has the world grid's dimensions, so the board never changes
+    // shape.
+    const slice = scale === depth ? null : scaleView(island, viewPath);
     // A zoomed view that cannot resolve its slice — a stale lineage after a
     // world redraw (the root regenerated under the god's feet)
-    const zoomFailed = scale > 0 && !slice;
+    const zoomFailed = scale < depth && !slice;
     // The inspected tile's TAIL coordinates — what the tile renderers
     // highlight (the accent border) and what the tile tests click by
     const inspectedTail = inspected

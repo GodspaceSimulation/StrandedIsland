@@ -249,12 +249,13 @@ describe('inventoryPlugin', () => {
         const ael = world.spawn(actor('a', 'Ael', 1, -4));
         void ael;
         // Meadow cell (1,−4): cap 3, rhythm every 30 minutes at offset 20 —
-        // a 10-minute step sweeps minutes 1-10 (silent), the next one
-        // crosses minute 20 and regrows
+        // the first 19 one-minute steps stay silent, minute 20 regrows
         island.cellStock(1, -4).berry = 0;
-        world.step(); // minutes 1-10 → no minute hits the offset
+        for (let index = 0; index < 19; index++) {
+            world.step(); // minutes 1-19 → no minute hits the offset
+        }
         expect(island.cellStock(1, -4).berry ?? 0).toBe(0);
-        world.step(); // minutes 11-20 → minute 20 regrows one berry
+        world.step(); // minute 20 regrows one berry
         expect(island.cellStock(1, -4).berry).toBe(1);
         // Cap respected: parked at cap, regrowth does not exceed 3
         island.cellStock(1, -4).berry = 3;
@@ -272,14 +273,13 @@ describe('inventoryPlugin', () => {
         island.takeFromCell(ael, 'wood');
         expect(island.cellStock(-7, 0)).toEqual({ wood: 1, berry: 1 });
         expect(world.cellAt(-7, 0)?.resources).toEqual({ wood: 1 });
-        // Wood rhythm: every 60 minutes at offset 40 — steps 1-3 (minutes
-        // 1-30) pass silently…
-        world.step();
-        world.step();
-        world.step();
+        // Wood rhythm: every 60 minutes at offset 40 — the first 39
+        // one-minute steps pass silently…
+        for (let index = 0; index < 39; index++) {
+            world.step();
+        }
         expect(island.cellStock(-7, 0).wood).toBe(1);
-        // …step 4 (minute 40) regrows one unit into the stock AND the tile
-        // deposit
+        // …minute 40 regrows one unit into the stock AND the tile deposit
         world.step();
         expect(island.cellStock(-7, 0).wood).toBe(2);
         expect(world.cellAt(-7, 0)?.resources).toEqual({ wood: 2 });
@@ -322,13 +322,13 @@ describe('inventoryPlugin', () => {
                 rains.push(event.tick);
             }
         });
-        for (let index = 0; index < 60; index++) {
-            world.step();
+        for (let index = 0; index < 600; index++) {
+            world.step(); // 600 one-minute steps — the same 600 world-minutes
         }
         unsubscribe();
-        // Reference run: the per-minute rain roll (0.0127/min ≈ 0.12 per
-        // 10-minute step) fired on steps 1, 11, 15, 18, 47, 50, 51
-        expect(rains).toEqual([1, 11, 15, 18, 47, 50, 51]);
+        // Reference run: the per-minute rain roll (0.0127/min) fired on
+        // minutes 10, 107, 142, 172, 465, 495, 503
+        expect(rains).toEqual([10, 107, 142, 172, 465, 495, 503]);
         // Beach (−5,−7): coconut regrew to cap 2; two rains pooled water;
         // the unlimited sand pile never moved
         expect(island.cellStock(-5, -7)).toEqual({ sand: 1, coconut: 2, water: 2 });

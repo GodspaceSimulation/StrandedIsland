@@ -8,8 +8,9 @@
 // (condition 'gone' → despawned from the world).
 
 import { arrayEach } from '@presource/core';
+import type { World } from '../../engine/world';
 import type { ActorCondition } from '../../engine/types';
-import type { PluginContext, WorldPlugin } from '../../engine/plugin';
+import type { PluginContext, WorldPlugin } from '@godspace/core';
 
 export type NeedsPluginOptions = {
     /** Hunger points per world minute. Default 0.1. */
@@ -20,7 +21,7 @@ export type NeedsPluginOptions = {
     energyPerMinute?: number;
     /**
      * Minutes an actor survives at 100 hunger/thirst before dying.
-     * Default 30 (the scale-0 pace: three 10-minute steps).
+     * Default 30 world minutes (thirty 1-minute ticks at the Scale-0 pace).
      */
     doomMinutes?: number;
 };
@@ -32,7 +33,7 @@ export type NeedsState = {
     energy: number;
 };
 
-export type NeedsPlugin = WorldPlugin & {
+export type NeedsPlugin = WorldPlugin<World> & {
     /** An actor's needs — auto-created at starting values on first touch. */
     of(actorId: string): NeedsState;
     /**
@@ -122,7 +123,7 @@ export const needsPlugin = (options: NeedsPluginOptions = {}): NeedsPlugin => {
             states.clear();
         },
 
-        tick: (context: PluginContext) => {
+        tick: (context: PluginContext<World>) => {
             const { world } = context;
             // One tick hook call = one world-minute (the world sub-steps its
             // steps) — the per-minute rates apply directly

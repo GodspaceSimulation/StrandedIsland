@@ -29,7 +29,7 @@ const planning = (id: string, priority: number, specs: TaskSpec[]): TaskBehaviou
     plan: () => specs,
 });
 
-// One tile of travel = 10 world minutes at scale 0 (pinned by the island engine)
+// One Scale-0 tile of travel = 1 world minute (pinned by the island engine)
 const stepEast: TaskSpec = { kind: 'move', label: 'steps east', minutes: 10, payload: { dx: 1, dy: 0 } };
 const sleep = (minutes: number): TaskSpec => ({ kind: 'sleep', label: 'sleeps', minutes });
 

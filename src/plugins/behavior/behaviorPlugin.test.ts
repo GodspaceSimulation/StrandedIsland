@@ -4,11 +4,16 @@
 // rates. All outcomes were captured from reference runs — the task loop is
 // fully deterministic.
 //
-// The one-minute steps keep the scenarios compact: one step is one
-// world-minute, so a 10-minute travel task spans 10 steps. Sub-step rhythm
-// (engine/world.ts): a task planned during minute M's behavior tick first
-// decrements at minute M+1's ledger tick — planned at minute 1, a 10-minute
-// task completes at minute 11.
+// The simulation runs at SCALE 0: every move task walks the actor ONE
+// SUBTILE CELL inside its tile's sub-grid (world.relocateFine) — one
+// world-minute per task (the distribution's distance rule: one Scale-0 tile
+// move per tick). Crossing a tile boundary takes as many steps as the
+// actor's fine spot is from the edge, plus the wrapping step itself (25 on
+// the 25-wide default island); the energy charge lands on a tile crossing.
+//
+// Sub-step rhythm (engine/world.ts): a task planned during minute M's
+// behavior tick first decrements at minute M+1's ledger tick — planned at
+// minute 1, a 1-minute task completes at minute 2.
 
 import { describe, it, expect } from 'vitest';
 import { position3 } from '@godspace/core';
@@ -40,6 +45,20 @@ const buildStack = (needsOptions: Parameters<typeof needsPlugin>[0] = {}) => {
     });
     return { world, inventory, needs, relationship, tasks, behavior };
 };
+
+/** The one-minute move task the Scale-0 rules produce. */
+const moveTask = (behaviour: string, label: string, dx: number, dy: number, extra: Record<string, unknown> = {}) => ({
+    id: expect.any(String),
+    actorId: 'a',
+    behaviour,
+    kind: 'move',
+    label,
+    minutes: 1,
+    payload: { dx, dy, ...extra },
+    total: 1,
+    remaining: 1,
+    ...extra,
+});
 
 describe('behaviorPlugin', () => {
     it('a hungry actor with a berry eats AFTER the eat task completes', () => {
@@ -79,73 +98,128 @@ describe('behaviorPlugin', () => {
         });
     });
 
-    it('a thirsty actor travels to water: one tile takes exactly 10 world minutes', () => {
+    it('a thirsty actor travels to water: Scale-0 fine steps, a tile crossing every wrap', () => {
         const { world, inventory, needs, tasks } = buildStack({});
         spawn(world, 'a', 'Ael', 6, 2);
-        inventory.cellStock(4, 2).water = 1; // the pool is two tiles west
+        inventory.cellStock(8, 2).water = 1; // the pool is two tiles east
         needs.satisfy('a', { thirst: 60 }); // thirst 80 ≥ 65
         world.step();
-        // The thirst behaviour plans ONE greedy step west — a 10-minute task
+        // The thirst behaviour plans ONE fine step east — a 1-minute task
+        // (the Scale-0 distance rule: one tile move per tick)
         expect(tasks.taskOf('a')).toEqual({
             id: 't-1',
             actorId: 'a',
             behaviour: 'thirst',
             kind: 'move',
             label: 'travels to water',
-            minutes: 10,
-            payload: { dx: -1, dy: 0 },
-            total: 10,
-            remaining: 10,
+            minutes: 1,
+            payload: { dx: 1, dy: 0 },
+            total: 1,
+            remaining: 1,
         });
-        for (let index = 0; index < 4; index++) {
-            world.step();
-        }
-        // Mid-task at minute 5: position unchanged, 6 minutes left
-        expect(world.ticker.elapsed()).toBe(5);
-        expect(world.actors.get('a')).toMatchObject({ position: { x: 6, y: 2, z: 0 } });
-        expect(tasks.taskOf('a')?.remaining).toBe(6);
-        for (let index = 0; index < 5; index++) {
-            world.step();
-        }
-        // Elapsed 10 — still mid-task (the last ledger decrement lands next minute)
-        expect(world.ticker.elapsed()).toBe(10);
-        expect(world.actors.get('a')).toMatchObject({ position: { x: 6, y: 2, z: 0 } });
-        expect(tasks.taskOf('a')?.remaining).toBe(1);
+        // Minute 2: the completing fine step stays INSIDE the tile (the
+        // derived spot {11,−3} is one cell from the east edge) — the island
+        // view's coarse position does not move yet
         world.step();
-        // The completing step: the move lands, the event fires, energy charged
-        expect(world.ticker.elapsed()).toBe(11);
-        expect(world.actors.get('a')).toMatchObject({ position: { x: 5, y: 2, z: 0 } });
+        expect(world.ticker.elapsed()).toBe(2);
+        expect(world.actors.get('a')).toMatchObject({ position: { x: 6, y: 2, z: 0 } });
+        expect(world.subOf('a')).toEqual({ x: 12, y: -3 });
+        expect(needs.of('a').energy).toBe(100);
+        world.step();
+        // Minute 3: the NEXT east step steps off the tile edge and WRAPS —
+        // the actor flows into the neighbor tile (7,2), and the tile
+        // crossing charges the move energy
+        expect(world.ticker.elapsed()).toBe(3);
+        expect(world.actors.get('a')).toMatchObject({ position: { x: 7, y: 2, z: 0 } });
+        expect(world.subOf('a')).toEqual({ x: -12, y: -3 });
         expect(needs.of('a').energy).toBe(99);
-        expect(world.events.log().map((event) => ({ kind: event.kind, message: event.message, time: event.time }))).toEqual([
-            { kind: 'spawn', message: 'Ael washes ashore.', time: 0 },
-            { kind: 'move', message: 'Ael walks west.', time: 11 },
+        expect(world.events.log().filter((event) => event.kind === 'move').map((event) => ({ message: event.message, time: event.time }))).toEqual([
+            { message: 'Ael walks east.', time: 2 },
+            { message: 'Ael walks east.', time: 3 },
         ]);
-        // The actor re-plans the next tile the same minute — still travelling
-        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'travels to water', remaining: 10 });
-        expect(needs.of('a').thirst).toBe(80);
+        // The walk across tile (7,2): 25 more east fine steps, the last one
+        // wrapping onto the pool tile (8,2) at minute 28 (a second crossing,
+        // a second charge)
+        for (let index = 0; index < 25; index++) {
+            world.step();
+        }
+        expect(world.ticker.elapsed()).toBe(28);
+        expect(world.actors.get('a')).toMatchObject({ position: { x: 8, y: 2, z: 0 } });
+        expect(needs.of('a').energy).toBe(98);
+        // On the pool tile the thirst behaviour pivots to the 2-minute drink,
+        // completing at minute 30 (−35 thirst relief)
+        for (let index = 0; index < 2; index++) {
+            world.step();
+        }
+        expect(world.ticker.elapsed()).toBe(30);
+        expect(needs.of('a').thirst).toBe(45);
+        expect(inventory.cellStock(8, 2)).toEqual({ wood: 2, berry: 2 });
+        // 27 east fine steps + the drink's consume stamp
+        expect(world.events.log().filter((event) => event.kind === 'move').length).toBe(27);
+        expect(world.events.log().filter((event) => event.kind === 'move').slice(-1)).toEqual([
+            { id: expect.any(Number), tick: 28, time: 28, kind: 'move', message: 'Ael walks east.', actorId: 'a' },
+        ]);
+        expect(world.events.log().filter((event) => event.kind === 'consume')).toEqual([
+            { id: 29, tick: 30, time: 30, kind: 'consume', message: 'Ael drinks 1 Water.', actorId: 'a' },
+        ]);
+        // Sated (45 < 65) — the actor re-plans a wander
+        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 1 });
     });
 
-    it('a mid-travel actor keeps its origin position; a blocked move is silently re-planned', () => {
+    it('a blocked wrap is silently re-planned: the fallback walks, the next attempt crosses', () => {
         const { world, inventory, needs, tasks } = buildStack({});
         spawn(world, 'a', 'Ael', 6, 2);
-        inventory.cellStock(4, 2).water = 1;
+        inventory.cellStock(8, 2).water = 1;
         needs.satisfy('a', { thirst: 60 });
-        world.step(); // the travel task (west) is queued
-        // Bram materialises ON the target cell mid-task
-        spawn(world, 'b', 'Bram', 5, 2);
-        for (let index = 0; index < 10; index++) {
-            world.step();
-        }
-        // The occupancy rule: Ael never left his origin through the task
+        world.step(); // the east travel task is queued
+        // A coordinates-only resident (no actor registry entry, no behaviour —
+        // it never moves) materializes on tile (7,2) EXACTLY on Ael's landing
+        // fine spot: the east edge of the neighbor tile, {−12,−3}. The
+        // Scale-0 occupancy rule sees it (the coordinate space is the
+        // single position registry).
+        world.coordinates.place({
+            id: 'b',
+            position: position3(7, 2),
+            kind: 'creature',
+            type: 'dog',
+            name: 'Bram',
+            marker: 'B',
+            state: 'well',
+        });
+        const bramSub = world.subOf('b');
+        expect(bramSub).toEqual({ x: -9, y: 7 });
+        world.relocateFine('b', -12 - bramSub.x, -3 - bramSub.y);
+        expect(world.subOf('b')).toEqual({ x: -12, y: -3 });
+        // Minute 2: the east task completes with an INTERIOR step ({11,−3} →
+        // {12,−3}) — no wrap, no block yet. The same minute's re-plan sees
+        // the wrap onto the taken spot and plans the FALLBACK (the first
+        // valid fine direction: north) instead of a second east step
+        world.step();
+        expect(world.ticker.elapsed()).toBe(2);
         expect(world.actors.get('a')).toMatchObject({ position: { x: 6, y: 2, z: 0 } });
-        world.step(); // the task completes — the target is occupied
-        // A blocked move logs NOTHING; the actor re-plans the same minute and
-        // takes the neighbour fallback (north) instead
-        expect(world.events.log().filter((event) => event.actorId === 'a' && event.kind === 'move')).toEqual([]);
-        expect(world.actors.get('a')).toMatchObject({ position: { x: 6, y: 2, z: 0 } });
+        expect(world.subOf('a')).toEqual({ x: 12, y: -3 });
         expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', payload: { dx: 0, dy: -1 } });
-        // The energy charge is bound to the move effect — no move, no charge
+        // Minute 3: the fallback walks — a north fine step inside the tile
+        // (no crossing, no charge). The wrap was never attempted, so no move
+        // was blocked: the walk event is the fallback's.
+        world.step();
+        expect(world.ticker.elapsed()).toBe(3);
+        // The actor still stands on (6,2) — the island view never saw the
+        // blocked wrap as a tile change
+        expect(world.actors.get('a')).toMatchObject({ position: { x: 6, y: 2, z: 0 } });
         expect(needs.of('a').energy).toBe(100);
+        expect(world.events.log().filter((event) => event.kind === 'move').map((event) => ({ message: event.message, time: event.time }))).toEqual([
+            { message: 'Ael walks east.', time: 2 },
+            { message: 'Ael walks north.', time: 3 },
+        ]);
+        // Minute 4: the east attempt repeats — the wrap now lands one spot
+        // north of the resident ({−12,−4}, free) and the actor flows into
+        // (7,2) with the crossing charge
+        world.step();
+        expect(world.ticker.elapsed()).toBe(4);
+        expect(world.actors.get('a')).toMatchObject({ position: { x: 7, y: 2, z: 0 } });
+        expect(world.subOf('a')).toEqual({ x: -12, y: -4 });
+        expect(needs.of('a').energy).toBe(99);
     });
 
     it('a fed actor exchanges food for a hungry neighbour’s material AT PLAN TIME', () => {
@@ -179,6 +253,8 @@ describe('behaviorPlugin', () => {
             { kind: 'exchange', message: 'Ael and Bram trade: 1 Berry for 1 Shell.', time: 1 },
             { kind: 'relationship', message: 'Ael and Bram grow closer (trading).', time: 1 },
             { kind: 'consume', message: 'Bram eats 1 Berry.', time: 3 },
+            // Bram, fed and idle, fine-wanders his tile (the Scale-0 filler)
+            { kind: 'move', message: 'Bram wanders north.', time: 4 },
         ]);
     });
 
@@ -207,23 +283,27 @@ describe('behaviorPlugin', () => {
         ]);
     });
 
-    it('wander moves to a random free neighbour after the 10-minute task', () => {
+    it('the idle filler fine-wanders: one Scale-0 tile per completed task', () => {
         const { world, needs, tasks } = buildStack({});
         spawn(world, 'a', 'Ael', 6, 2);
-        for (let index = 0; index < 11; index++) {
+        for (let index = 0; index < 4; index++) {
             world.step();
         }
-        // The idle filler planned a 10-minute wander at minute 1; the move
-        // effect landed at minute 11 — one tile north (the seeded pick)
+        // Three wander tasks completed (minutes 2-4): the seeded picks step
+        // north, then south, then south — all INTERIOR fine steps, so the
+        // island view's coarse position never moves and no energy is charged
         expect(world.events.log().filter((event) => event.kind === 'move').map((event) => ({ message: event.message, time: event.time }))).toEqual([
-            { message: 'Ael wanders north.', time: 11 },
+            { message: 'Ael wanders north.', time: 2 },
+            { message: 'Ael wanders south.', time: 3 },
+            { message: 'Ael wanders south.', time: 4 },
         ]);
-        expect(world.actors.get('a')).toMatchObject({ position: { x: 6, y: 1, z: 0 } });
-        // needs.moved charged the move energy on the completing step (the
-        // 0.1/min hunger decay ran through all eleven minutes)
-        expect(needs.of('a')).toEqual({ hunger: 21.100000000000016, thirst: 20, energy: 99 });
-        // The wanderer re-plans immediately — a fresh 10-minute wander
-        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 10 });
+        expect(world.actors.get('a')).toMatchObject({ position: { x: 6, y: 2, z: 0 } });
+        expect(world.subOf('a')).toEqual({ x: 11, y: -2 });
+        // The 0.1/min hunger decay ran through all four minutes; no move
+        // charge (no tile crossing)
+        expect(needs.of('a')).toEqual({ hunger: 20.400000000000006, thirst: 20, energy: 100 });
+        // The wanderer re-plans immediately — a fresh 1-minute wander
+        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'wanders', payload: { dx: 1, dy: 0 }, remaining: 1 });
     });
 
     it('a hungry actor with no food gathers from the cell it stands on', () => {
@@ -286,26 +366,34 @@ describe('behaviorPlugin', () => {
         spawn(world, 'a', 'Ael', 10, 3);
         inventory.spawnKit('a', { flint: 1 });
         needs.satisfy('a', { hunger: 40 }); // hunger 60 ≥ the trigger
-        for (let index = 0; index < 43; index++) {
+        for (let index = 0; index < 56; index++) {
             world.step();
         }
-        // Three 10-minute greedy moves: west, west, north onto the stocked
-        // cell — then the 10-minute gather, then the berry is eaten
-        expect(world.events.log().filter((event) => event.kind === 'move' || event.kind === 'gather' || event.kind === 'consume').map((event) => ({ kind: event.kind, message: event.message, time: event.time }))).toEqual([
-            { kind: 'move', message: 'Ael walks west.', time: 11 },
-            { kind: 'move', message: 'Ael walks west.', time: 21 },
-            { kind: 'move', message: 'Ael walks north.', time: 31 },
-            { kind: 'gather', message: 'Ael gathers 1 Berry.', time: 41 },
-            { kind: 'consume', message: 'Ael eats 1 Berry.', time: 43 },
+        // The Scale-0 journey: fine steps west across tile (10,3) — 24
+        // interior steps from the derived spot {−4,0} then the wrapping step
+        // onto (9,3) at minute 10 — then the same walk across (9,3) (wrap at
+        // minute 35 onto (8,3)), then north across (8,3) (wrap at minute 44
+        // onto (8,2)), the 10-minute gather, and the berry eaten at minute 56
+        const moves = world.events.log().filter((event) => event.kind === 'move');
+        expect(moves.length).toBe(43);
+        expect(moves.filter((event) => event.message === 'Ael walks west.').length).toBe(34);
+        expect(moves[0]).toMatchObject({ message: 'Ael walks west.', time: 2 });
+        expect(moves[33]).toMatchObject({ message: 'Ael walks west.', time: 35 });
+        expect(moves[34]).toMatchObject({ message: 'Ael walks north.', time: 36 });
+        expect(moves[42]).toMatchObject({ message: 'Ael walks north.', time: 44 });
+        expect(world.events.log().filter((event) => event.kind === 'gather' || event.kind === 'consume').map((event) => ({ kind: event.kind, message: event.message, time: event.time }))).toEqual([
+            { kind: 'gather', message: 'Ael gathers 1 Berry.', time: 54 },
+            { kind: 'consume', message: 'Ael eats 1 Berry.', time: 56 },
         ]);
         expect(world.actors.get('a')).toMatchObject({ position: { x: 8, y: 2, z: 0 } });
-        // Three move charges (one per completed tile); hunger 60 at plan
-        // time + 0.1/min decay through minute 43, −14 on the eat
+        expect(world.subOf('a')).toEqual({ x: 12, y: 8 });
+        // Three tile crossings (one per walked tile); hunger 60 at plan
+        // time + 0.1/min decay through minute 56, −14 on the eat
         expect(needs.of('a').energy).toBe(97);
         expect(inventory.of('a')).toEqual({ flint: 1 });
-        expect(needs.of('a').hunger).toBe(50.30000000000004);
-        // Sated (50.3 < 60) — the actor re-plans a wander
-        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 10 });
+        expect(needs.of('a').hunger).toBe(51.599999999999966);
+        // Sated (51.6 < 60) — the actor re-plans a wander
+        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 1 });
     });
 
     it('an exhausted actor rests: the recovery applies once, on completion', () => {
@@ -320,10 +408,12 @@ describe('behaviorPlugin', () => {
         expect(world.events.log().map((event) => ({ kind: event.kind, message: event.message, time: event.time }))).toEqual([
             { kind: 'spawn', message: 'Ael washes ashore.', time: 0 },
             { kind: 'rest', message: 'Ael rests for a while.', time: 11 },
+            // Rested past the trigger (32 > 22) — the actor fine-wanders on
+            { kind: 'move', message: 'Ael wanders north.', time: 12 },
         ]);
-        // Rested past the trigger (32 > 22) — the actor wanders on; the
-        // twelfth step already counted one minute off the fresh wander task
-        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 9 });
+        // The twelfth minute already completed one 1-minute wander task and
+        // re-planned the next
+        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'wanders', payload: { dx: 0, dy: 1 }, remaining: 1 });
     });
 
     it('dropping the wander behaviour mid-run strands idle actors (task list empties)', () => {
@@ -331,9 +421,9 @@ describe('behaviorPlugin', () => {
         spawn(world, 'a', 'Ael', 6, 2);
         spawn(world, 'b', 'Bram', 8, 2);
         world.step();
-        // Both castaways queued 10-minute wander tasks
+        // Both castaways queued 1-minute wander tasks
         expect(tasks.tasks().map((task) => task.actorId)).toEqual(['a', 'b']);
-        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 10 });
+        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 1 });
         // Drop the wander module: its queued tasks cancel, actors go idle
         expect(tasks.dropBehaviour('wander')).toBe(true);
         expect(tasks.tasks()).toEqual([]);

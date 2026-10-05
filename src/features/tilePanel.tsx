@@ -140,9 +140,9 @@ export const TilePanel = () => {
                     <Row>
                         <RowName>Position</RowName>
                         <span data-testid="tile-position">
-                            {/* The full zoom lineage — "(17, -11) · sand" at
-                                scale 0, each deeper step appended (the same
-                                line shape at every scale) */}
+                            {/* The full zoom lineage — "(-11, 0) · sand" at
+                                the island view, each deeper step appended
+                                (the same line shape at every scale) */}
                             {summary.path.map((step) => `(${step.x}, ${step.y})`).join(' · ')} ·{' '}
                             {summary.surface}
                         </span>
@@ -180,10 +180,11 @@ export const TilePanel = () => {
                     <div>
                         <PanelTitle>On the ground</PanelTitle>
                         <List data-testid="tile-ground">
-                            {/* The granularity ladder: scale 0 (and anything
-                                above it) lists the item CATEGORIES ("Foods
-                                ×2" — the generalization), deeper scales list
-                                the items by name ("1 Berry"). The two entry
+                            {/* The granularity ladder: the island view (a
+                                length-1 path, and anything wider) lists the
+                                item CATEGORIES ("Foods ×2" — the
+                                generalization), the interior views list the
+                                items by name ("1 Berry"). The two entry
                                 shapes distinguish by their label field. */}
                             {summary.ground.length === 0 ? (
                                 <li>

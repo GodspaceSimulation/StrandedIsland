@@ -88,7 +88,7 @@ describe('sleepPlugin', () => {
         // Minute 46: the sleep task completed, the actor re-planned a wander —
         // the wake transition logs (no restore on the completing minute)
         expect(needs.of('a').energy).toBe(71.24000000000002);
-        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 10 });
+        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 1 });
         expect(world.events.log().map((event) => ({ kind: event.kind, message: event.message, time: event.time }))).toEqual([
             { kind: 'spawn', message: 'Ael washes ashore.', time: 0 },
             { kind: 'sleep', message: 'Ael curls up and sleeps.', time: 1 },
@@ -129,7 +129,7 @@ describe('sleepPlugin', () => {
         // The old rest ladder: a 10-minute rest task (no per-minute restore —
         // the +12 recovery lands once, on completion at minute 11)
         expect(needs.of('a').energy).toBe(31.340000000000014);
-        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 10 });
+        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 1 });
         expect(world.events.log().map((event) => ({ kind: event.kind, message: event.message, time: event.time }))).toEqual([
             { kind: 'spawn', message: 'Ael washes ashore.', time: 0 },
             { kind: 'rest', message: 'Ael rests for a while.', time: 11 },

@@ -2,10 +2,11 @@
 // the Z axis.
 //
 // Castaways cannot fly or dig (their Z is clamped to the ground plane, see
-// engine/world relocate + @godspace/core `grounded`), but gulls move through
-// full 3D space: they perch on the ground plane (Z = 0), take off, and drift
-// through an altitude fade ladder while gliding. THE VANISHED HIGHER SCALE:
-// this world only has scale 0 (the island) and scale 1 (tile interiors —
+// the engine world's registry + @godspace/core `grounded`), but gulls move
+// through full 3D space: they perch on the ground plane (Z = 0), take off,
+// and drift through an altitude fade ladder while gliding. THE VANISHED
+// HIGHER SCALE: this world only has scale 0 (the tile interiors — the
+// simulation ground) and scale 1 (the island — the default view,
 // scenario/island.ts anchors the ladder), so there is no scale 2. Altitude
 // maps upward onto that ladder: a bird climbing to z ≥ ALTITUDE_CEILING would
 // reach the nonexistent scale 2 and vanishes from the memory stack for good
@@ -27,9 +28,15 @@
 // plugin's own keyed random stream.
 
 import { arrayEach } from '@presource/core';
-import { position3, grounded, type Position3D } from '@godspace/core';
-import { NEIGHBOR_OFFSETS } from '../../engine/world';
-import type { PluginContext, WorldPlugin } from '../../engine/plugin';
+import {
+    NEIGHBOR_OFFSETS,
+    position3,
+    grounded,
+    type PluginContext,
+    type WorldPlugin,
+    type Position3D,
+} from '@godspace/core';
+import type { World } from '../../engine/world';
 
 export type BirdsPluginOptions = {
     /** Chance per world-minute a flying bird lands. Default 0.02. */
@@ -58,7 +65,7 @@ export type BirdRecord = {
     position: Position3D;
 };
 
-export type BirdsPlugin = WorldPlugin & {
+export type BirdsPlugin = WorldPlugin<World> & {
     /** Releases a bird above the island center at cruise altitude. */
     release(name?: string): BirdRecord;
     /** One bird's record, or undefined. */
@@ -68,7 +75,8 @@ export type BirdsPlugin = WorldPlugin & {
 };
 
 // Climbing to z ≥ ALTITUDE_CEILING leaves the world's reachable scales
-// entirely: this world only generates scale 0 and scale 1 (scenario/island.ts
+// entirely: this world only generates the tile interiors (scale 0) and the
+// island (scale 1) (scenario/island.ts
 // scale ladder), so z 10 would map onto the nonexistent scale 2 — the bird
 // is despawned for good (coordinate space + flock record).
 export const ALTITUDE_CEILING = 10;
@@ -145,7 +153,7 @@ export const birdsPlugin = (options: BirdsPluginOptions = {}): BirdsPlugin => {
     let released = 0;
 
     // The world reference arrives with setup (release/tick need canvas + events)
-    let world: PluginContext['world'] | null = null;
+    let world: PluginContext<World>['world'] | null = null;
 
     /** Next bird identity — the monotonic counter never walks back on a
      * despawn (despawned ids are never reused; only a full dispose resets). */
@@ -193,7 +201,7 @@ export const birdsPlugin = (options: BirdsPluginOptions = {}): BirdsPlugin => {
         id: 'birds',
         label: 'Seabirds',
 
-        setup: (context: PluginContext) => {
+        setup: (context: PluginContext<World>) => {
             world = context.world;
         },
 
@@ -248,7 +256,7 @@ export const birdsPlugin = (options: BirdsPluginOptions = {}): BirdsPlugin => {
             world = null;
         },
 
-        tick: (context: PluginContext) => {
+        tick: (context: PluginContext<World>) => {
             if (!world) {
                 return;
             }

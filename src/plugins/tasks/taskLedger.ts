@@ -4,13 +4,13 @@
 //
 // The behavior plugin (plugins/behavior/behaviorPlugin.ts) currently decides
 // one instant action per actor per world-minute. This ledger is the
-// replacement substrate: behaviours QUEUE time-costing tasks (travelling one
-// tile = 10 world minutes at scale 0, sleeping = hundreds, …) and the actor
-// stays busy while the head task counts down. The heartbeat contract: the
-// world runs one world-minute per plugin tick hook call (engine/world.ts
-// step() sub-stepping), so one ledger tick() call decrements task progress
-// by exactly one minute — and ONLY each queue's head advances (time is
-// serial; queued followers wait their turn).
+// replacement substrate: behaviours QUEUE time-costing tasks (moving one
+// Scale-0 tile = 1 world minute — TRAVEL_MINUTES_PER_TILE —, sleeping = tens,
+// …) and the actor stays busy while the head task counts down. The heartbeat
+// contract: the world runs one world-minute per plugin tick hook call
+// (the engine core's step() sub-stepping), so one ledger tick() call
+// decrements task progress by exactly one minute — and ONLY each queue's
+// head advances (time is serial; queued followers wait their turn).
 //
 // Behaviour modules are pluggable slices of conduct ('sleep', 'thirst', …).
 // The add/remove update rule: registering one changes future planning only;
@@ -18,8 +18,8 @@
 // task list came from that behaviour lose those tasks and become idle again
 // (the next plan() round re-plans them). How long a task takes is governed
 // entirely by the behaviour module that queues it — the island engine pins
-// one tile = 10 world minutes at scale 0 elsewhere; the ledger only counts
-// the minutes down. No randomness, no world access — pure logic.
+// one Scale-0 tile = 1 world minute (TRAVEL_MINUTES_PER_TILE); the ledger
+// only counts the minutes down. No randomness, no world access — pure logic.
 
 import { arrayEach } from '@presource/core';
 import type { Actor } from '../../engine/types';

@@ -3,12 +3,13 @@
 // RECURSIVE TILE LADDER.
 //
 // An inspected tile is addressed by a TilePath (@godspace/core src/subtile):
-// path[0] is the scale-0 tile (a cell of the island grid), path[1] the
-// subtile within it (a cell of that tile's sub-grid — the scale-1 view),
-// and so on, arbitrarily deep. The tiling is recursive and a sub-grid has
-// the SAME dimensions as its parent grid, so every zoom level is the same
-// kind of board and every level's tiles are inspectable exactly like the
-// root's — the same four layers of detail, resolved at any depth:
+// path[0] is an island tile (a cell of the island grid — the scale-1 view,
+// the default), path[1] the subtile within it (a cell of that tile's
+// sub-grid — the scale-0 view, the simulation ground where the entities
+// move), and so on, arbitrarily deep. The tiling is recursive and a sub-grid
+// has the SAME dimensions as its parent grid, so every zoom level is the
+// same kind of board and every level's tiles are inspectable exactly like
+// the root's — the same four layers of detail, resolved at any depth:
 //   terrain   — the voxel column itself (biome, height, walkability, stack)
 //               plus the surface key the canvas paints it with (derived
 //               from the tile's resource deposits — see
@@ -17,15 +18,15 @@
 //               canvasFor/cellFor (sub-grids generate deterministically
 //               from their parent).
 //   resources — the tile's resource DEPOSITS (wood, stone, iron and the
-//               unlimited sand/dirt). At scale 0 these are the tile's own;
-//               deeper they are the PARENT's deposits distributed onto the
-//               subtiles (wood ×2 → two tree subtiles) — the zoom reveals
-//               where the deposits stand.
-//   ground    — what lies on the terrain. At scale 0 the inventory plugin's
-//               cell stock; deeper, the parent's stock scatters across the
-//               parent's sub-grid (one seeded spot per unit) and the
-//               inspected subtile counts what landed on it — recursively
-//               down the whole path.
+//               unlimited sand/dirt). At the island view these are the
+//               tile's own; deeper they are the PARENT's deposits
+//               distributed onto the subtiles (wood ×2 → two tree subtiles)
+//               — the zoom reveals where the deposits stand.
+//   ground    — what lies on the terrain. At the island view the inventory
+//               plugin's cell stock; deeper, the parent's stock scatters
+//               across the parent's sub-grid (one seeded spot per unit) and
+//               the inspected subtile counts what landed on it —
+//               recursively down the whole path.
 //   occupants — who is there: EVERY living thing in the coordinate column
 //               (world.coordinates), not just castaways. Deeper scales
 //               filter by the entity's FINE position (world.subOf — where
@@ -36,27 +37,29 @@
 // ── Ground stock — the granularity ladder ────────────────────────────────────
 //
 // Ground items carry a CATEGORY (plugins/inventory/items.ts), and the zoom
-// scale reads the ground at ever-finer granularity down the ladder:
-//   scale 0 — the tile's stock generalizes into its CATEGORIES ("Foods"),
-//             listed in the Tile Inspector; the items themselves are not
-//             canvas objects here. Every scale "above" scale 0 (a space
-//             engine's −100 …) stays at this coarsest level — the category
-//             is the top of the item ladder.
-//   scale 1 — the items list by NAME ("1 Berry") in the subtile's inspector
+// scale reads the ground at ever-finer granularity down the ladder (the
+// ladder counts UP from the interior ground — scale 0 the simulation
+// ground, higher scales wider):
+//   island view (a length-1 path; scale 1 on this engine) — the tile's
+//             stock generalizes into its CATEGORIES ("Foods"), listed in
+//             the Tile Inspector; the items themselves are not canvas
+//             objects here. Every wider view above the island stays at
+//             this coarsest level — the category is the top of the item
+//             ladder.
+//   scale 0  — the items list by NAME ("1 Berry") in the subtile's inspector
 //             AND draw as canvas objects at their subtile positions
 //             (scaleView below scatters them with the same seeded streams).
-//   scale 2+ — each unit shows WHERE it stands (canvas objects at exact
-//             spots); the scale-1 subtile lists them by name.
+//   deeper   — each unit shows WHERE it stands (canvas objects at exact
+//             spots); the parent subtile lists them by name.
 // Tile-resource items (wood/stone/iron/sand/dirt) are skipped from every
 // DEEPER list and scatter: their gatherable stock IS their deposit, and the
 // deposit units stand as the subtile surfaces the terrain generator
-// distributed — drawing them again would double every tree. The scale-0
-// category aggregation INCLUDES them (their gatherable stock is still "on
-// the ground" at the island view — Sand reads as a Material).
+// distributed — drawing them again would double every tree. The island
+// view's category aggregation INCLUDES them (their gatherable stock is
+// still "on the ground" at the island view — Sand reads as a Material).
 
 import type { CoordinateEntry, TilePath } from '@godspace/core';
-import { tilePathKey, tilePathParent, tilePathTail } from '@godspace/core';
-import { randomKeyed } from '../engine/random';
+import { randomKeyed, tilePathKey, tilePathParent, tilePathTail } from '@godspace/core';
 import type { Canvas, TileResource, TileResources, VoxelKind } from '../engine/types';
 import { TILE_RESOURCES, UNLIMITED_TILE_RESOURCES } from '../engine/types';
 import type { IslandHandle } from '../scenario/island';
@@ -120,8 +123,8 @@ export type TileOccupant = {
 };
 
 /**
- * Every living thing at the addressed tile, grounded first. At scale 0
- * (a length-1 path) that is the whole coordinate column; deeper, the
+ * Every living thing at the addressed tile, grounded first. At the island
+ * view (a length-1 path) that is the whole coordinate column; deeper, the
  * column filters down to the entities whose FINE position (world.subOf —
  * where they stand inside the parent tile's sub-grid) matches the inspected
  * subtile. Reads straight from the world's coordinate space — the single
@@ -175,31 +178,32 @@ export type GroundStack = { item: string; count: number };
 
 /**
  * What lies on the terrain at the addressed tile — AT THE INSPECTED
- * GRANULARITY. Scale 0 (a length-1 path) generalizes the tile's live stock
- * into its item CATEGORIES ("Foods ×2" — the coarsest read; every scale
- * above scale 0 stays here); deeper scales list the items by NAME: the
- * parent's ground scatters across the parent's sub-grid — one seeded spot
- * per unit, per item — and the inspected subtile counts what landed on it,
- * recursing down the whole path so gathering at scale 0 flows into every
- * zoomed view.
+ * GRANULARITY. The island view (a length-1 path) generalizes the tile's
+ * live stock into its item CATEGORIES ("Foods ×2" — the coarsest read;
+ * every wider view above the island stays here); deeper scales list the
+ * items by NAME: the parent's ground scatters across the parent's sub-grid
+ * — one seeded spot per unit, per item — and the inspected subtile counts
+ * what landed on it, recursing down the whole path so gathering at the
+ * island view flows into every zoomed view.
  */
 export const tileGround = (
     island: IslandHandle,
     path: TilePath,
 ): Array<ItemCategoryStack | GroundStack> => {
     if (path.length === 1) {
-        // Scale 0: the generalization — categories, not items
+        // The island view: the generalization — categories, not items
         return inventoryCategories(island.inventory.cellStock(path[0].x, path[0].y));
     }
     return groundStacksAt(island, path);
 };
 
 /**
- * The item-name stacks of a ground stock (the finer read). Scale 0 returns
- * the live stock with the tile-resource mirrors REMOVED (their units stand
- * as the subtile deposits — the scatter and the canvas objects must never
- * double them); deeper paths recurse: the parent's stacks scatter across
- * the parent's sub-grid and the inspected subtile counts its landings.
+ * The item-name stacks of a ground stock (the finer read). The island tile
+ * returns the live stock with the tile-resource mirrors REMOVED (their units
+ * stand as the subtile deposits — the scatter and the canvas objects must
+ * never double them); deeper paths recurse: the parent's stacks scatter
+ * across the parent's sub-grid and the inspected subtile counts its
+ * landings.
  */
 const groundStacksAt = (island: IslandHandle, path: TilePath): GroundStack[] => {
     if (path.length === 1) {
@@ -316,9 +320,10 @@ export type TileSummary = {
     resources: TileResourceStack[];
     /**
      * The ground stock AT THE INSPECTED GRANULARITY: category aggregates
-     * ("Foods ×2") at scale 0 — every scale above it stays this coarse —
-     * and item-name stacks ("1 Berry") at scale 1+. TilePanel renders the
-     * two shapes apart (categories as "Label ×count", stacks via itemLabel).
+     * ("Foods ×2") at the island view (a length-1 path — every wider view
+     * above it stays this coarse) — and item-name stacks ("1 Berry") in the
+     * interior views. TilePanel renders the two shapes apart (categories as
+     * "Label ×count", stacks via itemLabel).
      */
     ground: Array<ItemCategoryStack | GroundStack>;
     /** All living things in the column, grounded first. */
@@ -418,8 +423,8 @@ export const scaleView = (island: IslandHandle, viewPath: TilePath): ViewSlice |
     // The ground items become CANVAS OBJECTS at every zoomed scale — each
     // unit stands at its scattered subtile (the same streams the Tile
     // Inspector's ground derivation reads, so lists and objects agree).
-    // At scale 0 they stay list-only (the granularity ladder), so the root
-    // slice above carries no ground entries.
+    // At the island view they stay list-only (the granularity ladder), so
+    // the root slice above carries no ground entries.
     boardGroundUnits(island, viewPath).forEach((unit, index) => {
         entries.push({
             id: `ground:${unit.item}:${index}`,

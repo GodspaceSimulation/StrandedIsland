@@ -22,7 +22,8 @@
 // sleeping emits "wakes up".
 
 import { arrayEach } from '@presource/core';
-import type { PluginContext, WorldPlugin } from '../../engine/plugin';
+import type { PluginContext, WorldPlugin } from '@godspace/core';
+import type { World } from '../../engine/world';
 import type { NeedsPlugin } from '../needs/needsPlugin';
 import type { TasksPlugin } from '../tasks/tasksPlugin';
 
@@ -37,7 +38,7 @@ export type SleepPluginOptions = {
     durationMinutes?: number;
 };
 
-export type SleepPlugin = WorldPlugin & {};
+export type SleepPlugin = WorldPlugin<World> & {};
 
 export const sleepPlugin = (options: SleepPluginOptions): SleepPlugin => {
     const { needs, tasks } = options;
@@ -47,7 +48,7 @@ export const sleepPlugin = (options: SleepPluginOptions): SleepPlugin => {
 
     // The world reference arrives with setup — the tick reads actors and
     // emits sleep/wake log lines through it
-    let world: PluginContext['world'] | null = null;
+    let world: PluginContext<World>['world'] | null = null;
 
     // Which actors were sleeping at the END of the previous minute — the
     // transition detector for the sleep/wake log lines (per-actor flag)

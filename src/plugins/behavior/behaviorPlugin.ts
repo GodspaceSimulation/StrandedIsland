@@ -3,22 +3,22 @@
 // The plugin no longer decides one instant action per world-minute (the old
 // per-minute priority ladder). It now REGISTERS behaviour modules into the
 // task ledger (plugins/tasks/taskLedger.ts) and applies the task EFFECTS on
-// completion. The rhythm: tasks cost WORLD MINUTES — travelling ONE tile
-// costs `travelMinutesPerTile` (10 at scale 0 — the scale-0 step time, pinned
-// by this engine, see scenario/island.ts TRAVEL_MINUTES_PER_TILE) — so an
-// actor that plans a move stays busy for 10 minutes and the effect lands on
-// the completing minute. Behaviours add/remove update task lists per the
+// completion. The rhythm: tasks cost WORLD MINUTES — moving ONE SCALE-0
+// TILE costs `travelMinutesPerTile` (ONE — the distribution's distance rule:
+// one Scale-0 tile move per tick, scenario/island.ts) — so an actor that
+// plans a move stays busy for one minute and the effect lands on the
+// completing minute. Behaviours add/remove update task lists per the
 // ledger rules: registering one changes future planning only; dropping one
 // cancels its queued tasks and the actors go idle again.
 //
 // The registered ladder (priority DESC; the ledger plans the first module
 // whose gate passes and whose plan yields specs):
 //   thirst  50 — thirst ≥ 65       → drink from the cell's pool (2 min), or
-//                                    travel one greedy step toward the
-//                                    nearest pool (10 min)
+//                                    travel one fine step toward the
+//                                    nearest pool (1 min)
 //   hunger  40 — hunger ≥ 60       → eat from the bag (2 min), gather the
 //                                    cell's food (10 min), or travel toward
-//                                    the nearest food stock (10 min)
+//                                    the nearest food stock (1 min)
 //   rest    25 — energy ≤ 22       → rest 10 min, recovery applied on
 //                                    completion. FALLBACK — the sleep plugin
 //                                    (plugins/sleep/sleepPlugin.ts) registers
@@ -27,18 +27,26 @@
 //                                    back to instant-rest behaviour
 //   social  20 — cooldown elapsed  → trade/gift a hungry neighbour; the
 //                                    exchange applies AT PLAN TIME (the task
-//                                    itself is the 10-min cost of the
+//                                    itself is the 1-min cost of the
 //                                    encounter)
-//   wander   0 — always           → one random free step (10 min), nothing
-//                                    planned when no neighbour is free
+//   wander   0 — always           → one random fine step (1 min), nothing
+//                                    planned when no fine step is free
+//
+// Movement runs at SCALE 0 — the simulation ground: every move task walks
+// the actor ONE SUBTILE CELL inside its tile's sub-grid
+// (world.relocateFine). A step that stays inside the parent tile is free
+// ground; a step off a tile edge WRAPS into the neighbor tile (the
+// @godspace/core subTile continuity rule) and must find dry, unoccupied
+// ground there. The energy charge lands on a TILE CROSSING — milling
+// around inside a tile is free, walking into the next tile costs the move
+// (the coarse walk's economics, preserved at the fine granularity).
 //
 // Task EFFECTS (registered as a ledger completion listener, applied when a
 // task reaches 0 remaining):
-//   move    — re-validates the target (bounds, passable, ground-unoccupied —
-//             the same rules the old stepToward/wander enforced) then
-//             relocates through grounded() (castaways never fly — @godspace/core),
-//             charges the move energy and logs. A blocked move logs NOTHING —
-//             the actor re-plans next minute.
+//   move    — re-validates the fine step (bounds, the wrap's tiles passable,
+//             the destination fine spot unoccupied) then fine-relocates,
+//             charges the move energy on a tile crossing and logs. A blocked
+//             move logs NOTHING — the actor re-plans next minute.
 //   drink   — takes water from the cell (re-validated), consumes it, relieves
 //             thirst.
 //   eat     — consumes the planned item from the bag (re-validated), restores
@@ -53,11 +61,19 @@
 // (passed as options — see scenario/island.ts for the assembly).
 
 import { arrayEach } from '@presource/core';
-import { planeDistance, grounded, position3, type Position3D } from '@godspace/core';
+import {
+    GROUND_LEVEL,
+    NEIGHBOR_OFFSETS,
+    planeDistance,
+    position3,
+    subTileStep,
+    type PluginContext,
+    type WorldPlugin,
+    type Position3D,
+} from '@godspace/core';
 import { itemDef } from '../inventory/items';
-import { NEIGHBOR_OFFSETS } from '../../engine/world';
+import type { World } from '../../engine/world';
 import type { Actor, TerrainCell } from '../../engine/types';
-import type { PluginContext, WorldPlugin } from '../../engine/plugin';
 import type { InventoryPlugin } from '../inventory/inventoryPlugin';
 import type { NeedsPlugin } from '../needs/needsPlugin';
 import type { RelationshipPlugin } from '../relationship/relationshipPlugin';
@@ -69,8 +85,9 @@ export type BehaviorPluginOptions = {
     needs: NeedsPlugin;
     relationship: RelationshipPlugin;
     tasks: TasksPlugin;
-    /** World minutes to walk ONE tile. Default 10 — the scale-0 step time
-     * (scenario/island.ts pins one tile per scale-0 step). */
+    /** World minutes to move ONE SCALE-0 tile (one subtile cell). Default 1 —
+     * the distribution's distance rule: one tile move per tick
+     * (scenario/island.ts pins it). */
     travelMinutesPerTile?: number;
     /** World-minutes between social attempts per actor. Default 60. */
     socialCooldownMinutes?: number;
@@ -100,15 +117,15 @@ const REST_RECOVERY = 12;
 /** Chebyshev distance — the grid step metric for "nearby" (plane only). */
 const chebyshev = (a: Position3D, b: Position3D): number => planeDistance(a, b);
 
-export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
+export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<World> => {
     const { inventory, needs, relationship, tasks } = options;
-    const travel = options.travelMinutesPerTile ?? 10;
+    const travel = options.travelMinutesPerTile ?? 1;
     const eatMinutes = options.eatMinutes ?? 2;
     const drinkMinutes = options.drinkMinutes ?? 2;
     const gatherMinutes = options.gatherMinutes ?? 10;
     const socialMinutes = options.socialMinutes ?? 10;
     const restMinutes = options.restMinutes ?? 10;
-    // Six 10-minute steps at the scale-0 pace — the cooldown is measured in
+    // Sixty 1-minute steps at the Scale-0 pace — the cooldown is measured in
     // WORLD MINUTES so the social rhythm never moves with the view scale
     const socialCooldown = options.socialCooldownMinutes ?? 60;
 
@@ -117,7 +134,7 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
 
     // The plugin context captured at setup — the behaviour plans and the task
     // effects read the world through it (TaskSubject only carries the actor)
-    let context: PluginContext | null = null;
+    let context: PluginContext<World> | null = null;
 
     // ── helpers ─────────────────────────────────────────────────────────────
 
@@ -157,25 +174,102 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
         return horizontal ? `${vertical}${horizontal}` : vertical;
     };
 
-    /** Whether (x, y) is a step the actor could complete: in bounds, passable,
-     * ground-unoccupied (flyers above a cell never block it). */
-    const free = (x: number, y: number): boolean => {
-        const active = context?.world;
-        if (!active) {
-            return false;
-        }
-        const cell = active.cellAt(x, y);
-        // Ground-level occupancy only — flyers above a cell never block it
-        return !!cell && cell.passable && !active.actorAt(x, y);
+    // ── Scale-0 movement — the fine walk through the sub-grids ───────────────
+    // Every move task walks the actor ONE SUBTILE CELL (the tile's interior
+    // grid). A step inside the parent tile is always free ground; a step off
+    // an edge wraps into the NEIGHBOR tile (the subTile continuity rule) and
+    // must land on dry, unoccupied ground. Occupancy is per SCALE-0 tile: no
+    // two grounded actors stand on the same subtile cell.
+
+    /**
+     * Whether another GROUNDED entity stands at (sx, sy) inside the tile at
+     * (tileX, tileY) — the Scale-0 occupancy rule: no two entities stand on
+     * the same subtile cell. The scan reads the whole coordinate space (the
+     * single position registry), so registry actors AND coordinates-only
+     * creatures (birds on the ground, released fauna) block alike; flyers
+     * (z > ground) never block — they are above the Scale-0 ground.
+     */
+    const fineSpotTaken = (
+        active: World,
+        selfId: string,
+        tileX: number,
+        tileY: number,
+        sx: number,
+        sy: number,
+    ): boolean => {
+        let taken = false;
+        active.coordinates.all().forEach((other) => {
+            if (
+                other.id !== selfId &&
+                other.position.x === tileX &&
+                other.position.y === tileY &&
+                other.position.z === GROUND_LEVEL
+            ) {
+                const otherSub = active.subOf(other.id);
+                if (otherSub && otherSub.x === sx && otherSub.y === sy) {
+                    taken = true;
+                }
+            }
+        });
+        return taken;
     };
 
     /**
-     * One greedy step from the actor toward (tx, ty): preferred steps dx→0
-     * then dy→0, diagonal fallback, then any free passable neighbour — chosen
-     * deterministically against the CURRENT occupancy. Null when the actor
-     * cannot move at all.
+     * Whether the actor could fine-step (dx, dy) right now — a PURE read
+     * used by both the planner and the completion effect (re-validation).
+     * Resolves the actor's fine spot, runs the subTileStep wrap, and
+     * validates the landing: interior steps need only a free fine spot;
+     * wraps additionally need the crossed tile(s) dry. Returns the crossed
+     * parent delta (the tile-crossing signal for the energy charge), or
+     * undefined when the step is impossible.
      */
-    const greedyStep = (actor: Actor, tx: number, ty: number): [number, number] | null => {
+    const fineStep = (
+        actor: Actor,
+        dx: number,
+        dy: number,
+    ): { parent: { dx: number; dy: number } } | undefined => {
+        const active = context?.world;
+        if (!active) {
+            return undefined;
+        }
+        const canvas = active.canvas;
+        if (canvas.width === 0 || canvas.height === 0) {
+            return undefined;
+        }
+        const sub = active.subOf(actor.id);
+        if (!sub) {
+            return undefined;
+        }
+        // The continuity rule: the step wraps at the sub-grid edges and
+        // reports the parent tile(s) it crossed
+        const step = subTileStep(canvas.width, canvas.height, sub.x, sub.y, dx, dy);
+        if (step.parent.dx !== 0 || step.parent.dy !== 0) {
+            // The wrap crossed into neighbor tile(s) — they must be dry
+            const crossed = active.cellAt(
+                actor.position.x + step.parent.dx,
+                actor.position.y + step.parent.dy,
+            );
+            if (!crossed || !crossed.passable) {
+                return undefined;
+            }
+        }
+        // The landing fine spot must be free of grounded actors (the tile
+        // the step lands in: the current one, or the wrapped neighbor)
+        const landingX = actor.position.x + step.parent.dx;
+        const landingY = actor.position.y + step.parent.dy;
+        if (fineSpotTaken(active, actor.id, landingX, landingY, step.x, step.y)) {
+            return undefined;
+        }
+        return { parent: step.parent };
+    };
+
+    /**
+     * One greedy fine step from the actor toward the target TILE (tx, ty):
+     * preferred steps dx→0 then dy→0, diagonal fallback, then any valid fine
+     * direction — chosen deterministically against the CURRENT occupancy.
+     * Null when the actor cannot fine-step at all.
+     */
+    const greedyFineStep = (actor: Actor, tx: number, ty: number): [number, number] | null => {
         const dx = Math.sign(tx - actor.position.x);
         const dy = Math.sign(ty - actor.position.y);
 
@@ -193,17 +287,15 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
 
         let step: [number, number] | null = null;
         arrayEach(preferred, ({ value: candidate }) => {
-            if (!step && free(actor.position.x + candidate[0], actor.position.y + candidate[1])) {
+            if (!step && fineStep(actor, candidate[0], candidate[1])) {
                 step = candidate;
             }
         });
-        // Blocked — try any passable unoccupied neighbour as fallback
+        // Blocked toward the target — try any valid fine direction as
+        // fallback (the actor mills toward the tile edge facing the target)
         if (!step) {
             arrayEach(NEIGHBOR_OFFSETS, ({ value: offset }) => {
-                if (
-                    !step &&
-                    free(actor.position.x + offset.dx, actor.position.y + offset.dy)
-                ) {
+                if (!step && fineStep(actor, offset.dx, offset.dy)) {
                     step = [offset.dx, offset.dy];
                 }
             });
@@ -211,9 +303,9 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
         return step;
     };
 
-    /** Travel spec toward a target cell: one greedy step, `travel` minutes. */
+    /** Travel spec toward a target tile: one fine step, `travel` minutes. */
     const travelSpec = (actor: Actor, label: string, target: TerrainCell): TaskSpec | undefined => {
-        const step = greedyStep(actor, target.x, target.y);
+        const step = greedyFineStep(actor, target.x, target.y);
         if (!step) {
             return undefined;
         }
@@ -337,7 +429,7 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
         id: 'behavior',
         label: 'Agent Behavior',
 
-        setup: (pluginContext: PluginContext) => {
+        setup: (pluginContext: PluginContext<World>) => {
             // Every behaviour plan and the completion listener read the world
             // through the captured context
             context = pluginContext;
@@ -402,7 +494,7 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
                     if (!target) {
                         return undefined;
                     }
-                    const step = greedyStep(actor, target.x, target.y);
+                    const step = greedyFineStep(actor, target.x, target.y);
                     if (!step) {
                         return undefined;
                     }
@@ -450,16 +542,16 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
                 label: 'Wander',
                 priority: 0,
                 plan: (subject) => {
+                    // Idle actors fine-wander: one random valid fine step per
+                    // task (inside the tile, or wrapping into a neighbor tile)
                     const open: Array<[number, number]> = [];
                     arrayEach(NEIGHBOR_OFFSETS, ({ value: offset }) => {
-                        const x = subject.actor.position.x + offset.dx;
-                        const y = subject.actor.position.y + offset.dy;
-                        if (free(x, y)) {
+                        if (fineStep(subject.actor, offset.dx, offset.dy)) {
                             open.push([offset.dx, offset.dy]);
                         }
                     });
                     if (open.length === 0) {
-                        // No neighbour free — the actor stays idle this round
+                        // No fine step free — the actor stays idle this round
                         return undefined;
                     }
                     const [dx, dy] = open[Math.floor(pluginContext.random() * open.length)];
@@ -483,19 +575,25 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin => {
                     case 'move': {
                         const dx = Number(task.payload?.dx ?? 0);
                         const dy = Number(task.payload?.dy ?? 0);
-                        const x = actor.position.x + dx;
-                        const y = actor.position.y + dy;
                         // Re-validate at completion: the world may have
                         // shifted under a mid-travel actor (occupancy moved,
                         // terrain regenerated). A blocked move logs nothing —
                         // the actor re-plans next minute
-                        if (!free(x, y)) {
+                        const step = fineStep(actor, dx, dy);
+                        if (!step) {
                             return;
                         }
-                        // Castaways cannot fly or dig — the move lands on the
-                        // ground plane (grounded, @godspace/core)
-                        world.relocate(actor.id, grounded(position3(x, y)));
-                        needs.moved(actor.id);
+                        // The Scale-0 move: one fine step through the tile's
+                        // sub-grid (a wrap flows across the tile boundary —
+                        // world.relocateFine). Castaways never fly — the Z
+                        // stays on the ground plane.
+                        world.relocateFine(actor.id, dx, dy);
+                        // The energy charge lands on a TILE CROSSING — the
+                        // coarse walk's economics preserved at the fine
+                        // granularity (milling inside a tile is free)
+                        if (step.parent.dx !== 0 || step.parent.dy !== 0) {
+                            needs.moved(actor.id);
+                        }
                         const wandering = task.payload?.wander === true;
                         world.events.emit({
                             kind: 'move',
