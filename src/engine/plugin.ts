@@ -8,6 +8,7 @@
 //   - needs plugin decays hunger/thirst/energy each tick
 //   - relationship plugin tracks affinity between actors
 //   - behavior plugin runs the agent decision loop
+//   - birds plugin releases seabirds that travel the Z axis
 //
 // Removing a plugin from a world removes that entire behaviour; nothing else
 // imports it, so plugins can be swapped in and out freely at setup time
