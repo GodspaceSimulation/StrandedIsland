@@ -20,9 +20,17 @@
 // simply delegate to the ticker.
 
 import { arrayEach } from '@presource/core';
-import { createCoordinateSystem, GROUND_LEVEL, type CoordinateSystem, type CoordinateFacet, type Position3D } from '@godspace/core';
+import {
+    createCoordinateSystem,
+    GROUND_LEVEL,
+    subTileStep,
+    type CoordinateSystem,
+    type CoordinateFacet,
+    type Position3D,
+} from '@godspace/core';
 import { createEventBus, type EventBus } from './events';
 import { createPluginRegistry, type WorldPlugin } from './plugin';
+import { randomKeyed } from './random';
 import type { Actor, Canvas, TerrainCell } from './types';
 import { createTicker, type Ticker, type TickerOptions } from './ticker';
 
@@ -66,6 +74,25 @@ export type World = {
     relocate(actorId: string, position: Position3D): void;
     /** Updates an entity's display state in the coordinate record (condition, flight state…). */
     retag(entityId: string, facet: CoordinateFacet): void;
+    /**
+     * The entity's FINE position — where it stands inside the sub-grid of
+     * the tile it occupies (the zoomed-in view of that tile, engine-wide
+     * scale +1). Entities never explicitly fine-moved stand at a stable
+     * spot derived from the world seed + entity id + parent tile; the
+     * derivation needs no bookkeeping, so coarse moves (relocate) re-spot
+     * the entity deterministically in its new tile.
+     */
+    subOf(entityId: string): { x: number; y: number } | undefined;
+    /**
+     * Continuous fine movement — the world flowing across its own
+     * boundaries. Steps the entity `dx`/`dy` INSIDE its parent tile's
+     * sub-grid; stepping off an edge wraps to the opposite edge of the
+     * NEIGHBOR parent tile's sub-grid (the parent position moves with it —
+     * @godspace/core subTileStep is the rule). Works for any coordinate
+     * resident (castaways and coordinates-only creatures alike); flyers
+     * keep their Z. `false` when the id is unknown or no canvas exists.
+     */
+    relocateFine(entityId: string, dx: number, dy: number): boolean;
     /** The cell at grid coordinates, or undefined when out of bounds/empty. */
     cellAt(x: number, y: number): TerrainCell | undefined;
     /** Whether (x, y) is inside the canvas. */
@@ -104,6 +131,33 @@ export const createWorld = (options: WorldOptions = {}): World => {
     // ground plane), birds and any other entity a plugin releases join the
     // same space with their own kind/type pair.
     const coordinates = createCoordinateSystem();
+
+    // Fine positions — where each entity stands INSIDE the sub-grid of the
+    // tile it occupies (the zoomed-in view of that tile). Only entities
+    // that fine-moved at least once (relocateFine) are stored here:
+    // everyone else derives a stable spot from world seed + entity id +
+    // parent tile (deriveFine below), which keeps coarse moves (relocate)
+    // bookkeeping-free — the derivation follows the new parent on its own.
+    const finePositions = new Map<string, { x: number; y: number }>();
+
+    // Derives an entity's fine spot inside its parent tile's sub-grid,
+    // seeded by world seed + entity id + parent coordinates: the same
+    // entity in the same tile always stands at the same fine spot (the
+    // sub-grid dims equal the world grid's — the recursive tiling rule)
+    const deriveFine = (entityId: string, root: Position3D): { x: number; y: number } => {
+        const grid = canvasHolder.current;
+        if (grid.width === 0 || grid.height === 0) {
+            // No canvas yet (no terrain plugin) — the exact center
+            return { x: 0, y: 0 };
+        }
+        const stream = randomKeyed(seed, `fine:${entityId}@${root.x},${root.y}`);
+        const halfX = (grid.width - 1) / 2;
+        const halfY = (grid.height - 1) / 2;
+        return {
+            x: Math.floor(stream() * grid.width) - halfX,
+            y: Math.floor(stream() * grid.height) - halfY,
+        };
+    };
 
     const ticker = createTicker({ tickSize: options.tickSize, speed: options.ticker?.speed });
     const events = createEventBus();
@@ -162,6 +216,9 @@ export const createWorld = (options: WorldOptions = {}): World => {
             actors.delete(actorId);
             // The spatial record leaves the world with the actor
             coordinates.remove(actorId);
+            // …and any explicit fine spot goes with it (the derivation is
+            // keyed by the id, so a respawned id would otherwise inherit it)
+            finePositions.delete(actorId);
             events.emit({ kind: 'despawn', message: `${actor.name} is no more.`, actorId });
         },
         relocate: (actorId, position) => {
@@ -174,6 +231,46 @@ export const createWorld = (options: WorldOptions = {}): World => {
         },
         retag: (entityId, facet) => {
             coordinates.relabel(entityId, facet);
+        },
+        subOf: (entityId) => {
+            const override = finePositions.get(entityId);
+            if (override) {
+                return { ...override };
+            }
+            const root = coordinates.positionOf(entityId);
+            return root ? deriveFine(entityId, root) : undefined;
+        },
+        relocateFine: (entityId, dx, dy) => {
+            const grid = canvasHolder.current;
+            if (grid.width === 0 || grid.height === 0) {
+                return false;
+            }
+            const root = coordinates.positionOf(entityId);
+            if (!root) {
+                return false;
+            }
+            const override = finePositions.get(entityId);
+            const sub = override ?? deriveFine(entityId, root);
+            // The continuity rule (@godspace/core subTileStep): the fine
+            // step wraps at the sub-grid's edges and reports the parent
+            // tile it crossed — the world flows into the neighbor tile
+            const step = subTileStep(grid.width, grid.height, sub.x, sub.y, dx, dy);
+            const nextRoot: Position3D = {
+                x: root.x + step.parent.dx,
+                y: root.y + step.parent.dy,
+                z: root.z,
+            };
+            // The actor registry and the spatial record stay in sync —
+            // the same write path world.relocate uses, but WITHOUT the
+            // fresh fine-spot derivation: a boundary flow must keep its
+            // wrapped position, not re-spot the entity
+            const actor = actors.get(entityId);
+            if (actor) {
+                actor.position = nextRoot;
+            }
+            coordinates.move(entityId, nextRoot);
+            finePositions.set(entityId, { x: step.x, y: step.y });
+            return true;
         },
         cellAt: (x, y) => {
             const grid = canvasHolder.current;

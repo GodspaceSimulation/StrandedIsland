@@ -1,6 +1,6 @@
 // Engine ↔ React bridge.
 //
-// The simulation is framework-free; the god-view subscribes through two
+// The simulation is framework-free; the god-view subscribes through
 // `signalState` handles from @presource/react:
 //   worldSignal   — the mounted IslandHandle (set once per app mount)
 //   revisionSignal— a counter bumped on every world event / tick; components
@@ -8,12 +8,16 @@
 //   selectionSignal — which actor the god is inspecting
 //   tileSignal      — which canvas tile the god is inspecting (any tile,
 //                     not just one that holds an actor)
+//   scaleSignal     — the view scale the god zoomed to (mirrors the island's
+//                     @godspace/core scale system — 0 the island view, deeper
+//                     rungs the recursive sub-grids; see features/tileDetails)
 //
 // Components call useWorld() / useRevision() during render to subscribe;
 // the engine calls bumpRevision() from its own callbacks (never during
 // render), which is exactly the writer/reader split signalState supports.
 
 import { signalState } from '@presource/react';
+import type { TilePath } from '@godspace/core';
 import type { IslandHandle } from '../scenario/island';
 
 /**
@@ -42,19 +46,29 @@ const revisionSignal = asAccessor<number>(signalState<number>(0));
 const selectionSignal = asAccessor<string | null>(signalState<string | null>(null));
 
 /**
- * Currently inspected canvas tile (its grid column x, y), or null when no
- * tile is under inspection — the god can click ANY tile, not just one that
- * holds an actor, to see the terrain, ground stock and residents there.
+ * The inspected tile's address down the recursive tile ladder
+ * (@godspace/core src/subtile): path[0] the scale-0 tile, path[1] the
+ * subtile within it — the full zoom lineage, so any depth is inspectable
+ * exactly like the root. Null when no tile is under inspection.
  */
-const tileSignal = asAccessor<{ x: number; y: number } | null>(
-    signalState<{ x: number; y: number } | null>(null),
-);
+const tileSignal = asAccessor<TilePath | null>(signalState<TilePath | null>(null));
+
+/**
+ * The view scale the god zoomed the canvas to — the render mirror of the
+ * mounted island's scale system (@godspace/core src/scale). Scale 0 is the
+ * engine's default island view; deeper rungs descend into the recursive
+ * sub-grids (features/tileDetails.ts scaleView).
+ */
+const scaleSignal = asAccessor<number>(signalState<number>(0));
 
 /** Mounts an island into the god-view (re-mounting swaps the world). */
 export const mountWorld = (island: IslandHandle) => {
     worldSignal.value(island);
     selectionSignal.value(null);
     tileSignal.value(null);
+    // A fresh world mounts at its default view — the scale ladder itself
+    // lives on the island handle and starts at its anchor
+    scaleSignal.value(island.scale.current());
     bumpRevision();
 };
 
@@ -78,9 +92,59 @@ export const selectActor = (actorId: string | null) => {
 };
 
 /** Read during render to subscribe to tile selection changes. */
-export const useTile = (): { x: number; y: number } | null => tileSignal();
+export const useTile = (): TilePath | null => tileSignal();
 
-/** God selects a canvas tile to inspect (null clears). */
-export const selectTile = (tile: { x: number; y: number } | null) => {
-    tileSignal.value(tile);
+/** God selects a tile to inspect by its full path (null clears). */
+export const selectTile = (path: TilePath | null) => {
+    // Copy on write — callers may keep mutating their path array
+    tileSignal.value(path ? [...path] : null);
+};
+
+/** Read during render to subscribe to view-scale changes. */
+export const useScale = (): number => scaleSignal();
+
+/**
+ * Runs a move on the mounted island's scale system and mirrors the result
+ * into the signal — the system owns the clamping and the anchor, the signal
+ * only carries what the view renders.
+ */
+const moveScale = (move: (island: IslandHandle) => number) => {
+    const island = worldSignal.value();
+    if (!island) {
+        return;
+    }
+    scaleSignal.value(move(island));
+};
+
+/**
+ * God zooms INTO the inspected tile: the view descends one level (the
+ * inspected tile's sub-grid becomes the board — same dimensions, the
+ * recursive tiling rule) and the god inspects that sub-grid's center tile.
+ * Needs an inspected tile — it is the zoom target — and a reachable rung
+ * on the island's scale ladder.
+ */
+export const zoomIn = () => {
+    const island = worldSignal.value();
+    const path = tileSignal.value();
+    if (!island || !path || !island.scale.canZoomIn()) {
+        return;
+    }
+    // Center tile of an odd centered grid is exactly (0, 0)
+    tileSignal.value([...path, { x: 0, y: 0 }]);
+    scaleSignal.value(island.scale.zoomIn());
+};
+
+/**
+ * God zooms OUT one level: the inspected subtile pops off the path — the
+ * parent tile becomes the inspected tile of the shallower view (the zoom
+ * lineage stays intact, so zooming back in returns where the god was).
+ */
+export const zoomOut = () => {
+    const island = worldSignal.value();
+    const path = tileSignal.value();
+    if (!island || !path || path.length <= 1 || !island.scale.canZoomOut()) {
+        return;
+    }
+    tileSignal.value(path.slice(0, -1));
+    scaleSignal.value(island.scale.zoomOut());
 };

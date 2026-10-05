@@ -231,11 +231,16 @@ describe('createIslandWorld', () => {
         expect(frame.tiles[462].background).toBe('#5d4425');
         expect(frame.tiles[72].background).toBe('#d3bd85');
         // The emoji palettes resolve through the legend source: types carry
-        // the species glyphs, kinds the coarse fallbacks
+        // the species glyphs, kinds the coarse fallbacks — and the ground
+        // items ride the type map too (ITEM_TYPE_GLYPHS merged in), so the
+        // zoomed views draw the coconut as 🥥
         expect(handle.unicode.palette().types.bird).toBe('🐦');
         expect(handle.unicode.palette().types.human).toBe('🧍');
         expect(handle.unicode.palette().kinds.creature).toBe('🐾');
         expect(handle.unicode.palette().kinds.sentient).toBe('🧑');
+        expect(handle.unicode.palette().types.coconut).toBe('🥥');
+        expect(handle.unicode.palette().types.berry).toBe('🍒');
+        expect(handle.unicode.palette().types.fish).toBe('🐟');
     });
 
     it('the svg canvas frame mirrors the ascii world as a vector document', () => {
@@ -297,6 +302,48 @@ describe('createIslandWorld', () => {
             ['height', 25],
             ['cells', 925],
         ]);
+    });
+
+    it('anchors the view-scale ladder at scale 0 with the generated subtile depth', () => {
+        const handle = createIslandWorld({ seed: 7 });
+        // The island view IS scale 0 — this engine's maximum view — and the
+        // ladder reaches as deep as the terrain generates sub-grids (one
+        // level by default: scale 1, each tile's interior)
+        expect(handle.scale.base()).toBe(0);
+        expect(handle.scale.current()).toBe(0);
+        expect(handle.scale.atBase()).toBe(true);
+        expect(handle.scale.range()).toEqual({ min: 0, max: 1 });
+        // Zooming out at the floor is a no-op — no wider view above the island
+        expect(handle.scale.canZoomOut()).toBe(false);
+        expect(handle.scale.zoomOut()).toBe(0);
+        // One step in reaches the tile interior; the ceiling clamps
+        expect(handle.scale.zoomIn()).toBe(1);
+        expect(handle.scale.canZoomIn()).toBe(false);
+        expect(handle.scale.zoomIn()).toBe(1);
+        expect(handle.scale.atBase()).toBe(false);
+        // Back to the default view
+        expect(handle.scale.zoomOut()).toBe(0);
+        expect(handle.scale.atBase()).toBe(true);
+    });
+
+    it('generates the recursive tile ladder: every scale-0 tile opens into a full sub-grid', () => {
+        const handle = createIslandWorld({ seed: 7 });
+        // The default island (37×25 = 925 root tiles) holds 925 × 925 =
+        // 855,625 scale-1 tiles — the same math that gives a 20×20 world its
+        // 400 root tiles and 400×400 = 160,000 scale-1 tiles
+        expect(handle.terrain.tilesAt(0)).toBe(925);
+        expect(handle.terrain.tilesAt(1)).toBe(925 * 925);
+        expect(handle.terrain.depth()).toBe(1);
+        // One tile's sub-grid, materialized: the SAME dimensions as the root
+        const sub = handle.terrain.canvasFor([{ x: 17, y: -11 }]);
+        expect(sub?.width).toBe(37);
+        expect(sub?.height).toBe(25);
+        expect(sub?.cells.length).toBe(925);
+        // …a scale-1 subtile resolves through cellFor (the tile itself),
+        // while a scale-2 GRID is beyond the generated depth
+        expect(handle.terrain.cellFor([{ x: 17, y: -11 }, { x: 0, y: 0 }])).toBeDefined();
+        expect(handle.terrain.canvasFor([{ x: 17, y: -11 }, { x: 0, y: 0 }])).toBeUndefined();
+        expect(handle.terrain.canvasFor([{ x: 17, y: -11 }, { x: 0, y: 0 }, { x: 0, y: 0 }])).toBeUndefined();
     });
 
     it('exposes the plugin handles for god-side control', () => {

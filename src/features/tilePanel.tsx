@@ -124,7 +124,7 @@ export const TilePanel = () => {
     void revision; // subscription pulse — re-render on every world change
 
     // Stale selection after a regenerated island resolves to null too
-    const summary = tile ? tileSummary(island, tile.x, tile.y) : null;
+    const summary = tile ? tileSummary(island, tile) : null;
 
     // Occupant state dots share the canvas glyph palette (condition +
     // flight state colors from @godspace/canvas)
@@ -140,7 +140,11 @@ export const TilePanel = () => {
                     <Row>
                         <RowName>Position</RowName>
                         <span data-testid="tile-position">
-                            ({summary.x}, {summary.y}) · {summary.surface}
+                            {/* The full zoom lineage — "(17, -11) · sand" at
+                                scale 0, each deeper step appended (the same
+                                line shape at every scale) */}
+                            {summary.path.map((step) => `(${step.x}, ${step.y})`).join(' · ')} ·{' '}
+                            {summary.surface}
                         </span>
                     </Row>
                     <Row>
@@ -176,14 +180,25 @@ export const TilePanel = () => {
                     <div>
                         <PanelTitle>On the ground</PanelTitle>
                         <List data-testid="tile-ground">
+                            {/* The granularity ladder: scale 0 (and anything
+                                above it) lists the item CATEGORIES ("Foods
+                                ×2" — the generalization), deeper scales list
+                                the items by name ("1 Berry"). The two entry
+                                shapes distinguish by their label field. */}
                             {summary.ground.length === 0 ? (
                                 <li>
                                     <EmptyNote>Nothing on the ground.</EmptyNote>
                                 </li>
                             ) : (
-                                summary.ground.map((entry) => (
-                                    <li key={entry.item}>{itemLabel(entry.item, entry.count)}</li>
-                                ))
+                                summary.ground.map((entry) =>
+                                    'label' in entry ? (
+                                        <li key={entry.label}>
+                                            {entry.label} ×{entry.count}
+                                        </li>
+                                    ) : (
+                                        <li key={entry.item}>{itemLabel(entry.item, entry.count)}</li>
+                                    ),
+                                )
                             )}
                         </List>
                     </div>

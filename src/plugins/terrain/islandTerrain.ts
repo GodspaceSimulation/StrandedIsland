@@ -16,10 +16,11 @@
 // which is what the tests assert. `@presource/core` has no seeded PRNG, so the
 // stream comes from engine/random.ts (mulberry32).
 
-import { randomCreate, type RandomSource } from '../../engine/random';
+import { randomCreate, randomKeyed, type RandomSource } from '../../engine/random';
 import type { Biome, Canvas, TerrainCell, TileResource, TileResources, VoxelKind } from '../../engine/types';
 import { TILE_RESOURCES, UNLIMITED_TILE_RESOURCES } from '../../engine/types';
 import type { PluginContext, WorldPlugin } from '../../engine/plugin';
+import { tilePathKey, type TilePath } from '@godspace/core';
 
 export type IslandTerrainOptions = {
     /** Grid width in cells (odd — 0,0 is the center). Default 37. */
@@ -34,6 +35,17 @@ export type IslandTerrainOptions = {
     maxHeight?: number;
     /** 0..1 — how much the raw noise (vs the radial falloff) shapes height. Default 0.55. */
     roughness?: number;
+    /**
+     * How many SUBTILE levels the generator produces below the root grid —
+     * the recursive tiling configuration. Every tile of a produced level
+     * opens into a full sub-grid of the SAME dimensions (a 20×20 world with
+     * subtiles 1 holds 400 scale-0 tiles and 400×400 = 160,000 scale-1
+     * tiles). Default 1: scale 0 (the island) and scale 1 (each tile's
+     * interior). 0 produces no sub-grids at all. The generator itself is
+     * level-agnostic (any parent cell yields a sub-grid), so raising this
+     * number — and the world's scale ladder with it — goes arbitrarily deep.
+     */
+    subtiles?: number;
 };
 
 export type IslandStats = {
@@ -339,6 +351,16 @@ export const tileDepositSummary = (resources?: TileResources): string =>
  * `stats()` reports the last generated island's composition. `resize()`
  * regenerates the island at a new grid size in place (same seed → the same
  * island, just larger or smaller), for the god-view's World Size controls.
+ *
+ * The plugin also owns the RECURSIVE SUB-GRIDS (the scale ladder's content):
+ * `canvasFor(path)` resolves any tile address to its grid — the root canvas
+ * for the empty path, the tile's sub-grid for a deeper path — generating
+ * each sub-grid deterministically from its parent cell (world seed + tile
+ * address) and caching it until the parent's deposits change. Sub-grid
+ * dims equal the root grid's dims: zooming in never changes the board size
+ * (the recursion rule — a 20×20 world holds 400×400 scale-1 tiles with
+ * subtiles 1). `tilesAt(scale)` counts the tiles of a level, `cellFor(path)`
+ * resolves one tile, `depth()` reports the configured subtile levels.
  */
 export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPlugin & {
     stats(): IslandStats | undefined;
@@ -346,6 +368,14 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
     size(): { width: number; height: number };
     /** Regenerates the island at a new grid size, replacing the whole canvas. */
     resize(width: number, height: number): void;
+    /** How many subtile levels the generator produces below the root grid. */
+    depth(): number;
+    /** Tile count of one scale level (scale 0 → the root grid itself). */
+    tilesAt(scale: number): number;
+    /** The grid at a tile address — the root canvas for the empty path. */
+    canvasFor(path: TilePath): Canvas | undefined;
+    /** One tile at a tile address (the parent path resolves its grid). */
+    cellFor(path: TilePath): TerrainCell | undefined;
 } => {
     // Last generation stats, exposed for the god-view roster
     let lastStats: IslandStats | undefined;
@@ -353,15 +383,28 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
     // changeable at runtime through resize(). Odd rule enforced here too:
     // (0, 0) must be the exact canvas center.
     const dims = { width: oddSize(options.width ?? 37), height: oddSize(options.height ?? 25) };
+    // Subtile levels below the root (the recursive tiling configuration)
+    const subtileDepth = options.subtiles ?? 1;
     // The plugin context captured in setup — resize() needs the world (canvas
     // swap + event emission) between lifecycle hooks
     let bound: PluginContext | null = null;
+    // The seed the last generation resolved (options.seed ?? world seed) —
+    // sub-grid generation keys its streams off the same seed
+    let resolvedSeed = options.seed ?? 1;
+    // Sub-grid cache, keyed by tile path — a zoomed-in view re-renders every
+    // pulse, so regenerating 925 cells each time would burn the frame; the
+    // fingerprint (parent deposits + height + water line) invalidates a
+    // cached grid exactly when the parent tile changed (gathering, regrowth)
+    const subCanvases = new Map<string, { stamp: string; canvas: Canvas }>();
+    // FIFO cap — zooming around must not accumulate grids without bound
+    const SUB_CANVAS_CACHE = 32;
 
     /** One generation pass: builds the canvas and installs it on the world. */
     const regenerate = (context: PluginContext) => {
         // Default seed: the world seed, so one global seed drives everything
+        resolvedSeed = options.seed ?? context.world.seed;
         const generated = generateIsland({
-            seed: options.seed ?? context.world.seed,
+            seed: resolvedSeed,
             width: dims.width,
             height: dims.height,
             seaLevel: options.seaLevel,
@@ -374,6 +417,145 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
             cells: generated.cells,
         };
         lastStats = generated.stats;
+    };
+
+    // The centered row-major cell lookup on an ARBITRARY canvas (world.cellAt
+    // is bound to the root holder; sub-grids resolve through here)
+    const cellOn = (canvas: Canvas, x: number, y: number): TerrainCell | undefined => {
+        const halfX = (canvas.width - 1) / 2;
+        const halfY = (canvas.height - 1) / 2;
+        if (y < -halfY || y > halfY || x < -halfX || x > halfX) {
+            return undefined;
+        }
+        return canvas.cells[(y + halfY) * canvas.width + (x + halfX)];
+    };
+
+    // The parent-change stamp of a cell: its deposits + height + water line.
+    // Voxels/biome/passability never change after generation, so the stamp
+    // catches exactly the mutations that reshape a sub-grid (a gathered
+    // deposit removes its subtile, regrowth adds one back)
+    const fingerprintOf = (cell: TerrainCell): string =>
+        `${TILE_RESOURCES.map((resource) => cell.resources[resource] ?? 0).join(',')}|${cell.height}|${cell.waterLevel}`;
+
+    /**
+     * Generates one tile's sub-grid from its parent cell — the microscopic
+     * zoom. The sub-grid has the ROOT grid's dimensions (the recursion rule:
+     * zooming in never changes the board shape), and every subtile inherits
+     * the parent column (voxels, height, water line, passability, biome):
+     * the tile's interior ground IS the tile's ground. The parent's deposits
+     * distribute across the subtiles — the zoom reveals WHERE they stand:
+     *   finite deposits (wood ×2 on a forest tile) scatter one unit per
+     *     seeded subtile — the individual trees/rocks/ore pockets, gathered
+     *     or regrown deposits reshape the scatter through the fingerprint;
+     *   unlimited deposits (sand, dirt) ARE the ground — every subtile
+     *     carries the symbolic deposit so the zoom preserves the tile's look.
+     */
+    const generateSubCanvas = (parent: TerrainCell, pathKey: string): Canvas => {
+        const width = dims.width;
+        const height = dims.height;
+        const halfX = (width - 1) / 2;
+        const halfY = (height - 1) / 2;
+
+        // Pre-scatter the finite deposits: each unit of each finite resource
+        // lands on its own seeded subtile position (a bounded re-roll keeps
+        // units from stacking when the grid has room to spread them)
+        const deposits = new Map<string, TileResources>();
+        TILE_RESOURCES.forEach((resource) => {
+            if (UNLIMITED_TILE_RESOURCES.includes(resource)) {
+                return;
+            }
+            const count = parent.resources[resource] ?? 0;
+            if (count <= 0) {
+                return;
+            }
+            const stream = randomKeyed(resolvedSeed, `sub:${pathKey}:${resource}`);
+            const taken = new Set<string>();
+            for (let unit = 0; unit < count; unit++) {
+                let x = 0;
+                let y = 0;
+                for (let attempt = 0; attempt < 24; attempt++) {
+                    x = Math.floor(stream() * width) - halfX;
+                    y = Math.floor(stream() * height) - halfY;
+                    if (!taken.has(`${x},${y}`)) {
+                        break;
+                    }
+                }
+                taken.add(`${x},${y}`);
+                const record = deposits.get(`${x},${y}`) ?? {};
+                record[resource] = (record[resource] ?? 0) + 1;
+                deposits.set(`${x},${y}`, record);
+            }
+        });
+
+        const cells: TerrainCell[] = [];
+        for (let row = 0; row < height; row++) {
+            for (let col = 0; col < width; col++) {
+                const x = col - halfX;
+                const y = row - halfY;
+                const resources: TileResources = { ...(deposits.get(`${x},${y}`) ?? {}) };
+                // Unlimited deposits are the ground itself — every subtile
+                // carries the symbolic deposit so the zoomed tile keeps the
+                // look its parent paints with (the microscopic-zoom rule)
+                TILE_RESOURCES.forEach((resource) => {
+                    if (
+                        UNLIMITED_TILE_RESOURCES.includes(resource) &&
+                        (parent.resources[resource] ?? 0) > 0
+                    ) {
+                        resources[resource] = 1;
+                    }
+                });
+                cells.push({
+                    x,
+                    y,
+                    voxels: [...parent.voxels],
+                    height: parent.height,
+                    waterLevel: parent.waterLevel,
+                    biome: parent.biome,
+                    passable: parent.passable,
+                    resources,
+                });
+            }
+        }
+        return { width, height, cells };
+    };
+
+    // Resolves a tile address to its grid: the empty path is the root
+    // canvas; every deeper level resolves its parent cell and serves the
+    // cached sub-grid (or generates + caches one). Beyond the configured
+    // subtile depth there is nothing to resolve.
+    const canvasAtPath = (path: TilePath): Canvas | undefined => {
+        if (!bound) {
+            return undefined;
+        }
+        let canvas = bound.world.canvas;
+        for (let level = 0; level < path.length; level++) {
+            if (level >= subtileDepth) {
+                return undefined;
+            }
+            const parentCell = cellOn(canvas, path[level].x, path[level].y);
+            if (!parentCell) {
+                return undefined;
+            }
+            const key = tilePathKey(path.slice(0, level + 1));
+            const stamp = fingerprintOf(parentCell);
+            const cached = subCanvases.get(key);
+            if (cached && cached.stamp === stamp) {
+                canvas = cached.canvas;
+                continue;
+            }
+            canvas = generateSubCanvas(parentCell, key);
+            subCanvases.set(key, { stamp, canvas });
+            // FIFO eviction — the freshly inserted entry sorts last, so the
+            // oldest grids drop first
+            while (subCanvases.size > SUB_CANVAS_CACHE) {
+                const oldest = subCanvases.keys().next().value;
+                if (oldest === undefined) {
+                    break;
+                }
+                subCanvases.delete(oldest);
+            }
+        }
+        return canvas;
     };
 
     return {
@@ -399,11 +581,28 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
                 return;
             }
             regenerate(bound);
+            // The reshaped root invalidates every cached sub-grid (their
+            // dims and parents all changed with it)
+            subCanvases.clear();
             // The god reshaped the world — say so in the log
             bound.world.events.emit({
                 kind: 'world',
                 message: `The island is redrawn at ${finalWidth}×${finalHeight}.`,
             });
+        },
+        depth: () => subtileDepth,
+        tilesAt: (scale) => Math.pow(dims.width * dims.height, scale + 1),
+        canvasFor: (path) => canvasAtPath(path),
+        cellFor: (path) => {
+            if (path.length === 0) {
+                return undefined;
+            }
+            const canvas = canvasAtPath(path.slice(0, -1));
+            if (!canvas) {
+                return undefined;
+            }
+            const tail = path[path.length - 1];
+            return cellOn(canvas, tail.x, tail.y);
         },
     };
 };

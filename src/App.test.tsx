@@ -166,9 +166,11 @@ describe('App', () => {
             'height 3 · water line 3 · walkable',
         );
         expect(screen.getByTestId('tile-voxels').textContent).toBe('stone, soil, sand');
+        // Scale-0 granularity: the ground generalizes into its CATEGORIES —
+        // coconut is a food, the sand/shell mirrors are materials
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
-        ).toEqual(['1 Sand', '1 Coconut', '1 Shell']);
+        ).toEqual(['Foods ×1', 'Materials ×2']);
         // Nobody lives here
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
@@ -189,9 +191,10 @@ describe('App', () => {
             'height 2 · water line 3 · submerged',
         );
         expect(screen.getByTestId('tile-voxels').textContent).toBe('soil, sand, water');
+        // The fish generalizes to its category at scale 0
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
-        ).toEqual(['1 Fish']);
+        ).toEqual(['Foods ×1']);
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['No one here.']);
@@ -202,9 +205,10 @@ describe('App', () => {
         // Tile (17,−11) — Ael's shore landing spot, unlimited sand + a
         // coconut on the ground
         fireEvent.click(screen.getByTestId('unicode-tile-17--11'));
-        // Tile layer: terrain + stock + Ael as the resident
+        // Tile layer: terrain + stock + Ael as the resident. Scale-0
+        // granularity: the coconut generalizes to its category
         expect(screen.getByTestId('tile-position').textContent).toBe('(17, -11) · sand');
-        expect(screen.getByTestId('tile-ground').textContent).toContain('1 Coconut');
+        expect(screen.getByTestId('tile-ground').textContent).toContain('Foods ×1');
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['Ael — human · well']);
@@ -224,10 +228,10 @@ describe('App', () => {
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['Kiki — bird · flying · z 2']);
-        // Meadow floor: unlimited dirt + berries on the ground
+        // Meadow floor: unlimited dirt + berries — generalized to categories
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
-        ).toEqual(['1 Dirt', '2 Berries']);
+        ).toEqual(['Foods ×2', 'Materials ×1']);
         // …but birds stay out of the castaway inspector — no actor card opens
         expect(screen.queryByTestId('actor-inventory')).toBeNull();
         expect(screen.getByTestId('actor-panel-empty').textContent).toBe(
@@ -250,9 +254,10 @@ describe('App', () => {
             'height 2 · water line 3 · submerged',
         );
         expect(screen.getByTestId('tile-voxels').textContent).toBe('soil, sand, water');
+        // The fish generalizes to its category at scale 0
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
-        ).toEqual(['1 Fish']);
+        ).toEqual(['Foods ×1']);
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['No one here.']);
@@ -269,6 +274,88 @@ describe('App', () => {
         fireEvent.click(screen.getByText('Ael — human · well'));
         expect(screen.getByTestId('actor-condition').textContent).toBe('Ael · well');
         expect(screen.getByTestId('actor-inventory').textContent).toContain('2 Berries');
+    });
+
+    it('zooming into an inspected tile opens its sub-grid — the same UI, one level down', () => {
+        render(<App seed={7} />);
+        // Scale 0 — the island view. Zoom-out is unreachable at the floor
+        // (there is no wider view above the island) and zoom-in needs an
+        // inspected tile — the zoom's target
+        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 0');
+        expect((screen.getByTestId('zoom-out') as HTMLButtonElement).disabled).toBe(true);
+        expect((screen.getByTestId('zoom-in') as HTMLButtonElement).disabled).toBe(true);
+        // Ael's shore tile (17, −11) becomes the zoom target
+        fireEvent.click(screen.getByTestId('unicode-tile-17--11'));
+        expect((screen.getByTestId('zoom-in') as HTMLButtonElement).disabled).toBe(false);
+        // Zoom in: the SAME unicode tab renders the tile's sub-grid — the
+        // identical dimensions (37×25 = 925 tiles), identical interactions,
+        // the tiles now SUBTILES. The selection moved to the center subtile.
+        fireEvent.click(screen.getByTestId('zoom-in'));
+        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 1');
+        expect(screen.getByTestId('world-grid-unicode').children.length).toBe(925);
+        expect(screen.getByTestId('tile-position').textContent).toBe('(17, -11) · (0, 0) · sand');
+        // The zoomed tiles are the beach's interior: every subtile carries
+        // the unlimited sand — the beach's look survives the zoom — and Ael
+        // stands at his fine spot (11, 3) inside his tile's sub-grid
+        const aelSubtile = screen.getByTestId('unicode-tile-11-3');
+        expect(aelSubtile.textContent).toBe('🧍');
+        expect(aelSubtile.title).toContain('Ael · well');
+        // The ground items become VISIBLE canvas objects at scale 1: the
+        // coconut lies at its scattered subtile (11, −9), drawn as its emoji
+        const coconut = screen.getByTestId('unicode-tile-11--9');
+        expect(coconut.textContent).toBe('🥥');
+        expect(coconut.title).toContain('Coconut');
+        // The sub-grid keeps every inspection working exactly like scale 0:
+        // clicking the inspected subtile opens the Tile Inspector's lineage
+        fireEvent.click(screen.getByTestId('unicode-tile-0-0'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(17, -11) · (0, 0) · sand');
+        expect(screen.getByTestId('tile-resources').textContent).toBe('sand ×∞');
+        // The item-level granularity: the coconut's subtile lists it BY NAME
+        fireEvent.click(coconut);
+        expect(screen.getByTestId('tile-position').textContent).toBe('(17, -11) · (11, -9) · sand');
+        expect(
+            Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
+        ).toEqual(['1 Coconut']);
+        // …and clicking Ael's subtile opens the actor inspector straight
+        // from the zoomed view
+        fireEvent.click(aelSubtile);
+        expect(screen.getByTestId('actor-condition').textContent).toBe('Ael · well');
+        // Zoom out: the island returns with the parent tile still inspected
+        // (the zoom lineage pops one step)
+        fireEvent.click(screen.getByTestId('zoom-out'));
+        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 0');
+        expect(screen.getByTestId('world-grid-unicode').children.length).toBe(925);
+        expect(screen.getByTestId('tile-position').textContent).toBe('(17, -11) · sand');
+        expect((screen.getByTestId('zoom-in') as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it('ground items appear as canvas objects only from scale 1 up', () => {
+        render(<App seed={7} />);
+        // Scale 0: the meadow tile (0,0) shows Kiki only — the berries stay
+        // list-only (the category read), never canvas objects here
+        expect((screen.getByTestId('unicode-tile-0-0').textContent)).toBe('🐦²');
+        // Zoom into the meadow: its two berries stand at their scattered
+        // subtiles (−1,−1) and (−5,−3) as visible objects
+        fireEvent.click(screen.getByTestId('unicode-tile-0-0'));
+        fireEvent.click(screen.getByTestId('zoom-in'));
+        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 1');
+        expect(screen.getByTestId('unicode-tile--1--1').textContent).toBe('🍒');
+        expect(screen.getByTestId('unicode-tile--5--3').textContent).toBe('🍒');
+        // Kiki stands at her fine spot (6, −10) with her altitude superscript
+        expect(screen.getByTestId('unicode-tile-6--10').textContent).toBe('🐦²');
+        // The berry subtiles list their berries by name (item granularity)
+        fireEvent.click(screen.getByTestId('unicode-tile--1--1'));
+        expect(
+            Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
+        ).toEqual(['1 Berry']);
+        // Zoom out to the sea tile and in again: the fish floats as an
+        // object at its scattered subtile (−4, −10)
+        fireEvent.click(screen.getByTestId('zoom-out'));
+        fireEvent.click(screen.getByTestId('unicode-tile--18--12'));
+        fireEvent.click(screen.getByTestId('zoom-in'));
+        const fish = screen.getByTestId('unicode-tile--4--10');
+        expect(fish.textContent).toBe('🐟');
+        expect(fish.title).toContain('Fish');
     });
 
     it('the canvas area tabs between Data, ASCII, Unicode and SVG representations', () => {

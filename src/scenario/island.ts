@@ -21,7 +21,7 @@
 // relationships, read the ASCII frame, regenerate the island, etc.
 
 import { arrayEach } from '@presource/core';
-import { position3 } from '@godspace/core';
+import { SCALE_DEFAULT, createScaleSystem, position3, type ScaleSystem } from '@godspace/core';
 import {
     asciiCanvasPlugin,
     unicodeCanvasPlugin,
@@ -40,6 +40,7 @@ import {
     type IslandTerrainOptions,
 } from '../plugins/terrain/islandTerrain';
 import { inventoryPlugin, type InventoryPlugin } from '../plugins/inventory/inventoryPlugin';
+import { ITEM_TYPE_GLYPHS } from '../plugins/inventory/items';
 import { needsPlugin, type NeedsPlugin, type NeedsPluginOptions } from '../plugins/needs/needsPlugin';
 import { relationshipPlugin, type RelationshipPlugin } from '../plugins/relationship/relationshipPlugin';
 import { behaviorPlugin } from '../plugins/behavior/behaviorPlugin';
@@ -84,6 +85,15 @@ export type IslandHandle = {
     relationship: RelationshipPlugin;
     /** Seabirds — the Z-axis travelers of the world. */
     birds: BirdsPlugin;
+    /**
+     * The view-scale ladder (@godspace/core src/scale) — anchored so scale 0
+     * IS the island view (this engine's maximum view) and the ladder
+     * reaches as deep as the terrain plugin generates sub-grids (scale +1
+     * zooms a tile into its interior world — features/tileDetails.ts
+     * scaleView). Zooming out past 0 is unreachable — there is no wider
+     * view above this island in the simulation.
+     */
+    scale: ScaleSystem;
     /** The ASCII canvas representation plugin (@godspace/canvas). */
     ascii: AsciiCanvasPlugin;
     /** The unicode canvas sibling — emoji glyphs, same binding contract. */
@@ -127,6 +137,20 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     const relationship = relationshipPlugin();
     const behavior = behaviorPlugin({ inventory, needs, relationship });
 
+    // The view-scale ladder — godspace/core owns the scale concept (which
+    // depth reads as scale 0, the adjustable anchor); THIS engine anchors
+    // scale 0 at its island view and reaches as deep as the terrain plugin
+    // generates sub-grids (features/tileDetails.ts scaleView resolves them).
+    // The default terrain produces one subtile level: scale 0 (the island,
+    // every tile of it) and scale 1 (each tile's interior sub-grid — same
+    // dimensions, 925×925 = 855,625 tiles on the default island). Bounded
+    // below at 0 — there is no wider view above the island to zoom out to.
+    const scale = createScaleSystem({
+        base: SCALE_DEFAULT,
+        min: 0,
+        max: toggles.terrain ? terrain.depth() : 0,
+    });
+
     // ── Tile representation adapters ────────────────────────────────────────
     // The tiles appear as the RESOURCES they carry (scenario-wide rule for
     // all four @godspace/canvas representations): a tile's surface key is
@@ -153,17 +177,23 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     });
     const birds = birdsPlugin();
     // The unicode sibling binds the SAME structural slice as the ascii canvas
-    // (same surfaceOf/titleOf adapters) — an emoji-skinned twin of the god view
+    // (same surfaceOf/titleOf adapters) — an emoji-skinned twin of the god view.
+    // The type palette extends with ITEM_TYPE_GLYPHS so ground-item entries
+    // (typed with the item id, see features/tileDetails scaleView) draw their
+    // emoji in every zoomed view
     const unicode = unicodeCanvasPlugin({
         surfaceOf: surfaceOfCell,
         titleOf: titleOfCell,
+        types: ITEM_TYPE_GLYPHS,
     });
     // The svg sibling draws the same world as a scalable vector document —
-    // same adapters, glyphs from the unicode ladder, geometry on the shared
-    // 26px tile grid (no layout breakage between canvas tabs)
+    // same adapters, glyphs from the unicode ladder (with the item emoji),
+    // geometry on the shared 26px tile grid (no layout breakage between
+    // canvas tabs)
     const svg = svgCanvasPlugin({
         surfaceOf: surfaceOfCell,
         titleOf: titleOfCell,
+        types: ITEM_TYPE_GLYPHS,
     });
     // The data sibling renders plain tables instead of tiles: every entity's
     // coordinates + the terrain census (also resource-keyed)
@@ -238,5 +268,5 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         birds.release();
     }
 
-    return { world, terrain, inventory, needs, relationship, birds, ascii, unicode, svg, data };
+    return { world, terrain, inventory, needs, relationship, birds, scale, ascii, unicode, svg, data };
 };

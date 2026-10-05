@@ -1,5 +1,6 @@
 // Item catalog — the vocabulary of things that can exist on the island.
-// Items are grouped by kind so the behavior plugin can reason about them
+// Items are grouped by kind (the CATEGORY — see the generalization ladder
+// at the bottom of this file) so the behavior plugin can reason about them
 // (food satisfies hunger, drinks satisfy thirst, materials are trade goods).
 //
 // Display identity is delegated to the @godspace/material catalog — the
@@ -11,6 +12,7 @@
 // game engine (and tests) can reconfigure the shared catalog live.
 
 import { createItemRegistry, type ItemRegistry } from '@godspace/material';
+import { inventoryEntries, type Inventory } from './inventory';
 
 /**
  * The island's shared material catalog — a @godspace/material registry.
@@ -94,4 +96,77 @@ export const itemLabel = (itemId: string, count: number): string => {
     }
     const plural = PLURAL_EXCEPTIONS[name] ?? (name.endsWith('y') ? `${name.slice(0, -1)}ies` : `${name}s`);
     return `${count} ${plural}`;
+};
+
+// ── Item categories — the generalization ladder of the zoom scale ───────────
+//
+// Every item carries a category, and the category is the COARSEST level of
+// the ground-item granularity ladder the zoom scales read:
+//   scale 0 (and every scale "above" it — a space engine's −100 …) lists
+//     the CATEGORY ("Foods"), never the item;
+//   scale 1 lists the ITEM ("1 Berry") and draws it as a canvas object at
+//     its subtile position;
+//   scale 2+ shows WHERE each unit stands (canvas objects at exact spots).
+// Berries are foods: zoomed all the way out, the god still reads "foods".
+
+/** The category kinds — fixed order, the display order of category lists. */
+export const ITEM_KINDS: readonly ItemKind[] = ['food', 'drink', 'material', 'tool'];
+
+/** Display label per category — what the coarse views list ("Foods"). */
+export const ITEM_CATEGORY_LABELS: Record<ItemKind, string> = {
+    food: 'Foods',
+    drink: 'Drinks',
+    material: 'Materials',
+    tool: 'Tools',
+};
+
+/**
+ * The category of an item — every item has one (unknown ids fall back to
+ * the generic material, the same fallback itemDef applies).
+ */
+export const itemCategory = (itemId: string): ItemKind => itemDef(itemId).kind;
+
+/** One aggregated category of a ground stock: "Foods ×2". */
+export type ItemCategoryStack = {
+    /** The category kind. */
+    category: ItemKind;
+    /** Display label ("Foods"). */
+    label: string;
+    /** Total units across every item of the category. */
+    count: number;
+};
+
+/**
+ * Aggregates an inventory into its category stacks, in ITEM_KINDS order —
+ * the generalization the scale-0 Tile Inspector lists (and any zoomed-out
+ * scale above it). Zero categories drop out.
+ */
+export const inventoryCategories = (inventory: Inventory): ItemCategoryStack[] => {
+    const totals = new Map<ItemKind, number>();
+    inventoryEntries(inventory).forEach((stack) => {
+        const category = itemCategory(stack.item);
+        totals.set(category, (totals.get(category) ?? 0) + stack.count);
+    });
+    return ITEM_KINDS.filter((kind) => totals.has(kind)).map((kind) => ({
+        category: kind,
+        label: ITEM_CATEGORY_LABELS[kind],
+        count: totals.get(kind) as number,
+    }));
+};
+
+/**
+ * Canvas type-glyphs for ground items — the unicode/svg canvases resolve an
+ * entry's TYPE through their type map, so ground-item entries (typed with
+ * the item id, kind 'item') draw these emoji. Merged into the canvas
+ * plugins' type palettes by the scenario (scenario/island.ts); items not
+ * listed fall back to the name-initial letter of the glyph ladder.
+ */
+export const ITEM_TYPE_GLYPHS: Record<string, string> = {
+    berry: '🍒',
+    coconut: '🥥',
+    fish: '🐟',
+    shell: '🐚',
+    water: '💧',
+    vine: '🌿',
+    flint: '⛏️',
 };

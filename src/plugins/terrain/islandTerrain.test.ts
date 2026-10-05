@@ -324,4 +324,119 @@ describe('islandTerrainPlugin', () => {
         expect(world.canvas.width).toBe(21);
         expect(world.canvas.height).toBe(13);
     });
+
+    // ── The recursive sub-grids (the tile ladder's content) ──────────────────
+
+    it('configures one subtile level by default and counts the tiles per scale', () => {
+        const plugin = islandTerrainPlugin();
+        createWorld({ seed: 7, plugins: [plugin] });
+        expect(plugin.depth()).toBe(1);
+        // Scale 0 is the root grid itself; scale 1 multiplies it by itself —
+        // a 20×20 world would hold 400 root tiles and 400×400 = 160,000
+        // scale-1 tiles (the sub-grid dims equal the root dims)
+        expect(plugin.tilesAt(0)).toBe(37 * 25);
+        expect(plugin.tilesAt(1)).toBe(37 * 25 * 37 * 25);
+        const tiny = islandTerrainPlugin({ width: 5, height: 5, subtiles: 2 });
+        createWorld({ seed: 7, plugins: [tiny] });
+        expect(tiny.depth()).toBe(2);
+        expect(tiny.tilesAt(0)).toBe(25);
+        expect(tiny.tilesAt(1)).toBe(625);
+        expect(tiny.tilesAt(2)).toBe(15625);
+    });
+
+    it('generates a sub-grid with the ROOT grid dimensions from the parent cell', () => {
+        const plugin = islandTerrainPlugin({ width: 7, height: 5 });
+        const world = createWorld({ seed: 7, plugins: [plugin] });
+        const sub = plugin.canvasFor([{ x: 0, y: 0 }]);
+        expect(sub).toBeDefined();
+        // The recursion rule: same dims, one tile per subtile
+        expect(sub?.width).toBe(7);
+        expect(sub?.height).toBe(5);
+        expect(sub?.cells.length).toBe(35);
+        // Every subtile inherits the parent column — the interior ground IS
+        // the tile's ground (the center is a forest at height 5)
+        sub?.cells.forEach((cell) => {
+            expect(cell.voxels).toEqual(world.cellAt(0, 0)?.voxels);
+            expect(cell.height).toBe(world.cellAt(0, 0)?.height);
+            expect(cell.waterLevel).toBe(world.cellAt(0, 0)?.waterLevel);
+            expect(cell.biome).toBe(world.cellAt(0, 0)?.biome);
+            expect(cell.passable).toBe(world.cellAt(0, 0)?.passable);
+        });
+    });
+
+    it('distributes the parent deposits onto the subtiles (the zoomed view)', () => {
+        const plugin = islandTerrainPlugin({ width: 7, height: 5 });
+        const world = createWorld({ seed: 7, plugins: [plugin] });
+        // The forest center carries wood ×2 → exactly two wood subtiles,
+        // pinned to their seeded positions
+        const forest = plugin.canvasFor([{ x: 0, y: 0 }]);
+        const woodTiles = forest?.cells.filter((cell) => (cell.resources.wood ?? 0) > 0);
+        expect(woodTiles?.map((cell) => [cell.x, cell.y, cell.resources.wood])).toEqual([
+            [-3, -2, 1],
+            [-1, -2, 1],
+        ]);
+        // The rest of the forest interior is bare ground (biome surface)
+        expect(forest?.cells.filter((cell) => Object.keys(cell.resources).length === 0).length).toBe(33);
+        // An unlimited deposit IS the ground — every subtile carries the
+        // symbolic deposit so the zoom preserves the tile's look
+        const beach = world.cellAt(1, -1);
+        expect(beach?.resources).toEqual({ sand: 1 });
+        const beachSub = plugin.canvasFor([{ x: 1, y: -1 }]);
+        expect(beachSub?.cells.every((cell) => cell.resources.sand === 1)).toBe(true);
+        // A sea column has no deposits — its sub-grid is bare too
+        const seaSub = plugin.canvasFor([{ x: 3, y: 1 }]);
+        expect(seaSub?.cells.every((cell) => Object.keys(cell.resources).length === 0)).toBe(true);
+    });
+
+    it('resolves tiles at depth (cellFor) and rejects beyond the configured depth', () => {
+        const plugin = islandTerrainPlugin({ width: 7, height: 5 });
+        const world = createWorld({ seed: 7, plugins: [plugin] });
+        // A length-1 path resolves the root canvas cell
+        expect(plugin.cellFor([{ x: 0, y: 0 }])).toEqual(world.cellAt(0, 0));
+        // A length-2 path resolves a subtile of the forest's sub-grid — one
+        // of the two seeded wood subtiles
+        const subtile = plugin.cellFor([{ x: 0, y: 0 }, { x: -3, y: -2 }]);
+        expect(subtile?.biome).toBe('forest');
+        expect(subtile?.resources).toEqual({ wood: 1 });
+        // Depth 1: a length-2 path still resolves; length 3 is beyond the
+        // generated content (the ladder bounds the reach)
+        expect(plugin.cellFor([{ x: 0, y: 0 }, { x: -3, y: -2 }, { x: 0, y: 0 }])).toBeUndefined();
+        expect(plugin.canvasFor([{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }])).toBeUndefined();
+        // Out-of-bounds tiles are undefined
+        expect(plugin.cellFor([{ x: 99, y: 0 }])).toBeUndefined();
+        // The empty path is the root grid itself
+        expect(plugin.canvasFor([])).toBe(world.canvas);
+    });
+
+    it('regenerates sub-grids when the parent deposits change (fingerprint)', () => {
+        const plugin = islandTerrainPlugin({ width: 7, height: 5 });
+        const world = createWorld({ seed: 7, plugins: [plugin] });
+        // The forest carries wood ×2 → two wood subtiles; the first seeded
+        // slot sits at (−3, −2)
+        const before = plugin.cellFor([{ x: 0, y: 0 }, { x: -3, y: -2 }]);
+        expect(before?.resources).toEqual({ wood: 1 });
+        // The god gathers one wood unit off the parent tile
+        world.cellAt(0, 0)!.resources.wood = 1;
+        // The cached sub-grid invalidated — one wood subtile remains, at
+        // the first seeded scatter position
+        const after = plugin.cellFor([{ x: 0, y: 0 }, { x: -3, y: -2 }]);
+        expect(after?.resources).toEqual({ wood: 1 });
+        const woodTiles = plugin
+            .canvasFor([{ x: 0, y: 0 }])
+            ?.cells.filter((cell) => (cell.resources.wood ?? 0) > 0);
+        expect(woodTiles?.length).toBe(1);
+        // Gathered to zero: the whole interior goes bare
+        world.cellAt(0, 0)!.resources.wood = 0;
+        expect(
+            plugin.canvasFor([{ x: 0, y: 0 }])?.cells.every((cell) => Object.keys(cell.resources).length === 0),
+        ).toBe(true);
+    });
+
+    it('is deterministic: the same seed and address regenerate identically', () => {
+        const first = islandTerrainPlugin({ width: 7, height: 5 });
+        createWorld({ seed: 7, plugins: [first] });
+        const second = islandTerrainPlugin({ width: 7, height: 5 });
+        createWorld({ seed: 7, plugins: [second] });
+        expect(second.canvasFor([{ x: 0, y: 0 }])).toEqual(first.canvasFor([{ x: 0, y: 0 }]));
+    });
 });
