@@ -1,12 +1,13 @@
 // Tests for the tile inspection logic (features/tileDetails.ts).
 //
-// All expectations come from the deterministic seed-7 island (see
-// scenario/island.test.ts and the dump in App.test.tsx notes):
-//   (6,0)  beach   h3  voxels [stone, soil, sand]     stock {coconut:1}    Ael stands here
-//   (7,0)  beach   h3  voxels [stone, soil, sand]     stock {coconut:1, shell:1}
-//   (0,0)  ocean   h0  voxels [sand, water, water, water] stock {fish:1}
-//   (6,5)  forest  h6  voxels [stone ×4, soil, grass, forest] stock {berry:1, wood:2}  Kiki flies at z 2
-//   (5,6)  forest  h5  voxels [stone ×3, soil, grass, forest] stock {berry:1, wood:2}  Dune stands here
+// All expectations come from the deterministic seed-7 island (default 37×25,
+// centered coordinates — see scenario/island.test.ts). The cast comes ashore
+// at the island edge (shipwreck rule):
+//   (17,−11) beach   h3  voxels [stone, soil, sand]  stock {coconut:1}  Ael stands here
+//   (−10,−11) beach  h3  voxels [stone, soil, sand]  stock {coconut:1, shell:1}
+//   (−18,−12) shallows h2 voxels [soil, sand, water] stock {fish:1}
+//   (0,0)     meadow  h5  voxels [stone ×3, soil, grass]  stock {berry:2}  Kiki flies at z 2
+//   (−3,−6)   forest  h5  voxels [stone ×3, soil, grass, forest] stock {berry:1, wood:2}
 
 import { describe, it, expect } from 'vitest';
 import { createIslandWorld } from '../scenario/island';
@@ -23,9 +24,10 @@ describe('voxelRuns / voxelSummary', () => {
             { kind: 'forest', count: 1 },
         ]);
         // Water columns keep the liquid runs separate from the seabed
-        expect(voxelRuns(['sand', 'water', 'water', 'water'])).toEqual([
+        expect(voxelRuns(['soil', 'sand', 'water'])).toEqual([
+            { kind: 'soil', count: 1 },
             { kind: 'sand', count: 1 },
-            { kind: 'water', count: 3 },
+            { kind: 'water', count: 1 },
         ]);
     });
 
@@ -40,7 +42,7 @@ describe('voxelRuns / voxelSummary', () => {
 
 describe('tileOccupants', () => {
     it('lists the castaway standing on a tile, linked to the actor registry', () => {
-        expect(tileOccupants(island, 6, 0)).toEqual([
+        expect(tileOccupants(island, 17, -11)).toEqual([
             {
                 id: 'actor-1',
                 name: 'Ael',
@@ -53,9 +55,9 @@ describe('tileOccupants', () => {
     });
 
     it('lists birds as occupants too — every living thing is an actor', () => {
-        // Kiki wheels at (6,5) at cruise altitude z 2, NOT in world.actors —
-        // but she is a living thing and shows up in her column
-        expect(tileOccupants(island, 6, 5)).toEqual([
+        // Kiki wheels at the center (0,0) at cruise altitude z 2, NOT in
+        // world.actors — but she is a living thing and shows up in her column
+        expect(tileOccupants(island, 0, 0)).toEqual([
             {
                 id: 'bird-1',
                 name: 'Kiki',
@@ -69,17 +71,17 @@ describe('tileOccupants', () => {
     });
 
     it('orders a mixed column grounded-first by ascending Z', () => {
-        // Park a second bird right above Ael at z 1: column (6,0) then holds
-        // Ael (z 0) before the flyer (z 1)
+        // Park a second bird right above Ael at z 1: column (17,−11) then
+        // holds Ael (z 0) before the flyer (z 1)
         island.world.coordinates.place({
             id: 'bird-x',
-            position: { x: 6, y: 0, z: 1 },
+            position: { x: 17, y: -11, z: 1 },
             kind: 'bird',
             name: 'Jask',
             marker: 'J',
             state: 'flying',
         });
-        expect(tileOccupants(island, 6, 0).map((occupant) => occupant.id)).toEqual([
+        expect(tileOccupants(island, 17, -11).map((occupant) => occupant.id)).toEqual([
             'actor-1',
             'bird-x',
         ]);
@@ -87,7 +89,7 @@ describe('tileOccupants', () => {
     });
 
     it('returns nothing for an empty column', () => {
-        expect(tileOccupants(island, 7, 0)).toEqual([]);
+        expect(tileOccupants(island, -10, -11)).toEqual([]);
     });
 });
 
@@ -117,20 +119,17 @@ describe('occupantLine', () => {
 });
 
 describe('tileGround', () => {
-    it('reads the non-zero cell stock — fish for sea, berries/wood for forest', () => {
-        expect(tileGround(island, 0, 0)).toEqual([{ item: 'fish', count: 1 }]);
-        expect(tileGround(island, 6, 5)).toEqual([
-            { item: 'berry', count: 1 },
-            { item: 'wood', count: 2 },
-        ]);
+    it('reads the non-zero cell stock — fish for sea, berries for meadow', () => {
+        expect(tileGround(island, -18, -12)).toEqual([{ item: 'fish', count: 1 }]);
+        expect(tileGround(island, 0, 0)).toEqual([{ item: 'berry', count: 2 }]);
     });
 });
 
 describe('tileSummary', () => {
     it('assembles the full beach column under Ael', () => {
-        expect(tileSummary(island, 6, 0)).toEqual({
-            x: 6,
-            y: 0,
+        expect(tileSummary(island, 17, -11)).toEqual({
+            x: 17,
+            y: -11,
             biome: 'beach',
             height: 3,
             waterLevel: 3,
@@ -150,23 +149,24 @@ describe('tileSummary', () => {
         });
     });
 
-    it('assembles a submerged ocean column with its fish stock', () => {
-        expect(tileSummary(island, 0, 0)).toEqual({
-            x: 0,
-            y: 0,
-            biome: 'ocean',
-            height: 0,
+    it('assembles a submerged shallows column with its fish stock', () => {
+        expect(tileSummary(island, -18, -12)).toEqual({
+            x: -18,
+            y: -12,
+            biome: 'shallows',
+            height: 2,
             waterLevel: 3,
             passable: false,
-            voxels: ['sand', 'water', 'water', 'water'],
+            voxels: ['soil', 'sand', 'water'],
             ground: [{ item: 'fish', count: 1 }],
             occupants: [],
         });
     });
 
     it('resolves to null outside the canvas', () => {
-        expect(tileSummary(island, -1, 0)).toBeNull();
-        expect(tileSummary(island, 12, 0)).toBeNull();
-        expect(tileSummary(island, 0, 10)).toBeNull();
+        expect(tileSummary(island, -19, 0)).toBeNull();
+        expect(tileSummary(island, 19, 0)).toBeNull();
+        expect(tileSummary(island, 0, 13)).toBeNull();
+        expect(tileSummary(island, 0, -13)).toBeNull();
     });
 });

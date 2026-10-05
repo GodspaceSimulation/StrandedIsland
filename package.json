@@ -17,6 +17,7 @@
     "dependencies": {
         "@godspace/canvas": "*",
         "@godspace/core": "*",
+        "@godspace/material": "*",
         "@presource/core": "*",
         "@presource/react": "*",
         "react": "^18.2.0",

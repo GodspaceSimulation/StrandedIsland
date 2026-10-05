@@ -1,7 +1,8 @@
 // Tests for the god-view App (src/App.tsx).
 // Every test pins <App seed={7} /> so assertions run against the
-// deterministic seed-7 island; the random-roll behaviour of an unpinned
-// reload has its own dedicated test below.
+// deterministic seed-7 island (default 37×25, centered coordinates — (0, 0)
+// is the canvas middle); the random-roll behaviour of an unpinned reload
+// has its own dedicated test below.
 
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
@@ -11,28 +12,30 @@ describe('App', () => {
     it('renders the god view with title, clock and the full island grid', () => {
         render(<App seed={7} />);
         expect(screen.getByRole('heading', { name: /stranded island/i })).toBeDefined();
-        // Seed 7, tickSize 10 — the clock starts at day 1, 00:00
-        expect(screen.getByTestId('world-clock').textContent).toBe('Day 1 · 00:00');
-        // Default island is 12×10 = 120 voxel cells
-        expect(screen.getByTestId('world-grid').children.length).toBe(120);
+        // Seed 7, tickSize 10 — the temporal calendar starts Year 1, Spring,
+        // January 1 at 00:00
+        expect(screen.getByTestId('world-clock').textContent).toBe('Year 1 · Spring · Jan 1 · 00:00');
+        // Default island is 37×25 = 925 voxel cells
+        expect(screen.getByTestId('world-grid').children.length).toBe(925);
         // All four castaways are on the board
         expect(screen.getByTestId('actor-chip-Ael').textContent).toContain('Ael');
         expect(screen.getByTestId('actor-chip-Bram').textContent).toContain('Bram');
         expect(screen.getByTestId('actor-chip-Cove').textContent).toContain('Cove');
         expect(screen.getByTestId('actor-chip-Dune').textContent).toContain('Dune');
         // The plugin roster shows the mounted environment modules — the
-        // seabirds plugin plus the @godspace/canvas ASCII representation
+        // seabirds plugin plus the three @godspace/canvas representations
         expect(screen.getByTestId('plugin-roster').textContent).toBe(
-            'Island Terrain · Inventories & Exchange · Survival Needs · Relationships · Agent Behavior · Seabirds · ASCII Canvas',
+            'Island Terrain · Inventories & Exchange · Survival Needs · Relationships · Agent Behavior · Seabirds · ASCII Canvas · Unicode Canvas · Data Canvas',
         );
-        // Kiki the gull wheels above the island center (6,5) at z 2 — the
-        // ASCII canvas renders her altitude as a superscript glyph
+        // Kiki wheels above the island center (0,0) at z 2 — tile index
+        // (0+12)×37+(0+18) = 462, her altitude drawn as a superscript glyph
         const grid = screen.getByTestId('world-grid');
-        expect((grid.children[66] as HTMLElement).textContent).toBe('K²');
-        expect((grid.children[66] as HTMLElement).title).toContain('Kiki · flying · z 2');
-        // Ael stands grounded on (6,0) — plain glyph, no altitude
-        expect((grid.children[6] as HTMLElement).textContent).toBe('A');
-        expect((grid.children[6] as HTMLElement).title).toContain('Ael · well');
+        expect((grid.children[462] as HTMLElement).textContent).toBe('K²');
+        expect((grid.children[462] as HTMLElement).title).toContain('Kiki · flying · z 2');
+        // Ael came ashore at the island edge (17,−11) — tile (−11+12)×37+(17+18)
+        // = 72, plain glyph, no altitude
+        expect((grid.children[72] as HTMLElement).textContent).toBe('A');
+        expect((grid.children[72] as HTMLElement).title).toContain('Ael · well');
     });
 
     it('every castaway row carries the compact 3-bar wellbeing overview', () => {
@@ -74,11 +77,14 @@ describe('App', () => {
         fireEvent.click(screen.getByTestId('log-toggle'));
         fireEvent.click(screen.getByTestId('step-button'));
         // tickSize 10 → the clock moved 10 world minutes
-        expect(screen.getByTestId('world-clock').textContent).toBe('Day 1 · 00:10');
+        expect(screen.getByTestId('world-clock').textContent).toBe('Year 1 · Spring · Jan 1 · 00:10');
         // Five arrivals + four castaway wanders + Kiki's first glide
         expect(screen.getAllByTestId('event-row').length).toBe(10);
         // Newest first: the seabird glided last (birds tick after behavior)
         expect(screen.getAllByTestId('event-row')[0].textContent).toContain('Kiki glides northwest.');
+        // Temporal calendar stamps on the log rows: tick 1 = 10 minutes into
+        // January 1 of Year 1
+        expect(screen.getAllByTestId('event-row')[0].textContent).toContain('Jan 1 · 00:10');
     });
 
     it('the inspector opens in the left rail when a castaway is selected', () => {
@@ -101,7 +107,9 @@ describe('App', () => {
     });
 
     it('the bonds list holds exactly one row per fellow castaway — never self, never foreign pairs', () => {
-        render(<App seed={7} />);
+        // The cast must sit close together for socials to fire within 60
+        // ticks — pin an 11×7 island (spread positions captured below)
+        render(<App seed={7} terrain={{ width: 11, height: 7 }} />);
         // Fresh world (tick 0): every pair is unacquainted → neutral (0)
         fireEvent.click(screen.getByTestId('actor-chip-Ael'));
         const fresh = screen.getByTestId('actor-relations');
@@ -114,12 +122,13 @@ describe('App', () => {
             fireEvent.click(screen.getByTestId('step-button'));
         }
         // Exactly castSize − 1 rows, roster order, Ael's own name absent.
-        // Values captured from the deterministic run (see relationshipPlugin
-        // drift 0.2/tick + behavior socials): 24.2→24, 1.8→2, 14.8→15.
+        // Values captured from the deterministic run (relationship drift
+        // 0.2/tick + behavior socials): 24.2→24, 30.2→30 — Dune crossed the
+        // friendliness threshold (≥ 30)
         const stepped = screen.getByTestId('actor-relations');
         expect(
             Array.from(stepped.children).map((child) => child.textContent),
-        ).toEqual(['Bram — neutral (24)', 'Cove — neutral (0)', 'Dune — neutral (24)']);
+        ).toEqual(['Bram — neutral (24)', 'Cove — neutral (0)', 'Dune — friendly (30)']);
 
         // A different selection never shows its own name either — the list is
         // always the OTHER castaways, so pairs between third parties cannot
@@ -128,28 +137,28 @@ describe('App', () => {
         fireEvent.click(screen.getByTestId('actor-chip-Bram'));
         const bram = screen.getByTestId('actor-relations');
         const bramRows = Array.from(bram.children).map((child) => child.textContent);
-        expect(bramRows).toEqual(['Ael — neutral (24)', 'Cove — neutral (2)', 'Dune — neutral (15)']);
+        expect(bramRows).toEqual(['Ael — neutral (24)', 'Cove — friendly (26)', 'Dune — neutral (0)']);
         expect(bramRows.join('|')).not.toContain('Bram');
     });
 
     it('the tick size dial redefines what one tick means', () => {
         render(<App seed={7} />);
         fireEvent.click(screen.getByTestId('step-button'));
-        expect(screen.getByTestId('world-clock').textContent).toBe('Day 1 · 00:10');
+        expect(screen.getByTestId('world-clock').textContent).toBe('Year 1 · Spring · Jan 1 · 00:10');
         // Switch to hour-long ticks
         fireEvent.change(screen.getByTestId('tick-size'), { target: { value: '60' } });
         fireEvent.click(screen.getByTestId('step-button'));
         // 10 + 60 world minutes
-        expect(screen.getByTestId('world-clock').textContent).toBe('Day 1 · 01:10');
+        expect(screen.getByTestId('world-clock').textContent).toBe('Year 1 · Spring · Jan 1 · 01:10');
     });
 
     it('clicking an empty land tile shows its terrain and ground stock, no residents', () => {
         render(<App seed={7} />);
         // Before any click the Tile Inspector waits for a pick
         expect(screen.getByTestId('tile-empty').textContent).toBe('Click a tile to inspect it.');
-        // Tile (7,0) — a quiet beach: no glyph, coconut + hidden shell
-        fireEvent.click(screen.getByTestId('grid-tile-7-0'));
-        expect(screen.getByTestId('tile-position').textContent).toBe('(7, 0) · beach');
+        // Tile (−10,−11) — a quiet beach: no glyph, coconut + hidden shell
+        fireEvent.click(screen.getByTestId('grid-tile--10--11'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-10, -11) · beach');
         expect(screen.getByTestId('tile-terrain-meta').textContent).toBe(
             'height 3 · water line 3 · walkable',
         );
@@ -167,13 +176,14 @@ describe('App', () => {
 
     it('clicking a sea tile shows the submerged voxel column with its fish stock', () => {
         render(<App seed={7} />);
-        // Tile (0,0) — ocean floor: sand under three water voxels, fish swim here
-        fireEvent.click(screen.getByTestId('grid-tile-0-0'));
-        expect(screen.getByTestId('tile-position').textContent).toBe('(0, 0) · ocean');
+        // Tile (−18,−12) — the top-left corner: shallow seabed under one
+        // water voxel, fish swim here
+        fireEvent.click(screen.getByTestId('grid-tile--18--12'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-18, -12) · shallows');
         expect(screen.getByTestId('tile-terrain-meta').textContent).toBe(
-            'height 0 · water line 3 · submerged',
+            'height 2 · water line 3 · submerged',
         );
-        expect(screen.getByTestId('tile-voxels').textContent).toBe('sand, water ×3');
+        expect(screen.getByTestId('tile-voxels').textContent).toBe('soil, sand, water');
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
         ).toEqual(['1 Fish']);
@@ -184,10 +194,10 @@ describe('App', () => {
 
     it('clicking a castaway tile opens both the tile inspector and the actor inspector', () => {
         render(<App seed={7} />);
-        // Tile (6,0) — Ael's beach, coconut on the ground
-        fireEvent.click(screen.getByTestId('grid-tile-6-0'));
+        // Tile (17,−11) — Ael's shore landing spot, coconut on the ground
+        fireEvent.click(screen.getByTestId('grid-tile-17--11'));
         // Tile layer: terrain + stock + Ael as the resident
-        expect(screen.getByTestId('tile-position').textContent).toBe('(6, 0) · beach');
+        expect(screen.getByTestId('tile-position').textContent).toBe('(17, -11) · beach');
         expect(screen.getByTestId('tile-ground').textContent).toContain('1 Coconut');
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
@@ -199,17 +209,17 @@ describe('App', () => {
 
     it('clicking a bird tile shows the bird as a resident but no actor card', () => {
         render(<App seed={7} />);
-        // Tile (6,5) — forest under Kiki the flying gull (z 2)
-        fireEvent.click(screen.getByTestId('grid-tile-6-5'));
-        expect(screen.getByTestId('tile-position').textContent).toBe('(6, 5) · forest');
+        // Tile (0,0) — the canvas middle: meadow under Kiki the flying gull (z 2)
+        fireEvent.click(screen.getByTestId('grid-tile-0-0'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(0, 0) · meadow');
         // All living things are actors: the bird is listed as a resident
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['Kiki — bird · flying · z 2']);
-        // Forest floor: berries and wood ("Woods" is the mechanical plural)
+        // Meadow floor: berries on the ground
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
-        ).toEqual(['1 Berry', '2 Woods']);
+        ).toEqual(['2 Berries']);
         // …but birds stay out of the castaway inspector — no actor card opens
         expect(screen.queryByTestId('actor-inventory')).toBeNull();
         expect(screen.getByTestId('actor-panel-empty').textContent).toBe(
@@ -219,15 +229,15 @@ describe('App', () => {
 
     it('the tile inspector follows every subsequent click', () => {
         render(<App seed={7} />);
-        // First inspect Dune's forest tile…
-        fireEvent.click(screen.getByTestId('grid-tile-5-6'));
-        expect(screen.getByTestId('tile-position').textContent).toBe('(5, 6) · forest');
+        // First inspect Dune's meadow landing spot…
+        fireEvent.click(screen.getByTestId('grid-tile--8-3'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-8, 3) · meadow');
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['Dune — castaway · well']);
-        // …then hop over to a bare shallows tile
-        fireEvent.click(screen.getByTestId('grid-tile-0-6'));
-        expect(screen.getByTestId('tile-position').textContent).toBe('(0, 6) · shallows');
+        // …then hop over to a submerged shallows tile
+        fireEvent.click(screen.getByTestId('grid-tile--18--12'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-18, -12) · shallows');
         expect(screen.getByTestId('tile-terrain-meta').textContent).toBe(
             'height 2 · water line 3 · submerged',
         );
@@ -245,12 +255,90 @@ describe('App', () => {
 
     it('a resident row opens the full actor card for castaways', () => {
         render(<App seed={7} />);
-        fireEvent.click(screen.getByTestId('grid-tile-6-0'));
+        fireEvent.click(screen.getByTestId('grid-tile-17--11'));
         // The resident row for Ael is a button — click it to focus the
         // actor inspector on him
         fireEvent.click(screen.getByText('Ael — castaway · well'));
         expect(screen.getByTestId('actor-condition').textContent).toBe('Ael · well');
         expect(screen.getByTestId('actor-inventory').textContent).toContain('2 Berries');
+    });
+
+    it('the canvas area tabs between Data, ASCII and Unicode representations', () => {
+        render(<App seed={7} />);
+        // ASCII is the default tab
+        expect(screen.getByTestId('canvas-tab-ascii')).toBeDefined();
+        expect(screen.getByTestId('world-grid')).toBeDefined();
+        expect(screen.queryByTestId('world-grid-unicode')).toBeNull();
+        expect(screen.queryByTestId('data-tables')).toBeNull();
+
+        // ── Unicode tab — the emoji twin ──────────────────────────────────
+        fireEvent.click(screen.getByTestId('canvas-tab-unicode'));
+        // Same 925 tiles at the emoji tile size
+        expect(screen.getByTestId('world-grid-unicode').children.length).toBe(925);
+        // Kiki renders as the bird emoji with her altitude superscript at
+        // the center (0,0) — tile 462
+        const uni = screen.getByTestId('world-grid-unicode');
+        expect((uni.children[462] as HTMLElement).textContent).toBe('🐦²');
+        // Ael as the castaway emoji at his shore spot (17,−11) — tile 72
+        expect((uni.children[72] as HTMLElement).textContent).toBe('🧍');
+        // Empty sea tile draws the terrain emoji (top-left corner shallows)
+        expect((uni.children[0] as HTMLElement).textContent).toBe('🐚');
+        // Clicks still inspect: Ael's emoji tile opens the actor inspector
+        fireEvent.click(screen.getByTestId('unicode-tile-17--11'));
+        expect(screen.getByTestId('actor-condition').textContent).toBe('Ael · well');
+
+        // ── Data tab — the plain-tables view ──────────────────────────────
+        fireEvent.click(screen.getByTestId('canvas-tab-data'));
+        expect(screen.queryByTestId('world-grid')).toBeNull();
+        const tables = screen.getByTestId('data-tables');
+        expect(tables.children.length).toBe(3);
+        // Positions table: bird first (kind order), then the cast in id order
+        const positions = screen.getByTestId('data-table-positions');
+        expect(positions.textContent).toContain('Positions');
+        expect(positions.textContent).toContain('bird-1');
+        expect(positions.textContent).toContain('Ael');
+        expect(positions.textContent).toContain('17');
+        // Terrain census + canvas overview
+        expect(screen.getByTestId('data-table-terrain').textContent).toContain('beach');
+        expect(screen.getByTestId('data-table-canvas').textContent).toContain('925');
+
+        // ── Back to ASCII ─────────────────────────────────────────────────
+        fireEvent.click(screen.getByTestId('canvas-tab-ascii'));
+        expect(screen.getByTestId('world-grid').children.length).toBe(925);
+        expect((screen.getByTestId('world-grid').children[72] as HTMLElement).textContent).toBe('A');
+    });
+
+    it('the World Size controls reshape the island in place', () => {
+        render(<App seed={7} />);
+        // The live terrain size shows in the panel and drives the pickers
+        expect(screen.getByTestId('world-size-current').textContent).toBe('37 × 25');
+        expect((screen.getByTestId('world-size-width') as HTMLSelectElement).value).toBe('37');
+        expect((screen.getByTestId('world-size-height') as HTMLSelectElement).value).toBe('25');
+        // Nothing to apply while the pickers match the live size
+        expect((screen.getByTestId('world-size-apply') as HTMLButtonElement).disabled).toBe(true);
+        // Pick a smaller world: 21×13
+        fireEvent.change(screen.getByTestId('world-size-width'), { target: { value: '21' } });
+        expect((screen.getByTestId('world-size-apply') as HTMLButtonElement).disabled).toBe(false);
+        fireEvent.change(screen.getByTestId('world-size-height'), { target: { value: '13' } });
+        fireEvent.click(screen.getByTestId('world-size-apply'));
+        // The canvas regenerated — 21×13 = 273 tiles
+        expect(screen.getByTestId('world-size-current').textContent).toBe('21 × 13');
+        expect(screen.getByTestId('world-grid').children.length).toBe(273);
+        // The pickers reset to the live size after applying
+        expect((screen.getByTestId('world-size-width') as HTMLSelectElement).value).toBe('21');
+        expect((screen.getByTestId('world-size-height') as HTMLSelectElement).value).toBe('13');
+        expect((screen.getByTestId('world-size-apply') as HTMLButtonElement).disabled).toBe(true);
+        // Kiki still wheels above the center (0,0) — tile (0+6)×21+(0+10) = 136
+        expect((screen.getByTestId('world-grid').children[136] as HTMLElement).textContent).toBe('K²');
+        // The cast is still on the board (settled onto dry land if needed)
+        expect(screen.getByTestId('actor-chip-Ael').textContent).toContain('Ael');
+        expect(screen.getByTestId('actor-chip-Dune').textContent).toContain('Dune');
+        // The redraw landed in the world log
+        fireEvent.click(screen.getByTestId('log-toggle'));
+        expect(screen.getAllByTestId('event-row').length).toBe(6);
+        expect(screen.getAllByTestId('event-row')[0].textContent).toContain(
+            'The island is redrawn at 21×13.',
+        );
     });
 
     it('every reload rolls a completely random seed when none is pinned', () => {

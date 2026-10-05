@@ -19,7 +19,14 @@
 
 import { arrayEach } from '@presource/core';
 import { position3 } from '@godspace/core';
-import { asciiCanvasPlugin, type AsciiCanvasPlugin } from '@godspace/canvas';
+import {
+    asciiCanvasPlugin,
+    unicodeCanvasPlugin,
+    dataCanvasPlugin,
+    type AsciiCanvasPlugin,
+    type UnicodeCanvasPlugin,
+    type DataCanvasPlugin,
+} from '@godspace/canvas';
 import { createWorld, type World } from '../engine/world';
 import { islandTerrainPlugin, type IslandTerrainOptions } from '../plugins/terrain/islandTerrain';
 import { inventoryPlugin, type InventoryPlugin } from '../plugins/inventory/inventoryPlugin';
@@ -50,6 +57,10 @@ export type IslandOptions = {
         birds?: boolean;
         /** The @godspace/canvas ASCII representation plugin. Default on. */
         ascii?: boolean;
+        /** The @godspace/canvas unicode (emoji) representation. Default on. */
+        unicode?: boolean;
+        /** The @godspace/canvas data (plain tables) representation. Default on. */
+        data?: boolean;
     };
 };
 
@@ -63,6 +74,10 @@ export type IslandHandle = {
     birds: BirdsPlugin;
     /** The ASCII canvas representation plugin (@godspace/canvas). */
     ascii: AsciiCanvasPlugin;
+    /** The unicode canvas sibling — emoji glyphs, same binding contract. */
+    unicode: UnicodeCanvasPlugin;
+    /** The data canvas sibling — plain position/terrain tables. */
+    data: DataCanvasPlugin;
 };
 
 /** The stranded cast — markers are the first letters, all distinct. */
@@ -81,6 +96,8 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         behavior: true,
         birds: true,
         ascii: true,
+        unicode: true,
+        data: true,
         ...(options.plugins ?? {}),
     };
 
@@ -105,6 +122,20 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         },
     });
     const birds = birdsPlugin();
+    // The unicode sibling binds the SAME structural slice as the ascii canvas
+    // (same surfaceOf/titleOf adapters) — an emoji-skinned twin of the god view
+    const unicode = unicodeCanvasPlugin({
+        surfaceOf: (cell) => (cell as { biome?: string }).biome,
+        titleOf: (cell) => {
+            const column = cell as { biome?: string; height?: number; voxels?: string[] };
+            return `${column.biome} · height ${column.height} · ${(column.voxels ?? []).join(' / ')}`;
+        },
+    });
+    // The data sibling renders plain tables instead of tiles: every entity's
+    // coordinates + the terrain census (also biome-keyed)
+    const data = dataCanvasPlugin({
+        surfaceOf: (cell) => (cell as { biome?: string }).biome,
+    });
 
     const mounted = [
         ...(toggles.terrain ? [terrain] : []),
@@ -116,6 +147,8 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
             : []),
         ...(toggles.birds ? [birds] : []),
         ...(toggles.ascii ? [ascii] : []),
+        ...(toggles.unicode ? [unicode] : []),
+        ...(toggles.data ? [data] : []),
     ];
 
     const world = createWorld({
@@ -124,15 +157,29 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         plugins: mounted,
     });
 
-    // Spawn the cast spread across dry land (row-major stride, deterministic).
-    // Positions are 3D coordinates (@godspace/core) — castaways land on the
-    // ground plane, z = 0.
+    // Spawn the cast at the island's EDGE — the castaways' ship wrecked on
+    // the coast, so everyone comes ashore on the outermost dry ring and
+    // starts their journey inland from there. Positions are 3D coordinates
+    // (@godspace/core) — castaways land on the ground plane, z = 0.
+    // Deterministic: land cells rank by how close they sit to the canvas rim
+    // (elliptical rim metric max(|x|/halfX, |y|/halfY), 1 at the rim → 0 at
+    // the center), ties keep row-major order, then a row-major stride
+    // spreads the cast along the ranked shore.
     const land = world.landCells();
     const count = Math.min(options.actorCount ?? 4, CAST.length, land.length);
     if (count > 0) {
-        const stride = Math.max(1, Math.floor(land.length / count));
+        const halfX = (world.canvas.width - 1) / 2;
+        const halfY = (world.canvas.height - 1) / 2;
+        // Rim distance of a dry cell — the largest axis fraction; sorting
+        // descending puts the outermost beach ring first
+        const rimOf = (cell: { x: number; y: number }) =>
+            Math.max(Math.abs(cell.x) / halfX, Math.abs(cell.y) / halfY);
+        const edge = land
+            .slice()
+            .sort((left, right) => rimOf(right) - rimOf(left));
+        const stride = Math.max(1, Math.floor(edge.length / count));
         arrayEach(Array.from({ length: count }, (_, index) => index), ({ value: index }) => {
-            const cell = land[index * stride];
+            const cell = edge[index * stride];
             const name = CAST[index];
             const actor: Actor = {
                 id: `actor-${index + 1}`,
@@ -151,5 +198,5 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         birds.release();
     }
 
-    return { world, terrain, inventory, needs, relationship, birds, ascii };
+    return { world, terrain, inventory, needs, relationship, birds, ascii, unicode, data };
 };

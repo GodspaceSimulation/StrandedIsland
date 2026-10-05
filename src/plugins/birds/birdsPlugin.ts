@@ -104,13 +104,9 @@ export const birdsPlugin = (options: BirdsPluginOptions = {}): BirdsPlugin => {
             released = released + 1;
             const id = `bird-${released}`;
             const birdName = name ?? BIRD_NAMES[(released - 1) % BIRD_NAMES.length];
-            const canvas = world.canvas;
-            // Hover above the island center at cruise altitude (Z = 2)
-            const position = position3(
-                Math.floor(canvas.width / 2),
-                Math.floor(canvas.height / 2),
-                CRUISE_ALTITUDE,
-            );
+            // Hover above the island center — world coordinates are centered,
+            // so the dead center of any canvas IS (0, 0) — at cruise altitude
+            const position = position3(0, 0, CRUISE_ALTITUDE);
             flock.set(id, { name: birdName, marker: birdName.slice(0, 1), state: 'flying' });
             world.coordinates.place({
                 id,
@@ -154,6 +150,9 @@ export const birdsPlugin = (options: BirdsPluginOptions = {}): BirdsPlugin => {
             const active = world;
             const canvas = active.canvas;
             const { coordinates, events } = active;
+            // Centered world coordinates: the canvas runs −half … +half
+            const halfX = (canvas.width - 1) / 2;
+            const halfY = (canvas.height - 1) / 2;
 
             flock.forEach((bird, id) => {
                 const position = coordinates.positionOf(id);
@@ -177,8 +176,8 @@ export const birdsPlugin = (options: BirdsPluginOptions = {}): BirdsPlugin => {
                     }
                     const offset = NEIGHBOR_OFFSETS[Math.floor(context.random() * NEIGHBOR_OFFSETS.length)];
                     // Birds ignore passability — they glide over sea and land
-                    const x = clamp(position.x + offset.dx, 0, canvas.width - 1);
-                    const y = clamp(position.y + offset.dy, 0, canvas.height - 1);
+                    const x = clamp(position.x + offset.dx, -halfX, halfX);
+                    const y = clamp(position.y + offset.dy, -halfY, halfY);
                     let z = position.z;
                     if (context.random() < altitudeChance) {
                         z = clamp(z + (context.random() < 0.5 ? -1 : 1), 1, ceiling);
@@ -212,8 +211,8 @@ export const birdsPlugin = (options: BirdsPluginOptions = {}): BirdsPlugin => {
                 // Hop one step along the ground plane (gulls float — any
                 // in-bounds cell goes, sea included)
                 const offset = NEIGHBOR_OFFSETS[Math.floor(context.random() * NEIGHBOR_OFFSETS.length)];
-                const x = clamp(position.x + offset.dx, 0, canvas.width - 1);
-                const y = clamp(position.y + offset.dy, 0, canvas.height - 1);
+                const x = clamp(position.x + offset.dx, -halfX, halfX);
+                const y = clamp(position.y + offset.dy, -halfY, halfY);
                 const dx = x - position.x;
                 const dy = y - position.y;
                 coordinates.move(id, grounded(position3(x, y)));

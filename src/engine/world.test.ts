@@ -112,27 +112,53 @@ describe('createWorld', () => {
         expect(world.actors.get('actor-1')?.position).toEqual({ x: 0, y: 0, z: 0 });
     });
 
-    it('cellAt resolves row-major cells and enforces bounds', () => {
+    it('cellAt resolves centered row-major cells and enforces bounds', () => {
+        // Synthetic 3×3 canvas in CENTERED coordinates: cells run −1 … +1
+        // on both axes; storage is row-major from the top-left (−1, −1)
+        const cell = (x: number, y: number) => ({
+            x,
+            y,
+            voxels: [],
+            height: 0,
+            waterLevel: 0,
+            biome: 'ocean',
+            passable: false,
+        });
         const world = createWorld();
         world.canvas = {
-            width: 2,
-            height: 2,
+            width: 3,
+            height: 3,
             cells: [
-                { x: 0, y: 0, voxels: [], height: 0, waterLevel: 0, biome: 'ocean', passable: false },
-                { x: 1, y: 0, voxels: [], height: 0, waterLevel: 0, biome: 'ocean', passable: false },
-                { x: 0, y: 1, voxels: [], height: 0, waterLevel: 0, biome: 'ocean', passable: false },
-                { x: 1, y: 1, voxels: [], height: 0, waterLevel: 0, biome: 'ocean', passable: false },
+                cell(-1, -1),
+                cell(0, -1),
+                cell(1, -1),
+                cell(-1, 0),
+                cell(0, 0),
+                cell(1, 0),
+                cell(-1, 1),
+                cell(0, 1),
+                cell(1, 1),
             ],
         };
-        expect(world.cellAt(1, 0)?.x).toBe(1);
-        expect(world.cellAt(1, 0)?.y).toBe(0);
+        // The canvas middle is the origin
+        expect(world.cellAt(0, 0)?.x).toBe(0);
+        expect(world.cellAt(0, 0)?.y).toBe(0);
+        // Corners and axes
+        expect(world.cellAt(-1, -1)?.x).toBe(-1);
+        expect(world.cellAt(-1, -1)?.y).toBe(-1);
+        expect(world.cellAt(1, -1)?.x).toBe(1);
         expect(world.cellAt(0, 1)?.x).toBe(0);
         expect(world.cellAt(0, 1)?.y).toBe(1);
-        expect(world.cellAt(-1, 0)).toBeUndefined();
+        expect(world.cellAt(1, 1)?.y).toBe(1);
+        // Anything beyond ±half is out of bounds
+        expect(world.cellAt(-2, 0)).toBeUndefined();
         expect(world.cellAt(2, 0)).toBeUndefined();
         expect(world.cellAt(0, 2)).toBeUndefined();
+        expect(world.cellAt(0, -2)).toBeUndefined();
         expect(world.inBounds(1, 1)).toBe(true);
+        expect(world.inBounds(-1, -1)).toBe(true);
         expect(world.inBounds(2, 1)).toBe(false);
+        expect(world.inBounds(1, -2)).toBe(false);
     });
 
     it('actorAt finds the actor at an exact 3D position (Z defaults to ground)', () => {
@@ -148,10 +174,12 @@ describe('createWorld', () => {
 
     it('landCells filters to passable cells', () => {
         const world = createWorld();
+        // Synthetic 1×3 canvas (odd) in centered coordinates: y runs −1 … +1
         world.canvas = {
             width: 1,
-            height: 2,
+            height: 3,
             cells: [
+                { x: 0, y: -1, voxels: [], height: 0, waterLevel: 0, biome: 'ocean', passable: false },
                 { x: 0, y: 0, voxels: [], height: 0, waterLevel: 0, biome: 'ocean', passable: false },
                 { x: 0, y: 1, voxels: [], height: 0, waterLevel: 0, biome: 'beach', passable: true },
             ],

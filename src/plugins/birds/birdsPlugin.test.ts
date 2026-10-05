@@ -22,13 +22,14 @@ describe('birdsPlugin', () => {
             name: 'Kiki',
             marker: 'K',
             state: 'flying',
-            // 12×10 island → center column (6,5); cruise altitude z = 2
-            position: { x: 6, y: 5, z: 2 },
+            // World coordinates are centered — the island center IS (0, 0);
+            // cruise altitude z = 2
+            position: { x: 0, y: 0, z: 2 },
         });
         // The bird lives in the 3D spatial record with kind 'bird'
         expect(world.coordinates.entryOf('bird-1')).toEqual({
             id: 'bird-1',
-            position: { x: 6, y: 5, z: 2 },
+            position: { x: 0, y: 0, z: 2 },
             kind: 'bird',
             name: 'Kiki',
             marker: 'K',
@@ -57,7 +58,7 @@ describe('birdsPlugin', () => {
             name: 'Sula',
             marker: 'S',
             state: 'flying',
-            position: { x: 6, y: 5, z: 2 },
+            position: { x: 0, y: 0, z: 2 },
         });
         expect(birds.birds().map((bird) => bird.name)).toEqual(['Kiki', 'Jask', 'Sula']);
     });
@@ -87,8 +88,8 @@ describe('birdsPlugin', () => {
             'Kiki hops northwest.',
             'Kiki takes off.',
         ]);
-        // Reference end position: perched-again cycle left Kiki at (2,2,2)
-        expect(birds.birdOf('bird-1')?.position).toEqual({ x: 2, y: 2, z: 2 });
+        // Reference end position: perched-again cycle left Kiki at (−4,−3,2)
+        expect(birds.birdOf('bird-1')?.position).toEqual({ x: -4, y: -3, z: 2 });
     });
 
     it('lands onto the ground plane (z = 0) and hops while perched', () => {
@@ -101,9 +102,9 @@ describe('birdsPlugin', () => {
             name: 'Kiki',
             marker: 'K',
             state: 'perched',
-            position: { x: 6, y: 5, z: 0 },
+            position: { x: 0, y: 0, z: 0 },
         });
-        expect(world.coordinates.positionOf('bird-1')).toEqual({ x: 6, y: 5, z: 0 });
+        expect(world.coordinates.positionOf('bird-1')).toEqual({ x: 0, y: 0, z: 0 });
         expect(world.events.log()[1].message).toBe('Kiki lands.');
 
         // Perched: takeoff disabled → the gull hops one step per tick
@@ -118,7 +119,7 @@ describe('birdsPlugin', () => {
             .filter((event) => event.actorId === 'bird-1')
             .map((event) => event.message);
         expect(hopPath).toEqual(['Kiki wheels above the island.', 'Kiki lands.', 'Kiki hops north.']);
-        expect(hopper.birdOf('bird-1')?.position).toEqual({ x: 6, y: 4, z: 0 });
+        expect(hopper.birdOf('bird-1')?.position).toEqual({ x: 0, y: -1, z: 0 });
     });
 
     it('a perched bird takes off to an altitude within the ceiling', () => {
@@ -130,7 +131,7 @@ describe('birdsPlugin', () => {
         const bird = birds.birdOf('bird-1');
         expect(bird?.state).toBe('flying');
         // Reference takeoff altitude (seeded draw): 1 + floor(draw × 3) = 1
-        expect(bird?.position).toEqual({ x: 6, y: 5, z: 1 });
+        expect(bird?.position).toEqual({ x: 0, y: 0, z: 1 });
         expect(world.events.log().at(-1)?.message).toBe('Kiki takes off.');
     });
 
@@ -141,13 +142,13 @@ describe('birdsPlugin', () => {
         const actor = world.spawn({
             id: 'a',
             name: 'Ael',
-            position: { x: 5, y: 5, z: 0 },
+            position: { x: -1, y: 0, z: 0 },
             marker: 'A',
             condition: 'well',
         });
-        expect(world.actorAt(5, 5)?.id).toBe('a');
-        // The bird hovers directly above the same column (z = 2 ≠ 0)
-        expect(world.coordinates.positionOf('bird-1')).toEqual({ x: 6, y: 5, z: 2 });
+        expect(world.actorAt(-1, 0)?.id).toBe('a');
+        // The bird hovers directly above the center column (z = 2 ≠ 0)
+        expect(world.coordinates.positionOf('bird-1')).toEqual({ x: 0, y: 0, z: 2 });
         void actor;
     });
 

@@ -14,9 +14,9 @@ import type { Biome, Canvas, TerrainCell, VoxelKind } from '../../engine/types';
 import type { PluginContext, WorldPlugin } from '../../engine/plugin';
 
 export type IslandTerrainOptions = {
-    /** Grid width in cells. Default 12. */
+    /** Grid width in cells (odd — 0,0 is the center). Default 37. */
     width?: number;
-    /** Grid height in cells. Default 10. */
+    /** Grid height in cells (odd — 0,0 is the center). Default 25. */
     height?: number;
     /** PRNG seed. Defaults to the world seed (passed by the plugin setup). */
     seed?: number;
@@ -102,20 +102,37 @@ const deriveBiome = (
 };
 
 /**
+ * Grid sizes are always odd: the world coordinate system is centered, (0, 0)
+ * is the dead center of the canvas, so the center column/row must exist
+ * exactly. Even sizes are nudged up to the next odd size.
+ */
+export const oddSize = (value: number): number => (value % 2 === 0 ? value + 1 : value);
+
+/**
  * Generates the island canvas. Pure: same options → same canvas.
+ *
+ * Cell coordinates are world coordinates, centered on (0, 0) — the canvas
+ * middle — running from −half to +half on both axes. Storage stays row-major
+ * from the top-left corner (−halfX, −halfY): index = (y + halfY) * width + (x + halfX).
  */
 export const generateIsland = (
     options: IslandTerrainOptions = {},
 ): Canvas & { stats: IslandStats } => {
-    const width = options.width ?? 12;
-    const height = options.height ?? 10;
+    // Odd dims are a hard rule — the center must be exactly (0, 0)
+    const width = oddSize(options.width ?? 37);
+    const height = oddSize(options.height ?? 25);
     const seaLevel = options.seaLevel ?? 3;
     const maxHeight = options.maxHeight ?? 8;
     const roughness = options.roughness ?? 0.55;
     const random = randomCreate(options.seed ?? 1);
+    // Half extents: (odd − 1) / 2 is exact — x, y run −half … +half
+    const halfX = (width - 1) / 2;
+    const halfY = (height - 1) / 2;
 
     // Two noise octaves (coastline shape + local bumps) and a moisture map
-    // that decides where forests grow on grass
+    // that decides where forests grow on grass. Noise samples live in
+    // grid space (0..width−1), NOT centered space — the lattice indexes
+    // arrays and cannot take negative positions.
     const coarse = latticeNoise(random, width, height, 4);
     const fine = latticeNoise(random, width, height, 2);
     const moisture = latticeNoise(random, width, height, 3);
@@ -123,13 +140,14 @@ export const generateIsland = (
     const cells: TerrainCell[] = [];
     const stats: IslandStats = { land: 0, water: 0, forest: 0 };
 
-    for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-            // Normalized position −1..1 from the island center
-            const centerX = (width - 1) / 2 || 1;
-            const centerY = (height - 1) / 2 || 1;
-            const nx = (x - centerX) / centerX;
-            const ny = (y - centerY) / centerY;
+    for (let row = 0; row < height; row++) {
+        for (let col = 0; col < width; col++) {
+            // Centered world coordinates: 0,0 is the island center
+            const x = col - halfX;
+            const y = row - halfY;
+            // Normalized position −1..1 from the center (which IS 0, 0 now)
+            const nx = x / (halfX || 1);
+            const ny = y / (halfY || 1);
             // Elliptical distance, 0 at center → 1 at the rim (clamped);
             // corners overshoot and clamp, edge midpoints sit exactly at 1
             const distance = Math.min(1, Math.sqrt(nx * nx + ny * ny));
@@ -138,10 +156,18 @@ export const generateIsland = (
             const falloff = 1 - distance * distance;
 
             // Height: noise shaped by falloff, clamped to 0..1
-            const noise = coarse(x, y) * 0.65 + fine(x, y) * 0.35;
+            const noise = coarse(col, row) * 0.65 + fine(col, row) * 0.35;
             const blended = Math.max(0, Math.min(1, noise * roughness + falloff * (1 - roughness)));
+            // Island design rule: the canvas edge is always sea. The outermost
+            // ring of cells is forced below the water line no matter what the
+            // noise does at the rim, so the island never touches the border —
+            // any grid size reads as an island floating in open water. The
+            // coarse noise picks the ring's depth: shallows or full ocean.
+            const onEdge = Math.abs(x) === halfX || Math.abs(y) === halfY;
             // Ground height in voxels: 0 (seafloor) … maxHeight (peak)
-            const groundHeight = Math.round(blended * maxHeight);
+            const groundHeight = onEdge
+                ? seaLevel - 1 - Math.round(coarse(col, row))
+                : Math.round(blended * maxHeight);
 
             // Classify the surface. A column exactly at the water line is a
             // dry sandbar (walkable); only columns strictly below it are
@@ -157,7 +183,7 @@ export const generateIsland = (
                     ? 'sand'
                     : 'grass';
             // Forests only grow on grass with enough moisture
-            const forested = surface === 'grass' && moisture(x, y) > 0.6;
+            const forested = surface === 'grass' && moisture(col, row) > 0.6;
 
             // Build the voxel stack, bottom → top:
             //   stone × (ground-2), soil × 1, surface × 1,
@@ -210,32 +236,74 @@ export const generateIsland = (
 /**
  * The terrain plugin — installs the island as the world's canvas in `setup`.
  * Re-running `setup` (by removing/re-adding the plugin) regenerates it.
- * `stats()` reports the last generated island's composition.
+ * `stats()` reports the last generated island's composition. `resize()`
+ * regenerates the island at a new grid size in place (same seed → the same
+ * island, just larger or smaller), for the god-view's World Size controls.
  */
-export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPlugin & { stats(): IslandStats | undefined } => {
+export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPlugin & {
+    stats(): IslandStats | undefined;
+    /** Current grid size (as configured — the canvas is regenerated to match). */
+    size(): { width: number; height: number };
+    /** Regenerates the island at a new grid size, replacing the whole canvas. */
+    resize(width: number, height: number): void;
+} => {
     // Last generation stats, exposed for the god-view roster
     let lastStats: IslandStats | undefined;
+    // Configured grid size — the default, overridable by options and
+    // changeable at runtime through resize(). Odd rule enforced here too:
+    // (0, 0) must be the exact canvas center.
+    const dims = { width: oddSize(options.width ?? 37), height: oddSize(options.height ?? 25) };
+    // The plugin context captured in setup — resize() needs the world (canvas
+    // swap + event emission) between lifecycle hooks
+    let bound: PluginContext | null = null;
+
+    /** One generation pass: builds the canvas and installs it on the world. */
+    const regenerate = (context: PluginContext) => {
+        // Default seed: the world seed, so one global seed drives everything
+        const generated = generateIsland({
+            seed: options.seed ?? context.world.seed,
+            width: dims.width,
+            height: dims.height,
+            seaLevel: options.seaLevel,
+            maxHeight: options.maxHeight,
+            roughness: options.roughness,
+        });
+        context.world.canvas = {
+            width: generated.width,
+            height: generated.height,
+            cells: generated.cells,
+        };
+        lastStats = generated.stats;
+    };
 
     return {
         id: 'island-terrain',
         label: 'Island Terrain',
         setup: (context: PluginContext) => {
-            // Default seed: the world seed, so one global seed drives everything
-            const generated = generateIsland({
-                seed: options.seed ?? context.world.seed,
-                width: options.width,
-                height: options.height,
-                seaLevel: options.seaLevel,
-                maxHeight: options.maxHeight,
-                roughness: options.roughness,
-            });
-            context.world.canvas = {
-                width: generated.width,
-                height: generated.height,
-                cells: generated.cells,
-            };
-            lastStats = generated.stats;
+            // Remember the context so resize() can regenerate outside setup
+            bound = context;
+            regenerate(context);
         },
         stats: () => lastStats,
+        size: () => ({ ...dims }),
+        resize: (width, height) => {
+            // The odd rule holds for runtime resizes as well — an even input
+            // is nudged up to the next odd size (log reflects the real size)
+            const finalWidth = oddSize(width);
+            const finalHeight = oddSize(height);
+            dims.width = finalWidth;
+            dims.height = finalHeight;
+            if (!bound) {
+                // Never set up — nothing to regenerate yet; the next setup
+                // picks the new dims up
+                return;
+            }
+            regenerate(bound);
+            // The god reshaped the world — say so in the log
+            bound.world.events.emit({
+                kind: 'world',
+                message: `The island is redrawn at ${finalWidth}×${finalHeight}.`,
+            });
+        },
     };
 };

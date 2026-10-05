@@ -11,6 +11,7 @@ import { mountWorld, useWorld, bumpRevision } from './worldBridge';
 import { WorldGrid } from './worldGrid';
 import { TilePanel } from './tilePanel';
 import { TickerControls } from './tickerControls';
+import { WorldControls } from './worldControls';
 import { ActorList } from './actorList';
 import { ActorPanel } from './actorPanel';
 import { EventLog } from './eventLog';
@@ -73,10 +74,14 @@ const GridSection = styled('div', {
     minWidth: 0,
 });
 
-// Right rail — the world clock only
+// Right rail — the world clock and the World Size controls (the god can
+// reshape the island: odd-only canvas, centered (0,0), open-sea edge)
 const SideSection = styled('div', {
     flex: '0 1 320px',
     minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12,
 });
 
 export const Dashboard = ({ island: mounted }: { island: IslandHandle }) => {
@@ -127,6 +132,7 @@ export const Dashboard = ({ island: mounted }: { island: IslandHandle }) => {
                 </GridSection>
                 <SideSection>
                     <TickerControls />
+                    <WorldControls />
                 </SideSection>
             </MainRow>
             <EventLog />

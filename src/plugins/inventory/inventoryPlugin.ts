@@ -77,6 +77,8 @@ export type InventoryPlugin = WorldPlugin & {
     cellsWithItem(itemId: string): TerrainCell[];
     /** Seeds an actor's bag with starting items. */
     spawnKit(actorId: string, kit: Inventory): void;
+    /** Wipes and re-seeds every cell stock from the current canvas (resize flow). */
+    resurvey(): void;
 };
 
 export const inventoryPlugin = (options: InventoryPluginOptions = {}): InventoryPlugin => {
@@ -89,6 +91,9 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
     // The world reference arrives with setup; action hooks (exchange/give)
     // need it for event emission and canvas lookups before any tick runs.
     let world: World | null = null;
+    // The plugin context captured in setup — resurvey() re-runs the canvas
+    // survey with the same deterministic random stream after a regeneration
+    let surveyContext: PluginContext | null = null;
 
     const bagOf = (actorId: string): Inventory => {
         const existing = bags.get(actorId);
@@ -126,6 +131,40 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
         if (current < cap) {
             stock[itemId] = current + 1;
         }
+    };
+
+    /**
+     * One canvas survey: seeds the cell stocks by biome. The canvas scan is
+     * row-major and the random draws (shell/flint chances) run in that
+     * order, so seeding is fully reproducible per seed. `canvas` is passed
+     * explicitly so the routine works both in setup and after a terrain
+     * regeneration (resurvey).
+     */
+    const survey = (context: PluginContext, canvas: World['canvas']) => {
+        arrayEach(canvas.cells, ({ value: cell }) => {
+            const biomeStock = BIOME_STOCKS[cell.biome];
+            if (biomeStock) {
+                const stock = stockOf(cell.x, cell.y);
+                Object.entries(biomeStock).forEach(([item, count]) => {
+                    stock[item] = (stock[item] ?? 0) + count;
+                });
+            }
+            // Beaches occasionally hide a shell; highlands occasionally
+            // hide flint — finite resources, no regrowth
+            if (cell.biome === 'beach' && context.random() < 0.5) {
+                const stock = stockOf(cell.x, cell.y);
+                stock.shell = (stock.shell ?? 0) + 1;
+            }
+            if (cell.biome === 'highland' && context.random() < 0.3) {
+                const stock = stockOf(cell.x, cell.y);
+                stock.flint = (stock.flint ?? 0) + 1;
+            }
+            // The sea stocks fish
+            if (!cell.passable) {
+                const stock = stockOf(cell.x, cell.y);
+                stock.fish = (stock.fish ?? 0) + 1;
+            }
+        });
     };
 
     return {
@@ -230,34 +269,24 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
         },
 
         setup: (context: PluginContext) => {
-            // Survey the canvas and seed resources by biome. The canvas scan
-            // is row-major and the random draws (shell/flint chances) run in
-            // that order, so seeding is fully reproducible per seed.
+            // Remember the context — resurvey() re-runs the survey with the
+            // same deterministic stream after the terrain regenerates
             world = context.world;
-            arrayEach(world.canvas.cells, ({ value: cell }) => {
-                const biomeStock = BIOME_STOCKS[cell.biome];
-                if (biomeStock) {
-                    const stock = stockOf(cell.x, cell.y);
-                    Object.entries(biomeStock).forEach(([item, count]) => {
-                        stock[item] = (stock[item] ?? 0) + count;
-                    });
-                }
-                // Beaches occasionally hide a shell; highlands occasionally
-                // hide flint — finite resources, no regrowth
-                if (cell.biome === 'beach' && context.random() < 0.5) {
-                    const stock = stockOf(cell.x, cell.y);
-                    stock.shell = (stock.shell ?? 0) + 1;
-                }
-                if (cell.biome === 'highland' && context.random() < 0.3) {
-                    const stock = stockOf(cell.x, cell.y);
-                    stock.flint = (stock.flint ?? 0) + 1;
-                }
-                // The sea stocks fish
-                if (!cell.passable) {
-                    const stock = stockOf(cell.x, cell.y);
-                    stock.fish = (stock.fish ?? 0) + 1;
-                }
-            });
+            surveyContext = context;
+            survey(context, world.canvas);
+        },
+
+        // After a terrain regeneration (World Size resize) the cell stocks no
+        // longer match the canvas: wipes every stock and re-seeds from the
+        // current canvas. Same seed + same row-major draw order → the survey
+        // is reproducible, and the plugin's random stream keeps advancing
+        // (stock shells/flint stay deterministic per canvas state).
+        resurvey: () => {
+            if (!world || !surveyContext) {
+                return;
+            }
+            stocks.clear();
+            survey(surveyContext, world.canvas);
         },
 
         dispose: () => {
@@ -266,6 +295,7 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             bags.clear();
             stocks.clear();
             world = null;
+            surveyContext = null;
         },
 
         tick: (context: PluginContext) => {

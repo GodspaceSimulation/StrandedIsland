@@ -33,7 +33,11 @@ export type Biome = 'ocean' | 'shallows' | 'beach' | 'meadow' | 'forest' | 'high
 
 /** One voxel column of the canvas at grid position (x, y). */
 export type TerrainCell = {
-    /** Column position on the grid, 0-based from the top-left corner. */
+    /**
+     * Column position in WORLD coordinates, centered: (0, 0) is the canvas
+     * middle, values run −half … +half on both axes (odd grid sizes keep the
+     * center exact). Storage is still row-major from the top-left corner.
+     */
     x: number;
     y: number;
     /** Voxel stack, bottom → top. Length === height when dry; water fills above. */
@@ -50,9 +54,14 @@ export type TerrainCell = {
 
 /** The canvas: a width × height grid of voxel columns, row-major. */
 export type Canvas = {
+    /** Odd only — the centered coordinate system needs an exact (0, 0). */
     width: number;
     height: number;
-    /** Row-major storage: index = y * width + x. */
+    /**
+     * Row-major storage: index = (y + halfHeight) * width + (x + halfWidth),
+     * where half* = (dim − 1) / 2 — cell (x, y) carries CENTERED world
+     * coordinates (see TerrainCell).
+     */
     cells: TerrainCell[];
 };
 

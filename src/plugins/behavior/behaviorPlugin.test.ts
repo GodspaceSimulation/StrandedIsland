@@ -57,12 +57,11 @@ describe('behaviorPlugin', () => {
         for (let index = 0; index < 7; index++) {
             world.step();
         }
-        // Wandering carried the actor to a beach — gathering picked a coconut
-        expect(inventory.of('a')).toEqual({ flint: 1, coconut: 1 });
+        // Wandering carried the actor to a meadow — gathering picked a berry
+        expect(inventory.of('a')).toEqual({ flint: 1, berry: 1 });
         expect(needs.of('a').hunger).toBe(62);
-        // Meanwhile the forest cell regrew: berry rhythm hit ticks 2 & 5,
-        // wood rhythm tick 4
-        expect(inventory.cellStock(6, 2)).toEqual({ berry: 3, wood: 3 });
+        // Meanwhile the start cell regrew: meadow berry rhythm hit ticks 2 & 5
+        expect(inventory.cellStock(6, 2)).toEqual({ berry: 3 });
     });
 
     it('a thirsty actor drinks the rainwater pool on its own cell', () => {
@@ -146,7 +145,7 @@ describe('behaviorPlugin', () => {
 
     it('a starving actor walks toward the nearest stocked cell', () => {
         const { world, inventory, needs } = buildStack({ hungerPerMinute: 0.6 });
-        // Drain every cell, leave a single stocked meadow at (8,2)
+        // Drain every land cell, leave a single stocked meadow at (8,2)
         world.landCells().forEach((cell) => {
             const stock = inventory.cellStock(cell.x, cell.y);
             Object.keys(stock).forEach((item) => {
@@ -159,21 +158,23 @@ describe('behaviorPlugin', () => {
         for (let index = 0; index < 9; index++) {
             world.step();
         }
-        // Six hungry wanders, then the walk path toward (8,2), arriving and
-        // gathering a berry on tick 9
+        // Six hungry wanders, then the greedy walk toward the nearest
+        // stocked cell — berry regrowth re-stocked meadows mid-walk, so the
+        // chase kept redirecting; captured reference path
         expect(world.events.log().filter((event) => event.kind === 'move').map((event) => event.message)).toEqual([
+            'Ael wanders north.',
             'Ael wanders south.',
-            'Ael wanders west.',
-            'Ael wanders southwest.',
-            'Ael wanders southeast.',
             'Ael wanders south.',
+            'Ael wanders east.',
+            'Ael wanders northeast.',
             'Ael wanders northwest.',
-            'Ael moves west.',
+            'Ael moves east.',
+            'Ael moves east.',
             'Ael moves north.',
         ]);
-        expect(world.actors.get('a')).toMatchObject({ position: { x: 8, y: 2, z: 0 } });
-        expect(inventory.of('a')).toEqual({ flint: 1, berry: 1 });
-        expect(needs.of('a')).toEqual({ hunger: 74, thirst: 20, energy: 92 });
+        expect(world.actors.get('a')).toMatchObject({ position: { x: 14, y: -2, z: 0 } });
+        expect(inventory.of('a')).toEqual({ flint: 1 });
+        expect(needs.of('a')).toEqual({ hunger: 74, thirst: 20, energy: 91 });
     });
 
     it('social attempts respect the cooldown (bag too small to repeat)', () => {
@@ -188,15 +189,18 @@ describe('behaviorPlugin', () => {
             world.step();
             needs_satisfy(world, 'b', 10);
         }
-        // Gift lands on tick 1 (+10); afterwards Ael holds 2 berries — below
-        // the 3-berry gift threshold and Bram never holds a material, so no
-        // further social action fires. Drift −0.2 × 7 ticks → 8.6.
-        expect(relationship.relation('a', 'b')).toBe(8.600000000000005);
-        expect(inventory.of('a')).toEqual({ berry: 2 });
+        // Gift lands on tick 1 (+10). Bram wanders onto a shell beach and
+        // gathers, so the next social window (cooldown 6) trades instead —
+        // 10 + 6 − 0.2 × 8 ticks of drift → 14.6. Ael's bag ends at 1 berry
+        // + the traded shell.
+        expect(relationship.relation('a', 'b')).toBe(14.600000000000005);
+        expect(inventory.of('a')).toEqual({ berry: 1, shell: 1 });
         const socialEvents = world.events.log().filter((event) => event.kind === 'exchange' || event.kind === 'relationship');
         expect(socialEvents.map((event) => event.message)).toEqual([
             'Ael gives Bram 1 Berry.',
             'Ael and Bram grow closer (gifting).',
+            'Ael and Bram trade: 1 Berry for 1 Shell.',
+            'Ael and Bram grow closer (trading).',
         ]);
     });
 });

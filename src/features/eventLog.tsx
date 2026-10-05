@@ -2,7 +2,12 @@
 //
 // Collapsed by default: the header row shows the event count and acts as
 // the toggle. Clicking it expands the stream (newest first).
+//
+// Timestamps come from the @godspace/core temporal calendar (Year · Month
+// day · clock face) — the same calendar the World Ticker renders, so log
+// lines and the big clock always agree on "when".
 
+import { temporalCalendar } from '@godspace/core';
 import { useToggleHook } from '@presource/react';
 import { styled } from '../styles/styled';
 import { PALETTE } from '../styles/theme';
@@ -53,6 +58,8 @@ const LogTick = styled('span', {
     minWidth: '52px',
 });
 
+const Padded = (value: number): string => String(value).padStart(2, '0');
+
 /** How many recent events to show once expanded. */
 const VISIBLE = 30;
 
@@ -88,16 +95,20 @@ export const EventLog = () => {
                             <span style={{ color: PALETTE.textDim }}>The island is silent.</span>
                         </LogRow>
                     ) : (
-                        events.map((event) => (
-                            <LogRow key={event.id} data-testid="event-row">
-                                <LogTick>
-                                    Day {Math.floor(event.time / 1440) + 1} ·{' '}
-                                    {String(Math.floor((event.time % 1440) / 60)).padStart(2, '0')}:
-                                    {String(event.time % 60).padStart(2, '0')}
-                                </LogTick>
-                                <span>{event.message}</span>
-                            </LogRow>
-                        ))
+                        events.map((event) => {
+                            // Temporal calendar stamp — "Year 1 · Jan 1 · 00:10"
+                            const stamp = temporalCalendar(event.time);
+                            return (
+                                <LogRow key={event.id} data-testid="event-row">
+                                    <LogTick>
+                                        Year {stamp.year} · {stamp.monthName.slice(0, 3)}{' '}
+                                        {stamp.dayOfMonth} · {Padded(stamp.hour)}:
+                                        {Padded(stamp.minute)}
+                                    </LogTick>
+                                    <span>{event.message}</span>
+                                </LogRow>
+                            );
+                        })
                     )}
                 </LogList>
             ) : null}

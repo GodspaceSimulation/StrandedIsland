@@ -3,7 +3,14 @@
 // Step advances exactly one tick; Play/Pause toggles the realtime loop;
 // tick size redefines what one tick MEANS (minutes of world time); speed
 // scales ticks per real second while playing.
+//
+// The calendar readout comes from the @godspace/core temporal system
+// (packages/godspace/core/src/temporal): elapsed world minutes → the
+// year/season/month/day calendar. Standard shape — 3 months per season,
+// 365 days a year — is the temporal default, so the island just feeds it
+// the ticker's elapsed minutes.
 
+import { temporalCalendar, type TemporalCalendarPoint } from '@godspace/core';
 import { styled } from '../styles/styled';
 import { PALETTE } from '../styles/theme';
 import { ControlButton, ControlRow, ControlSelect, Panel, PanelTitle } from '../components/panel';
@@ -23,9 +30,12 @@ const TickLabel = styled('span', {
 
 const Padded = (value: number): string => String(value).padStart(2, '0');
 
-/** World clock line, e.g. "Day 2 · 07:30". */
-export const formatClock = (clock: { day: number; hour: number; minute: number }): string =>
-    `Day ${clock.day} · ${Padded(clock.hour)}:${Padded(clock.minute)}`;
+/**
+ * World clock line from the temporal calendar point, e.g.
+ * "Year 1 · Spring · Jan 1 · 00:00" — year, season, month-day, clock face.
+ */
+export const formatClock = (calendar: TemporalCalendarPoint): string =>
+    `Year ${calendar.year} · ${calendar.seasonName} · ${calendar.monthName.slice(0, 3)} ${calendar.dayOfMonth} · ${Padded(calendar.hour)}:${Padded(calendar.minute)}`;
 
 export const TickerControls = () => {
     const island = useWorld();
@@ -39,13 +49,17 @@ export const TickerControls = () => {
     const ticker = world.ticker;
     const running = ticker.running();
     const minutes = ticker.tickSize();
+    // The world calendar — derived from the ticker's elapsed minutes through
+    // the @godspace/core temporal system (3 months/season, 365 days/year)
+    const calendar = temporalCalendar(ticker.elapsed());
 
     return (
         <Panel>
             <PanelTitle>World Ticker</PanelTitle>
-            <ClockValue data-testid="world-clock">{formatClock(ticker.clock())}</ClockValue>
+            <ClockValue data-testid="world-clock">{formatClock(calendar)}</ClockValue>
             <TickLabel>
-                {ticker.ticks()} ticks × {minutes} min · {ticker.elapsed()} world minutes
+                {ticker.ticks()} ticks × {minutes} min · {calendar.dayOfYear} / 365 ·{' '}
+                {ticker.elapsed()} world minutes
             </TickLabel>
             <ControlRow>
                 <ControlButton

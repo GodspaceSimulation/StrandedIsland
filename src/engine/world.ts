@@ -2,7 +2,10 @@
 //
 // A world owns:
 //   canvas      — the island (a grid of voxel columns; built by the terrain
-//                 plugin)
+//                 plugin). Coordinates are CENTERED: (0, 0) is the dead
+//                 center of the canvas, so grid sizes must be odd — cells
+//                 run from −half to +half on both axes, and storage stays
+//                 row-major from the top-left corner cell
 //   coordinates — the 3D spatial record of the entire world (from
 //                 @godspace/core): every entity's X, Y, Z position lives
 //                 here, castaways clamped to the ground plane (Z = 0) and
@@ -171,14 +174,22 @@ export const createWorld = (options: WorldOptions = {}): World => {
         },
         cellAt: (x, y) => {
             const grid = canvasHolder.current;
-            if (y < 0 || y >= grid.height || x < 0 || x >= grid.width) {
+            // World coordinates are CENTERED: (0, 0) is the canvas middle
+            // (odd grid sizes only), so valid x/y run −half … +half
+            const halfX = (grid.width - 1) / 2;
+            const halfY = (grid.height - 1) / 2;
+            if (y < -halfY || y > halfY || x < -halfX || x > halfX) {
                 return undefined;
             }
-            return grid.cells[y * grid.width + x];
+            // Row-major storage from the top-left corner cell (−halfX, −halfY)
+            return grid.cells[(y + halfY) * grid.width + (x + halfX)];
         },
         inBounds: (x, y) => {
             const grid = canvasHolder.current;
-            return x >= 0 && x < grid.width && y >= 0 && y < grid.height;
+            // Centered bounds: |x| ≤ halfX, |y| ≤ halfY (odd dims → exact)
+            const halfX = (grid.width - 1) / 2;
+            const halfY = (grid.height - 1) / 2;
+            return x >= -halfX && x <= halfX && y >= -halfY && y <= halfY;
         },
         actorAt: (x, y, z = GROUND_LEVEL) => {
             let found: Actor | undefined;
