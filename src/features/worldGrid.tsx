@@ -9,7 +9,8 @@
 //             (surface palette), one glyph letter per entity
 //   Unicode — the unicode canvas plugin: the emoji twin — semantic emoji
 //             per entity (resolved from the kind/type taxonomy), terrain
-//             drawn as color only (no per-tile emoji flood), same colors
+//             drawn as color only (no per-tile emoji flood), same colors.
+//             THE DEFAULT VIEW
 //   SVG     — the svg canvas plugin: the vector twin — the world as a
 //             scalable SVG document (one rect per ground cell, one text per
 //             entity, native <title> hovers); geometry on the SAME 26px
@@ -35,7 +36,6 @@ import {
     type SvgFrame,
     type UnicodeFrame,
 } from '@godspace/canvas';
-import type { Biome } from '../engine/types';
 import type { IslandHandle } from '../scenario/island';
 import { PALETTE } from '../styles/theme';
 import { styled } from '../styles/styled';
@@ -158,16 +158,33 @@ const TableData = styled('td', {
     fontVariantNumeric: 'tabular-nums',
 });
 
-/** Legend order — the island's surface ladder. */
-const BIOME_ORDER: Biome[] = ['ocean', 'shallows', 'beach', 'meadow', 'forest', 'highland'];
+/**
+ * Legend order — the island's surface ladder. Resource surfaces first-class
+ * (the tiles appear as the deposits they carry — wood, stone, iron and the
+ * unlimited sand/dirt), then the plain biome fallbacks that surface when a
+ * tile's finite deposits are gathered away (or on sea columns).
+ */
+const SURFACE_ORDER: string[] = [
+    'ocean',
+    'shallows',
+    'wood',
+    'stone',
+    'iron',
+    'sand',
+    'dirt',
+    'beach',
+    'meadow',
+    'forest',
+    'highland',
+];
 
 export const WorldGrid = () => {
     const island = useWorld();
     const revision = useRevision();
     const selected = useSelection();
     const inspected = useTile();
-    // Active representation tab — ASCII stays the default view
-    const tab = useStateHook<CanvasTab>('ascii');
+    // Active representation tab — the emoji (unicode) view is the default
+    const tab = useStateHook<CanvasTab>('unicode');
     if (!island) {
         return null;
     }
@@ -328,10 +345,10 @@ const AsciiView = ({
             })}
         </Grid>
         <Legend data-testid="grid-legend">
-            {BIOME_ORDER.map((biome) => (
-                <LegendItem key={biome} color={palette[biome]}>
-                    <LegendSwatch color={palette[biome]} />
-                    {biome}
+            {SURFACE_ORDER.map((surface) => (
+                <LegendItem key={surface} color={palette[surface]}>
+                    <LegendSwatch color={palette[surface]} />
+                    {surface}
                 </LegendItem>
             ))}
         </Legend>
@@ -395,10 +412,10 @@ const UnicodeView = ({
         </Grid>
         {/* Terrain is color-only here — the legend matches the ascii view */}
         <Legend data-testid="grid-legend-unicode">
-            {BIOME_ORDER.map((biome) => (
-                <LegendItem key={biome} color={palette[biome]}>
-                    <LegendSwatch color={palette[biome]} />
-                    {biome}
+            {SURFACE_ORDER.map((surface) => (
+                <LegendItem key={surface} color={palette[surface]}>
+                    <LegendSwatch color={palette[surface]} />
+                    {surface}
                 </LegendItem>
             ))}
         </Legend>
@@ -520,10 +537,10 @@ const SvgView = ({
         </SvgBoard>
         {/* Terrain is color-only here — the legend matches the ascii view */}
         <Legend data-testid="grid-legend-svg">
-            {BIOME_ORDER.map((biome) => (
-                <LegendItem key={biome} color={palette[biome]}>
-                    <LegendSwatch color={palette[biome]} />
-                    {biome}
+            {SURFACE_ORDER.map((surface) => (
+                <LegendItem key={surface} color={palette[surface]}>
+                    <LegendSwatch color={palette[surface]} />
+                    {surface}
                 </LegendItem>
             ))}
         </Legend>

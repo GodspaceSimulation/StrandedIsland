@@ -1,16 +1,20 @@
 // Tile Inspector — details of whichever canvas tile the god clicked.
 //
 // Clicking ANY tile (worldGrid.tsx) selects its column through the bridge;
-// this panel shows all three layers of that column:
-//   Terrain   — biome, height vs the water line, walkability, and the voxel
-//               stack bottom → top (runs merged, e.g. "stone ×3, soil, grass")
-//   Ground    — what lies on the terrain (the inventory plugin's cell stock;
-//               sea tiles stock fish, beaches hide shells…)
-//   Residents — EVERY living thing in the column: people, birds, any creature
-//               a plugin coins — actors in the broad sense. All live in the
-//               world's coordinate space (world.coordinates.column), grounded
-//               first. Castaway rows are buttons that open the full actor
-//               inspector (features/actorPanel.tsx) for that actor.
+// this panel shows the layers of that column:
+//   Position   — coordinates + the surface key the canvas paints the tile
+//                with (derived from the tile's resource deposits)
+//   Terrain    — height vs the water line, walkability, and the voxel stack
+//                bottom → top (runs merged, e.g. "stone ×3, soil, grass")
+//   Resources  — the tile's resource deposits (wood, stone, iron and the
+//                unlimited sand/dirt) — what the tile appears as
+//   Ground     — what lies on the terrain (the inventory plugin's cell stock;
+//                sea tiles stock fish, beaches hide shells…)
+//   Residents  — EVERY living thing in the column: people, birds, any creature
+//                a plugin coins — actors in the broad sense. All live in the
+//                world's coordinate space (world.coordinates.column), grounded
+//                first. Castaway rows are buttons that open the full actor
+//                inspector (features/actorPanel.tsx) for that actor.
 //
 // Rendered in the GridSection right below the island canvas (dashboard.tsx).
 
@@ -136,7 +140,7 @@ export const TilePanel = () => {
                     <Row>
                         <RowName>Position</RowName>
                         <span data-testid="tile-position">
-                            ({summary.x}, {summary.y}) · {summary.biome}
+                            ({summary.x}, {summary.y}) · {summary.surface}
                         </span>
                     </Row>
                     <Row>
@@ -150,6 +154,23 @@ export const TilePanel = () => {
                         <RowName>Voxels</RowName>
                         <VoxelStack data-testid="tile-voxels">
                             {voxelSummary(summary.voxels) || '—'}
+                        </VoxelStack>
+                    </Row>
+                    <Row>
+                        <RowName>Resources</RowName>
+                        {/* The deposits the tile carries — what it appears as
+                            on the canvas (wood ×2 · sand ×∞; unlimited
+                            deposits can never be exhausted) */}
+                        <VoxelStack data-testid="tile-resources">
+                            {summary.resources.length === 0
+                                ? '—'
+                                : summary.resources
+                                      .map((stack) =>
+                                          stack.unlimited
+                                              ? `${stack.resource} ×∞`
+                                              : `${stack.resource} ×${stack.count}`,
+                                      )
+                                      .join(' · ')}
                         </VoxelStack>
                     </Row>
                     <div>

@@ -1,8 +1,14 @@
 // Tile inspection logic — the pure, framework-free half of the Tile
 // Inspector feature (tilePanel.tsx renders it).
 //
-// Clicking ANY canvas tile shows three layers of detail for its column:
+// Clicking ANY canvas tile shows four layers of detail for its column:
 //   terrain   — the voxel column itself (biome, height, walkability, stack)
+//               plus the surface key the canvas paints it with (derived
+//               from the tile's resource deposits — see
+//               plugins/terrain/islandTerrain.ts tileSurfaceKey)
+//   resources — the tile's resource DEPOSITS (wood, stone, iron and the
+//               unlimited sand/dirt), the truth the canvas appearance and
+//               the gatherable cell stock both hang off
 //   ground    — what lies on the terrain (the inventory plugin's cell stock;
 //               sea cells stock fish, so "what is on the terrain" covers
 //               water tiles too)
@@ -16,10 +22,12 @@
 //               Grounded residents list before flyers (column() sorts by
 //               ascending Z).
 
-import type { VoxelKind } from '../engine/types';
+import type { TileResource, TileResources, VoxelKind } from '../engine/types';
+import { TILE_RESOURCES, UNLIMITED_TILE_RESOURCES } from '../engine/types';
 import type { IslandHandle } from '../scenario/island';
 import type { CoordinateEntry } from '@godspace/core';
 import { inventoryEntries } from '../plugins/inventory/inventory';
+import { tileSurfaceKey } from '../plugins/terrain/islandTerrain';
 
 // ── Voxel stack ──────────────────────────────────────────────────────────────
 
@@ -112,6 +120,29 @@ export const occupantLine = (occupant: TileOccupant): string => {
 export const tileGround = (island: IslandHandle, x: number, y: number) =>
     inventoryEntries(island.inventory.cellStock(x, y));
 
+// ── Tile resource deposits ───────────────────────────────────────────────────
+
+/** One deposit on the inspected tile, shaped for display. */
+export type TileResourceStack = {
+    resource: TileResource;
+    /** Deposit count (unlimited deposits keep a symbolic count of 1). */
+    count: number;
+    /** Whether the deposit can never be exhausted (sand, dirt). */
+    unlimited: boolean;
+};
+
+/**
+ * The tile's resource deposits, in TILE_RESOURCES order (wood, stone, iron,
+ * sand, dirt). Deposits are what the tile APPEARS as on the canvas and what
+ * its gatherable cell stock hangs off.
+ */
+export const tileResources = (resources?: TileResources): TileResourceStack[] =>
+    TILE_RESOURCES.filter((resource) => (resources?.[resource] ?? 0) > 0).map((resource) => ({
+        resource,
+        count: resources?.[resource] ?? 0,
+        unlimited: (UNLIMITED_TILE_RESOURCES as readonly string[]).includes(resource),
+    }));
+
 // ── Whole-tile summary ───────────────────────────────────────────────────────
 
 /** Everything the Tile Inspector needs for one column, or null out of bounds. */
@@ -119,6 +150,12 @@ export type TileSummary = {
     x: number;
     y: number;
     biome: string;
+    /**
+     * The surface key the canvas paints the tile with — the tile's
+     * top-priority deposit, falling back to the plain biome
+     * (plugins/terrain/islandTerrain.ts tileSurfaceKey).
+     */
+    surface: string;
     /** Dry ground height in voxels. */
     height: number;
     /** Absolute water line of the canvas. */
@@ -127,6 +164,8 @@ export type TileSummary = {
     passable: boolean;
     /** The full voxel stack, bottom → top. */
     voxels: VoxelKind[];
+    /** The tile's resource deposits (wood/stone/iron/sand/dirt). */
+    resources: TileResourceStack[];
     /** Non-zero ground stock stacks. */
     ground: Array<{ item: string; count: number }>;
     /** All living things in the column, grounded first. */
@@ -147,10 +186,12 @@ export const tileSummary = (island: IslandHandle, x: number, y: number): TileSum
         x: cell.x,
         y: cell.y,
         biome: cell.biome,
+        surface: tileSurfaceKey(cell) ?? cell.biome,
         height: cell.height,
         waterLevel: cell.waterLevel,
         passable: cell.passable,
         voxels: cell.voxels,
+        resources: tileResources(cell.resources),
         ground: tileGround(island, x, y),
         occupants: tileOccupants(island, x, y),
     };

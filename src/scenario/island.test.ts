@@ -182,18 +182,27 @@ describe('createIslandWorld', () => {
         expect(frame.rows).toBe(25);
         expect(frame.tiles.length).toBe(925);
         // Ael stands on the shore at (17,−11): tile 1×37+35 = 72 carries his
-        // grounded glyph — a sentient of the human race
+        // grounded glyph — a sentient of the human race — on a sand tile
         expect(frame.tiles[72].glyphs).toEqual([
             { id: 'actor-1', glyph: 'A', color: '#5cb85c', elevation: 0, kind: 'sentient', type: 'human', state: 'well' },
         ]);
-        expect(frame.tiles[72].title).toBe('beach · height 3 · stone / soil / sand · Ael · well');
+        expect(frame.tiles[72].title).toBe('beach · height 3 · stone / soil / sand · sand ×∞ · Ael · well');
+        // The tile appears as the resource it carries: the beach's unlimited
+        // sand deposit paints it with the sand palette color
+        expect(frame.tiles[72].background).toBe('#d3bd85');
         // Kiki wheels at the center (0,0): tile 12×37+18 = 462 carries the
         // flying glyph with her altitude superscript — a creature of type bird
         expect(frame.tiles[462].glyphs).toEqual([
             { id: 'bird-1', glyph: 'K', color: '#7ec8e3', elevation: 2, kind: 'creature', type: 'bird', state: 'flying' },
         ]);
         expect(frame.tiles[462].title).toBe(
-            'meadow · height 5 · stone / stone / stone / soil / grass · Kiki · flying · z 2',
+            'meadow · height 5 · stone / stone / stone / soil / grass · dirt ×∞ · Kiki · flying · z 2',
+        );
+        // An iron lode tile: (−5,2) → tile 14×37+13 = 531 surfaces as iron,
+        // the vein noise's pick among the highlands
+        expect(frame.tiles[531].background).toBe('#b87333');
+        expect(frame.tiles[531].title).toBe(
+            'highland · height 7 · stone / stone / stone / stone / stone / soil / stone · stone ×1 · iron ×1',
         );
     });
 
@@ -217,6 +226,10 @@ describe('createIslandWorld', () => {
         // Empty sea tiles stay BARE — terrain shows as color only, no
         // per-tile emoji flood (the unicode fix)
         expect(frame.tiles[0].glyphs).toEqual([]);
+        // The unicode tab paints the SAME resource-driven surfaces: the
+        // meadow under Kiki is a dirt tile, Ael's shore a sand tile
+        expect(frame.tiles[462].background).toBe('#5d4425');
+        expect(frame.tiles[72].background).toBe('#d3bd85');
         // The emoji palettes resolve through the legend source: types carry
         // the species glyphs, kinds the coarse fallbacks
         expect(handle.unicode.palette().types.bird).toBe('🐦');
@@ -266,14 +279,17 @@ describe('createIslandWorld', () => {
             ['actor-3', 'sentient', 'human', 'Cove', 'well', -11, -4, 0],
             ['actor-4', 'sentient', 'human', 'Dune', 'well', -8, 3, 0],
         ]);
-        // Terrain census: cell counts per biome, alphabetical
+        // Terrain census: cell counts per SURFACE key (the tiles appear as
+        // the resources they carry — dirt/sand/wood/stone/iron — with plain
+        // water left as biome), alphabetical
         expect(frame.tables[1].rows).toEqual([
-            ['beach', 438],
-            ['forest', 90],
-            ['highland', 9],
-            ['meadow', 138],
+            ['dirt', 138],
+            ['iron', 3],
             ['ocean', 103],
+            ['sand', 438],
             ['shallows', 147],
+            ['stone', 6],
+            ['wood', 90],
         ]);
         // Canvas overview: the 37×25 frame
         expect(frame.tables[2].rows).toEqual([

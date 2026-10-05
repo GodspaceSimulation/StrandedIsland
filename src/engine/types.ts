@@ -34,6 +34,30 @@ export type VoxelKind = 'air' | 'water' | 'sand' | 'soil' | 'grass' | 'forest' |
  */
 export type Biome = 'ocean' | 'shallows' | 'beach' | 'meadow' | 'forest' | 'highland';
 
+// ── Tile resources ───────────────────────────────────────────────────────────
+// Every tile carries RESOURCE DEPOSITS — the gatherable materials standing on
+// it (timber in forests, ore veins in the highlands, sand on the beaches).
+// Deposits are a property of the tile itself (written by the terrain
+// generator, kept in sync with the inventory plugin's gatherable cell stocks)
+// and they drive the tile's canvas appearance: a tile shows up as the
+// resource it holds (see plugins/terrain/islandTerrain.ts tileSurfaceKey).
+
+/** The resource kinds a tile can carry as a deposit. */
+export type TileResource = 'wood' | 'stone' | 'iron' | 'sand' | 'dirt';
+
+/** All tile resource kinds, in deposit-priority order (see tileSurfaceKey). */
+export const TILE_RESOURCES: readonly TileResource[] = ['wood', 'stone', 'iron', 'sand', 'dirt'];
+
+/**
+ * Unlimited resources — deposits that can never be exhausted (you cannot
+ * dig the beach empty). Gathering them never decrements the tile's deposit,
+ * so their tiles always appear as the resource they are made of.
+ */
+export const UNLIMITED_TILE_RESOURCES: readonly TileResource[] = ['sand', 'dirt'];
+
+/** Deposit counts per resource kind on one tile (absent = no deposit). */
+export type TileResources = Partial<Record<TileResource, number>>;
+
 /** One voxel column of the canvas at grid position (x, y). */
 export type TerrainCell = {
     /**
@@ -45,7 +69,7 @@ export type TerrainCell = {
     y: number;
     /** Voxel stack, bottom → top. Length === height when dry; water fills above. */
     voxels: VoxelKind[];
-    /** Solid ground height in voxel units (dry land part of the stack). */
+    /** Solid ground height in voxel units (dry ground voxels). */
     height: number;
     /** Absolute water line for the whole canvas (voxel units). */
     waterLevel: number;
@@ -53,6 +77,12 @@ export type TerrainCell = {
     biome: Biome;
     /** Whether an actor can stand on this cell (dry land only). */
     passable: boolean;
+    /**
+     * Resource deposits standing on this tile (see TileResources). Empty for
+     * water columns; seeded by the terrain generator, drawn down by
+     * gathering (except unlimited resources — never depleted).
+     */
+    resources: TileResources;
 };
 
 /** The canvas: a width × height grid of voxel columns, row-major. */

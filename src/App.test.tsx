@@ -15,8 +15,8 @@ describe('App', () => {
         // Seed 7, tickSize 10 — the temporal calendar starts Year 1, Spring,
         // January 1 at 00:00
         expect(screen.getByTestId('world-clock').textContent).toBe('Year 1 · Spring · Jan 1 · 00:00');
-        // Default island is 37×25 = 925 voxel cells
-        expect(screen.getByTestId('world-grid').children.length).toBe(925);
+        // Default view is the unicode (emoji) canvas — 925 voxel cells
+        expect(screen.getByTestId('world-grid-unicode').children.length).toBe(925);
         // All four castaways are on the board
         expect(screen.getByTestId('actor-chip-Ael').textContent).toContain('Ael');
         expect(screen.getByTestId('actor-chip-Bram').textContent).toContain('Bram');
@@ -28,13 +28,13 @@ describe('App', () => {
             'Island Terrain · Inventories & Exchange · Survival Needs · Relationships · Agent Behavior · Seabirds · ASCII Canvas · Unicode Canvas · SVG Canvas · Data Canvas',
         );
         // Kiki wheels above the island center (0,0) at z 2 — tile index
-        // (0+12)×37+(0+18) = 462, her altitude drawn as a superscript glyph
-        const grid = screen.getByTestId('world-grid');
-        expect((grid.children[462] as HTMLElement).textContent).toBe('K²');
+        // (0+12)×37+(0+18) = 462, her altitude drawn as a superscript emoji
+        const grid = screen.getByTestId('world-grid-unicode');
+        expect((grid.children[462] as HTMLElement).textContent).toBe('🐦²');
         expect((grid.children[462] as HTMLElement).title).toContain('Kiki · flying · z 2');
         // Ael came ashore at the island edge (17,−11) — tile (−11+12)×37+(17+18)
-        // = 72, plain glyph, no altitude
-        expect((grid.children[72] as HTMLElement).textContent).toBe('A');
+        // = 72, the human emoji, no altitude
+        expect((grid.children[72] as HTMLElement).textContent).toBe('🧍');
         expect((grid.children[72] as HTMLElement).title).toContain('Ael · well');
     });
 
@@ -156,16 +156,19 @@ describe('App', () => {
         render(<App seed={7} />);
         // Before any click the Tile Inspector waits for a pick
         expect(screen.getByTestId('tile-empty').textContent).toBe('Click a tile to inspect it.');
-        // Tile (−10,−11) — a quiet beach: no glyph, coconut + hidden shell
-        fireEvent.click(screen.getByTestId('grid-tile--10--11'));
-        expect(screen.getByTestId('tile-position').textContent).toBe('(-10, -11) · beach');
+        // Tile (−10,−11) — a quiet beach: no glyph. It surfaces as SAND (the
+        // unlimited deposit decides the tile's look) with a coconut + hidden
+        // shell on the ground. Clicked on the default unicode board.
+        fireEvent.click(screen.getByTestId('unicode-tile--10--11'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-10, -11) · sand');
+        expect(screen.getByTestId('tile-resources').textContent).toBe('sand ×∞');
         expect(screen.getByTestId('tile-terrain-meta').textContent).toBe(
             'height 3 · water line 3 · walkable',
         );
         expect(screen.getByTestId('tile-voxels').textContent).toBe('stone, soil, sand');
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
-        ).toEqual(['1 Coconut', '1 Shell']);
+        ).toEqual(['1 Sand', '1 Coconut', '1 Shell']);
         // Nobody lives here
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
@@ -177,9 +180,11 @@ describe('App', () => {
     it('clicking a sea tile shows the submerged voxel column with its fish stock', () => {
         render(<App seed={7} />);
         // Tile (−18,−12) — the top-left corner: shallow seabed under one
-        // water voxel, fish swim here
-        fireEvent.click(screen.getByTestId('grid-tile--18--12'));
+        // water voxel, fish swim here; sea columns carry no deposits, so
+        // the tile keeps its plain biome surface
+        fireEvent.click(screen.getByTestId('unicode-tile--18--12'));
         expect(screen.getByTestId('tile-position').textContent).toBe('(-18, -12) · shallows');
+        expect(screen.getByTestId('tile-resources').textContent).toBe('—');
         expect(screen.getByTestId('tile-terrain-meta').textContent).toBe(
             'height 2 · water line 3 · submerged',
         );
@@ -194,10 +199,11 @@ describe('App', () => {
 
     it('clicking a castaway tile opens both the tile inspector and the actor inspector', () => {
         render(<App seed={7} />);
-        // Tile (17,−11) — Ael's shore landing spot, coconut on the ground
-        fireEvent.click(screen.getByTestId('grid-tile-17--11'));
+        // Tile (17,−11) — Ael's shore landing spot, unlimited sand + a
+        // coconut on the ground
+        fireEvent.click(screen.getByTestId('unicode-tile-17--11'));
         // Tile layer: terrain + stock + Ael as the resident
-        expect(screen.getByTestId('tile-position').textContent).toBe('(17, -11) · beach');
+        expect(screen.getByTestId('tile-position').textContent).toBe('(17, -11) · sand');
         expect(screen.getByTestId('tile-ground').textContent).toContain('1 Coconut');
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
@@ -209,17 +215,19 @@ describe('App', () => {
 
     it('clicking a bird tile shows the bird as a resident but no actor card', () => {
         render(<App seed={7} />);
-        // Tile (0,0) — the canvas middle: meadow under Kiki the flying gull (z 2)
-        fireEvent.click(screen.getByTestId('grid-tile-0-0'));
-        expect(screen.getByTestId('tile-position').textContent).toBe('(0, 0) · meadow');
+        // Tile (0,0) — the canvas middle: a meadow (dirt tile) under Kiki
+        // the flying gull (z 2)
+        fireEvent.click(screen.getByTestId('unicode-tile-0-0'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(0, 0) · dirt');
+        expect(screen.getByTestId('tile-resources').textContent).toBe('dirt ×∞');
         // All living things are actors: the bird is listed as a resident
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['Kiki — bird · flying · z 2']);
-        // Meadow floor: berries on the ground
+        // Meadow floor: unlimited dirt + berries on the ground
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
-        ).toEqual(['2 Berries']);
+        ).toEqual(['1 Dirt', '2 Berries']);
         // …but birds stay out of the castaway inspector — no actor card opens
         expect(screen.queryByTestId('actor-inventory')).toBeNull();
         expect(screen.getByTestId('actor-panel-empty').textContent).toBe(
@@ -230,13 +238,13 @@ describe('App', () => {
     it('the tile inspector follows every subsequent click', () => {
         render(<App seed={7} />);
         // First inspect Dune's meadow landing spot…
-        fireEvent.click(screen.getByTestId('grid-tile--8-3'));
-        expect(screen.getByTestId('tile-position').textContent).toBe('(-8, 3) · meadow');
+        fireEvent.click(screen.getByTestId('unicode-tile--8-3'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-8, 3) · dirt');
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['Dune — human · well']);
         // …then hop over to a submerged shallows tile
-        fireEvent.click(screen.getByTestId('grid-tile--18--12'));
+        fireEvent.click(screen.getByTestId('unicode-tile--18--12'));
         expect(screen.getByTestId('tile-position').textContent).toBe('(-18, -12) · shallows');
         expect(screen.getByTestId('tile-terrain-meta').textContent).toBe(
             'height 2 · water line 3 · submerged',
@@ -255,7 +263,7 @@ describe('App', () => {
 
     it('a resident row opens the full actor card for castaways', () => {
         render(<App seed={7} />);
-        fireEvent.click(screen.getByTestId('grid-tile-17--11'));
+        fireEvent.click(screen.getByTestId('unicode-tile-17--11'));
         // The resident row for Ael is a button — click it to focus the
         // actor inspector on him
         fireEvent.click(screen.getByText('Ael — human · well'));
@@ -265,22 +273,20 @@ describe('App', () => {
 
     it('the canvas area tabs between Data, ASCII, Unicode and SVG representations', () => {
         render(<App seed={7} />);
-        // ASCII is the default tab
-        expect(screen.getByTestId('canvas-tab-ascii')).toBeDefined();
-        expect(screen.getByTestId('world-grid')).toBeDefined();
-        expect(screen.queryByTestId('world-grid-unicode')).toBeNull();
+        // Unicode (emoji) is the default tab
+        expect(screen.getByTestId('canvas-tab-unicode')).toBeDefined();
+        expect(screen.getByTestId('world-grid-unicode')).toBeDefined();
+        expect(screen.queryByTestId('world-grid')).toBeNull();
         expect(screen.queryByTestId('world-grid-svg')).toBeNull();
         expect(screen.queryByTestId('data-tables')).toBeNull();
 
-        // ── Unicode tab — the emoji twin ──────────────────────────────────
-        fireEvent.click(screen.getByTestId('canvas-tab-unicode'));
-        // Same 925 tiles at the emoji tile size
-        expect(screen.getByTestId('world-grid-unicode').children.length).toBe(925);
-        // Kiki renders as the bird emoji with her altitude superscript at
-        // the center (0,0) — tile 462
+        // ── The default unicode view ─────────────────────────────────────
+        // Same 925 tiles at the emoji tile size; Kiki renders as the bird
+        // emoji with her altitude superscript at the center (0,0) — tile
+        // 462; Ael as the human emoji at his shore spot (17,−11) — tile 72
         const uni = screen.getByTestId('world-grid-unicode');
+        expect(uni.children.length).toBe(925);
         expect((uni.children[462] as HTMLElement).textContent).toBe('🐦²');
-        // Ael as the human emoji at his shore spot (17,−11) — tile 72
         expect((uni.children[72] as HTMLElement).textContent).toBe('🧍');
         // Empty tiles stay BARE — no per-tile terrain emoji flood
         // (top-left corner shallows, tile 0: background color only)
@@ -288,6 +294,11 @@ describe('App', () => {
         // Clicks still inspect: Ael's emoji tile opens the actor inspector
         fireEvent.click(screen.getByTestId('unicode-tile-17--11'));
         expect(screen.getByTestId('actor-condition').textContent).toBe('Ael · well');
+
+        // ── ASCII tab — the letter twin ──────────────────────────────────
+        fireEvent.click(screen.getByTestId('canvas-tab-ascii'));
+        expect(screen.getByTestId('world-grid').children.length).toBe(925);
+        expect((screen.getByTestId('world-grid').children[72] as HTMLElement).textContent).toBe('A');
 
         // ── SVG tab — the vector twin ─────────────────────────────────────
         fireEvent.click(screen.getByTestId('canvas-tab-svg'));
@@ -324,14 +335,16 @@ describe('App', () => {
         expect(positions.textContent).toContain('bird-1');
         expect(positions.textContent).toContain('Ael');
         expect(positions.textContent).toContain('17');
-        // Terrain census + canvas overview
-        expect(screen.getByTestId('data-table-terrain').textContent).toContain('beach');
+        // Terrain census + canvas overview — the census counts SURFACE keys
+        // (tiles appear as the resources they carry: dirt/sand/wood/stone/iron)
+        expect(screen.getByTestId('data-table-terrain').textContent).toContain('sand');
+        expect(screen.getByTestId('data-table-terrain').textContent).toContain('iron');
         expect(screen.getByTestId('data-table-canvas').textContent).toContain('925');
 
-        // ── Back to ASCII ─────────────────────────────────────────────────
-        fireEvent.click(screen.getByTestId('canvas-tab-ascii'));
-        expect(screen.getByTestId('world-grid').children.length).toBe(925);
-        expect((screen.getByTestId('world-grid').children[72] as HTMLElement).textContent).toBe('A');
+        // ── Back to Unicode — the default view ────────────────────────────
+        fireEvent.click(screen.getByTestId('canvas-tab-unicode'));
+        expect(screen.getByTestId('world-grid-unicode').children.length).toBe(925);
+        expect((screen.getByTestId('world-grid-unicode').children[72] as HTMLElement).textContent).toBe('🧍');
     });
 
     it('every tile canvas occupies the SAME tile grid as the ascii canvas', () => {
@@ -351,7 +364,10 @@ describe('App', () => {
                 new RegExp(`\\.${className}[^{]*\\{[^}]*grid-template-columns:[^;}]*`),
             )?.[0] ?? '').replace(/\s+/g, '');
         // Capture each board's class while ITS tab is mounted (one canvas at
-        // a time renders, but emotion rules persist across tab switches)
+        // a time renders, but emotion rules persist across tab switches) —
+        // the unicode board mounts by default, so the ascii board is
+        // mounted by clicking its tab first
+        fireEvent.click(screen.getByTestId('canvas-tab-ascii'));
         const asciiClass = (screen.getByTestId('world-grid') as HTMLElement).className;
         fireEvent.click(screen.getByTestId('canvas-tab-unicode'));
         const unicodeClass = (screen.getByTestId('world-grid-unicode') as HTMLElement).className;
@@ -379,15 +395,15 @@ describe('App', () => {
         expect((screen.getByTestId('world-size-apply') as HTMLButtonElement).disabled).toBe(false);
         fireEvent.change(screen.getByTestId('world-size-height'), { target: { value: '13' } });
         fireEvent.click(screen.getByTestId('world-size-apply'));
-        // The canvas regenerated — 21×13 = 273 tiles
+        // The canvas regenerated — 21×13 = 273 tiles (the default emoji view)
         expect(screen.getByTestId('world-size-current').textContent).toBe('21 × 13');
-        expect(screen.getByTestId('world-grid').children.length).toBe(273);
+        expect(screen.getByTestId('world-grid-unicode').children.length).toBe(273);
         // The pickers reset to the live size after applying
         expect((screen.getByTestId('world-size-width') as HTMLSelectElement).value).toBe('21');
         expect((screen.getByTestId('world-size-height') as HTMLSelectElement).value).toBe('13');
         expect((screen.getByTestId('world-size-apply') as HTMLButtonElement).disabled).toBe(true);
         // Kiki still wheels above the center (0,0) — tile (0+6)×21+(0+10) = 136
-        expect((screen.getByTestId('world-grid').children[136] as HTMLElement).textContent).toBe('K²');
+        expect((screen.getByTestId('world-grid-unicode').children[136] as HTMLElement).textContent).toBe('🐦²');
         // The cast is still on the board (settled onto dry land if needed)
         expect(screen.getByTestId('actor-chip-Ael').textContent).toContain('Ael');
         expect(screen.getByTestId('actor-chip-Dune').textContent).toContain('Dune');

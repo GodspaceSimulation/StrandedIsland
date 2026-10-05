@@ -1,16 +1,26 @@
 // The inventory environment plugin.
 //
 // Gives every actor a personal inventory, fills the canvas with resource
-// stocks by biome (berries in meadows, wood in forests, fish in the sea,
-// coconuts on beaches, stone/flint on highlands), grows them back over time,
-// rains fresh water onto land, and exposes the gathering + exchange actions
-// that other plugins (behavior) and the god-view drive.
+// stocks by tile deposit (timber in forests, berries in meadows, fish in the
+// sea, coconuts on beaches, stone/iron/flint on highlands, and the UNLIMITED
+// sands and dirts of beaches and meadows), grows them back over time, rains
+// fresh water onto land, and exposes the gathering + exchange actions that
+// other plugins (behavior) and the god-view drive.
+//
+// TILE DEPOSITS: every canvas cell carries `resources` (engine/types.ts
+// TileResources) — written by the terrain generator, kept in sync here. The
+// survey seeds each cell's gatherable stock from its deposits; taking a
+// deposit resource draws the tile's deposit down too (except the UNLIMITED
+// sand/dirt — never depleted), and regrowth grows the deposit back. That
+// keeps the tile's canvas appearance (scenario surfaceOf → tileSurfaceKey)
+// reading the same truth the actors gather from.
 //
 // INSTALL ORDER: after the terrain plugin — setup scans the canvas to seed
 // resources. Without a canvas it simply starts with no resources.
 
 import { arrayEach } from '@presource/core';
-import type { Actor, TerrainCell } from '../../engine/types';
+import type { Actor, TerrainCell, TileResource } from '../../engine/types';
+import { TILE_RESOURCES, UNLIMITED_TILE_RESOURCES } from '../../engine/types';
 import type { PluginContext, WorldPlugin } from '../../engine/plugin';
 import type { World } from '../../engine/world';
 import { itemDef, itemLabel } from './items';
@@ -35,7 +45,8 @@ const REGROW_CAPS: Record<string, number> = {
     fish: 1,
     coconut: 2,
     water: 2,
-    // shell / stone / flint are finite — no regrowth
+    // shell / stone / iron / flint are finite — no regrowth
+    // sand / dirt are unlimited — never depleted, never regrown
 };
 
 /** Regrowth rhythm per item: fires when `tick % every === offset`. */
@@ -46,14 +57,23 @@ const REGROW_RHYTHM: Record<string, { every: number; offset: number }> = {
     coconut: { every: 6, offset: 1 },
 };
 
-/** What each biome naturally stocks when the island is surveyed. */
+/** What each biome stocks as FOOD when the island is surveyed. The tile
+ * deposits (wood, stone, iron, sand, dirt) come from the cells themselves —
+ * see the survey below. */
 const BIOME_STOCKS: Record<string, Inventory> = {
     meadow: { berry: 2 },
-    forest: { berry: 1, wood: 2 },
+    forest: { berry: 1 },
     beach: { coconut: 1 },
-    highland: { stone: 1 },
     // Water cells hold fish, not drinking water (salt water)
 };
+
+/** Whether an item id is a tile deposit resource (wood/stone/iron/sand/dirt). */
+const isTileResource = (itemId: string): itemId is TileResource =>
+    (TILE_RESOURCES as readonly string[]).includes(itemId);
+
+/** Whether an item id is an UNLIMITED deposit (sand/dirt — never depleted). */
+const isUnlimitedResource = (itemId: string): boolean =>
+    (UNLIMITED_TILE_RESOURCES as readonly string[]).includes(itemId);
 
 /** Human readable "1 Fish"/"2 Berries" fragment for log lines. */
 const label = itemLabel;
@@ -116,8 +136,10 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
         return fresh;
     };
 
-    // Internal: grows a stock toward its cap on the item's regrowth rhythm
-    const regrow = (stock: Inventory, itemId: string, tick: number) => {
+    // Internal: grows a stock toward its cap on the item's regrowth rhythm.
+    // Tile-deposit resources (wood) grow their tile's deposit back with the
+    // stock — the forest regrows where the timber was cut.
+    const regrow = (stock: Inventory, itemId: string, tick: number, x: number, y: number) => {
         const rhythm = REGROW_RHYTHM[itemId];
         if (!rhythm) {
             return;
@@ -130,21 +152,71 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
         const cap = REGROW_CAPS[itemId] ?? 0;
         if (current < cap) {
             stock[itemId] = current + 1;
+            growDeposit(x, y, itemId);
+        }
+    };
+
+    // Internal: keeps a tile's deposit in step with its gatherable stock.
+    // Finite deposits (wood, stone, iron) follow the stock — taking one
+    // draws the tile's deposit down (deleting the entry at 0, which re-skins
+    // the tile to its plain biome through tileSurfaceKey). Unlimited
+    // deposits (sand, dirt) are never touched: a tile's sand cannot run out.
+    const drawDeposit = (x: number, y: number, itemId: string) => {
+        if (!isTileResource(itemId) || isUnlimitedResource(itemId)) {
+            return;
+        }
+        const cell = world?.cellAt(x, y);
+        if (!cell) {
+            return;
+        }
+        const remaining = (cell.resources[itemId] ?? 0) - 1;
+        if (remaining > 0) {
+            cell.resources[itemId] = remaining;
+        } else {
+            delete cell.resources[itemId];
+        }
+    };
+
+    // Internal: grows a tile's deposit back with its regrowing stock
+    // (capped by the same REGROW_CAPS the stock obeys).
+    const growDeposit = (x: number, y: number, itemId: string) => {
+        if (!isTileResource(itemId) || isUnlimitedResource(itemId)) {
+            return;
+        }
+        const cell = world?.cellAt(x, y);
+        if (!cell) {
+            return;
+        }
+        const cap = REGROW_CAPS[itemId] ?? 0;
+        const current = cell.resources[itemId] ?? 0;
+        if (current < cap) {
+            cell.resources[itemId] = current + 1;
         }
     };
 
     /**
-     * One canvas survey: seeds the cell stocks by biome. The canvas scan is
-     * row-major and the random draws (shell/flint chances) run in that
-     * order, so seeding is fully reproducible per seed. `canvas` is passed
-     * explicitly so the routine works both in setup and after a terrain
-     * regeneration (resurvey).
+     * One canvas survey: seeds the cell stocks from the tiles. Tile DEPOSITS
+     * (engine/types TerrainCell.resources — wood, stone, iron and the
+     * unlimited sand/dirt) come first, then the biome's FOOD stock, then the
+     * shell/flint chance draws and the sea's fish. The canvas scan is
+     * row-major and the random draws run in that order, so seeding is fully
+     * reproducible per seed. `canvas` is passed explicitly so the routine
+     * works both in setup and after a terrain regeneration (resurvey).
      */
     const survey = (context: PluginContext, canvas: World['canvas']) => {
         arrayEach(canvas.cells, ({ value: cell }) => {
+            const stock = stockOf(cell.x, cell.y);
+            // The deposits ARE the tile's resources — seed their piles
+            TILE_RESOURCES.forEach((resource) => {
+                const count = cell.resources[resource] ?? 0;
+                if (count > 0) {
+                    stock[resource] = (stock[resource] ?? 0) + count;
+                }
+            });
+            // Biome food: berries in meadows, berries under forests,
+            // coconuts on beaches
             const biomeStock = BIOME_STOCKS[cell.biome];
             if (biomeStock) {
-                const stock = stockOf(cell.x, cell.y);
                 Object.entries(biomeStock).forEach(([item, count]) => {
                     stock[item] = (stock[item] ?? 0) + count;
                 });
@@ -152,16 +224,13 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             // Beaches occasionally hide a shell; highlands occasionally
             // hide flint — finite resources, no regrowth
             if (cell.biome === 'beach' && context.random() < 0.5) {
-                const stock = stockOf(cell.x, cell.y);
                 stock.shell = (stock.shell ?? 0) + 1;
             }
             if (cell.biome === 'highland' && context.random() < 0.3) {
-                const stock = stockOf(cell.x, cell.y);
                 stock.flint = (stock.flint ?? 0) + 1;
             }
             // The sea stocks fish
             if (!cell.passable) {
-                const stock = stockOf(cell.x, cell.y);
                 stock.fish = (stock.fish ?? 0) + 1;
             }
         });
@@ -182,19 +251,34 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
         },
 
         takeFromCell: (actor, itemId) => {
-            const stock = stockOf(actor.position.x, actor.position.y);
-            if (!inventoryRemove(stock, itemId, 1)) {
+            const x = actor.position.x;
+            const y = actor.position.y;
+            const stock = stockOf(x, y);
+            // UNLIMITED deposits (sand, dirt) cannot be exhausted: the pile
+            // never decrements, so the tile hands them out forever
+            if (isUnlimitedResource(itemId)) {
+                if ((stock[itemId] ?? 0) <= 0) {
+                    return false;
+                }
+            } else if (!inventoryRemove(stock, itemId, 1)) {
                 return false;
             }
             inventoryAdd(bagOf(actor.id), itemId, 1);
+            // Finite deposits draw down with the pile — the tile re-skins
+            // when its last unit is taken
+            drawDeposit(x, y, itemId);
             return true;
         },
 
         gather: (actor) => {
             const stock = stockOf(actor.position.x, actor.position.y);
-            // First available item — deterministic (insertion order)
+            // Only FOOD is gathered by the hunger loop — materials (wood,
+            // stone, iron, and the unlimited sand/dirt) stay on the tile:
+            // an agent must not stand farming dirt forever when it could
+            // walk toward real food. Deterministic: the first food in the
+            // stock's insertion order.
             const available = inventoryEntries(stock).map((entry) => entry.item);
-            const target = available[0];
+            const target = available.find((item) => itemDef(item).kind === 'food');
             if (target === undefined || !inventoryRemove(stock, target, 1)) {
                 return null;
             }
@@ -302,10 +386,12 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             const { world: active } = context;
             const tick = active.ticker.ticks();
 
-            // Regrowth sweep over all stocked cells
+            // Regrowth sweep over all stocked cells (deposits grow back
+            // with their stocks — see regrow/growDeposit)
             stocks.forEach((stock, key) => {
+                const [x, y] = key.split(',').map(Number);
                 arrayEach(Object.keys(stock), ({ value: itemId }) => {
-                    regrow(stock, itemId, tick);
+                    regrow(stock, itemId, tick, x, y);
                 });
             });
 

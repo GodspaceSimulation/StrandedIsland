@@ -61,7 +61,7 @@ describe('behaviorPlugin', () => {
         expect(inventory.of('a')).toEqual({ flint: 1, berry: 1 });
         expect(needs.of('a').hunger).toBe(62);
         // Meanwhile the start cell regrew: meadow berry rhythm hit ticks 2 & 5
-        expect(inventory.cellStock(6, 2)).toEqual({ berry: 3 });
+        expect(inventory.cellStock(6, 2)).toEqual({ dirt: 1, berry: 3 });
     });
 
     it('a thirsty actor drinks the rainwater pool on its own cell', () => {
@@ -73,7 +73,7 @@ describe('behaviorPlugin', () => {
         // −35 thirst relief, the pool is emptied, nothing enters the bag
         // (hunger 21: the default 0.1/min decay ran one tick)
         expect(needs.of('a')).toEqual({ hunger: 21, thirst: 35, energy: 100 });
-        expect(inventory.cellStock(8, 2)).toEqual({ berry: 2 });
+        expect(inventory.cellStock(8, 2)).toEqual({ dirt: 1, berry: 2 });
         expect(inventory.of('a')).toEqual({});
         expect(world.events.log()[1]).toEqual({
             id: 2,
@@ -189,18 +189,16 @@ describe('behaviorPlugin', () => {
             world.step();
             needs_satisfy(world, 'b', 10);
         }
-        // Gift lands on tick 1 (+10). Bram wanders onto a shell beach and
-        // gathers, so the next social window (cooldown 6) trades instead —
-        // 10 + 6 − 0.2 × 8 ticks of drift → 14.6. Ael's bag ends at 1 berry
-        // + the traded shell.
-        expect(relationship.relation('a', 'b')).toBe(14.600000000000005);
-        expect(inventory.of('a')).toEqual({ berry: 1, shell: 1 });
+        // Gift lands on tick 1 (+10), then drift alone moves the value —
+        // Bram keeps gathering FOOD on his wanders (coconut/berry — gather
+        // is food-only), so no material ever enters his bag for a trade:
+        // 10 − 0.2 × 7 ticks of drift → 8.6. Ael's bag ends at 2 berries.
+        expect(relationship.relation('a', 'b')).toBe(8.600000000000005);
+        expect(inventory.of('a')).toEqual({ berry: 2 });
         const socialEvents = world.events.log().filter((event) => event.kind === 'exchange' || event.kind === 'relationship');
         expect(socialEvents.map((event) => event.message)).toEqual([
             'Ael gives Bram 1 Berry.',
             'Ael and Bram grow closer (gifting).',
-            'Ael and Bram trade: 1 Berry for 1 Shell.',
-            'Ael and Bram grow closer (trading).',
         ]);
     });
 });

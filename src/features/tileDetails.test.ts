@@ -3,15 +3,24 @@
 // All expectations come from the deterministic seed-7 island (default 37×25,
 // centered coordinates — see scenario/island.test.ts). The cast comes ashore
 // at the island edge (shipwreck rule):
-//   (17,−11) beach   h3  voxels [stone, soil, sand]  stock {coconut:1}  Ael stands here
-//   (−10,−11) beach  h3  voxels [stone, soil, sand]  stock {coconut:1, shell:1}
-//   (−18,−12) shallows h2 voxels [soil, sand, water] stock {fish:1}
-//   (0,0)     meadow  h5  voxels [stone ×3, soil, grass]  stock {berry:2}  Kiki flies at z 2
-//   (−3,−6)   forest  h5  voxels [stone ×3, soil, grass, forest] stock {berry:1, wood:2}
+//   (17,−11) sand tile (beach)   h3  voxels [stone, soil, sand]  deposits {sand:1}  stock {sand:1, coconut:1}  Ael stands here
+//   (−10,−11) sand tile (beach)  h3  voxels [stone, soil, sand]  deposits {sand:1}  stock {sand:1, coconut:1, shell:1}
+//   (−18,−12) shallows           h2  voxels [soil, sand, water]  deposits {}         stock {fish:1}
+//   (0,0)     dirt tile (meadow) h5  voxels [stone ×3, soil, grass]  deposits {dirt:1}  stock {dirt:1, berry:2}  Kiki flies at z 2
+//   (−3,−6)   wood tile (forest) h5  voxels [stone ×3, soil, grass, forest]  deposits {wood:2}  stock {wood:2, berry:1}
+//   (−5,3)    iron tile (lode)   h7  deposits {stone:1, iron:1}  stock {stone:1, iron:1, flint:1}
 
 import { describe, it, expect } from 'vitest';
 import { createIslandWorld } from '../scenario/island';
-import { voxelRuns, voxelSummary, tileOccupants, tileGround, tileSummary, occupantLine } from './tileDetails';
+import {
+    voxelRuns,
+    voxelSummary,
+    tileOccupants,
+    tileGround,
+    tileResources,
+    tileSummary,
+    occupantLine,
+} from './tileDetails';
 
 const island = createIslandWorld({ seed: 7 });
 
@@ -124,23 +133,55 @@ describe('occupantLine', () => {
 });
 
 describe('tileGround', () => {
-    it('reads the non-zero cell stock — fish for sea, berries for meadow', () => {
+    it('reads the non-zero cell stock — fish for sea, dirt + berries for meadow', () => {
         expect(tileGround(island, -18, -12)).toEqual([{ item: 'fish', count: 1 }]);
-        expect(tileGround(island, 0, 0)).toEqual([{ item: 'berry', count: 2 }]);
+        // Deposits seed before the biome food, so the unlimited dirt lists
+        // first
+        expect(tileGround(island, 0, 0)).toEqual([
+            { item: 'dirt', count: 1 },
+            { item: 'berry', count: 2 },
+        ]);
+    });
+});
+
+describe('tileResources', () => {
+    it('lists the tile deposits with their unlimited flag, in resource order', () => {
+        // The meadow under Kiki carries unlimited dirt
+        expect(tileResources(island.world.cellAt(0, 0)?.resources)).toEqual([
+            { resource: 'dirt', count: 1, unlimited: true },
+        ]);
+        // The forest keeps a finite timber deposit
+        expect(tileResources(island.world.cellAt(-3, -6)?.resources)).toEqual([
+            { resource: 'wood', count: 2, unlimited: false },
+        ]);
+        // An iron lode carries stone AND iron, both finite
+        expect(tileResources(island.world.cellAt(-5, 3)?.resources)).toEqual([
+            { resource: 'stone', count: 1, unlimited: false },
+            { resource: 'iron', count: 1, unlimited: false },
+        ]);
+        // Sea columns are bare
+        expect(tileResources(island.world.cellAt(-18, -12)?.resources)).toEqual([]);
+        expect(tileResources(undefined)).toEqual([]);
     });
 });
 
 describe('tileSummary', () => {
-    it('assembles the full beach column under Ael', () => {
+    it('assembles the full sand column under Ael (deposits + surface key)', () => {
         expect(tileSummary(island, 17, -11)).toEqual({
             x: 17,
             y: -11,
             biome: 'beach',
+            // The unlimited sand deposit decides the tile's look
+            surface: 'sand',
             height: 3,
             waterLevel: 3,
             passable: true,
             voxels: ['stone', 'soil', 'sand'],
-            ground: [{ item: 'coconut', count: 1 }],
+            resources: [{ resource: 'sand', count: 1, unlimited: true }],
+            ground: [
+                { item: 'sand', count: 1 },
+                { item: 'coconut', count: 1 },
+            ],
             occupants: [
                 {
                     id: 'actor-1',
@@ -160,13 +201,32 @@ describe('tileSummary', () => {
             x: -18,
             y: -12,
             biome: 'shallows',
+            surface: 'shallows',
             height: 2,
             waterLevel: 3,
             passable: false,
             voxels: ['soil', 'sand', 'water'],
+            resources: [],
             ground: [{ item: 'fish', count: 1 }],
             occupants: [],
         });
+    });
+
+    it('assembles an iron lode column with its deposits', () => {
+        const summary = tileSummary(island, -5, 3);
+        // The lode surfaces as iron even though stone surrounds it —
+        // deposit priority puts the rare resource first
+        expect(summary?.surface).toBe('iron');
+        expect(summary?.biome).toBe('highland');
+        expect(summary?.resources).toEqual([
+            { resource: 'stone', count: 1, unlimited: false },
+            { resource: 'iron', count: 1, unlimited: false },
+        ]);
+        expect(summary?.ground).toEqual([
+            { item: 'stone', count: 1 },
+            { item: 'iron', count: 1 },
+            { item: 'flint', count: 1 },
+        ]);
     });
 
     it('resolves to null outside the canvas', () => {

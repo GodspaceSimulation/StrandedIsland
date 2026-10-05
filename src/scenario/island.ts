@@ -33,13 +33,18 @@ import {
     type DataCanvasPlugin,
 } from '@godspace/canvas';
 import { createWorld, type World } from '../engine/world';
-import { islandTerrainPlugin, type IslandTerrainOptions } from '../plugins/terrain/islandTerrain';
+import {
+    islandTerrainPlugin,
+    tileDepositSummary,
+    tileSurfaceKey,
+    type IslandTerrainOptions,
+} from '../plugins/terrain/islandTerrain';
 import { inventoryPlugin, type InventoryPlugin } from '../plugins/inventory/inventoryPlugin';
 import { needsPlugin, type NeedsPlugin, type NeedsPluginOptions } from '../plugins/needs/needsPlugin';
 import { relationshipPlugin, type RelationshipPlugin } from '../plugins/relationship/relationshipPlugin';
 import { behaviorPlugin } from '../plugins/behavior/behaviorPlugin';
 import { birdsPlugin, type BirdsPlugin } from '../plugins/birds/birdsPlugin';
-import type { Actor } from '../engine/types';
+import type { Actor, TileResources } from '../engine/types';
 
 export type IslandOptions = {
     /** Simulation seed — drives terrain, resources and all agent randomness. */
@@ -121,40 +126,49 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     const needs = needsPlugin(options.needs ?? {});
     const relationship = relationshipPlugin();
     const behavior = behaviorPlugin({ inventory, needs, relationship });
+
+    // ── Tile representation adapters ────────────────────────────────────────
+    // The tiles appear as the RESOURCES they carry (scenario-wide rule for
+    // all four @godspace/canvas representations): a tile's surface key is
+    // derived from its deposits by the terrain plugin's tileSurfaceKey —
+    // timber tiles, ore tiles, and the unlimited sand/dirt tiles — falling
+    // back to the plain biome when the tile carries no resources (sea, or
+    // finite deposits gathered away). Hover text keeps the biome/voxel
+    // summary and appends the deposit line ("wood ×2 · sand ×∞").
+    const surfaceOfCell = (cell: unknown): string | undefined =>
+        tileSurfaceKey(cell as { biome?: string; resources?: TileResources });
+    const titleOfCell = (cell: unknown): string => {
+        const column = cell as { biome?: string; height?: number; voxels?: string[]; resources?: TileResources };
+        const ground = `${column.biome} · height ${column.height} · ${(column.voxels ?? []).join(' / ')}`;
+        const deposits = tileDepositSummary(column.resources);
+        return deposits ? `${ground} · ${deposits}` : ground;
+    };
+
     // The representation plugin from @godspace/canvas — binds itself through
     // the engine's plugin context (world.canvas + world.coordinates)
     const ascii = asciiCanvasPlugin({
-        // The island's ground cells key their surface by biome
-        surfaceOf: (cell) => (cell as { biome?: string }).biome,
-        titleOf: (cell) => {
-            const column = cell as { biome?: string; height?: number; voxels?: string[] };
-            return `${column.biome} · height ${column.height} · ${(column.voxels ?? []).join(' / ')}`;
-        },
+        // Tiles appear as the resources they carry (see surfaceOfCell above)
+        surfaceOf: surfaceOfCell,
+        titleOf: titleOfCell,
     });
     const birds = birdsPlugin();
     // The unicode sibling binds the SAME structural slice as the ascii canvas
     // (same surfaceOf/titleOf adapters) — an emoji-skinned twin of the god view
     const unicode = unicodeCanvasPlugin({
-        surfaceOf: (cell) => (cell as { biome?: string }).biome,
-        titleOf: (cell) => {
-            const column = cell as { biome?: string; height?: number; voxels?: string[] };
-            return `${column.biome} · height ${column.height} · ${(column.voxels ?? []).join(' / ')}`;
-        },
+        surfaceOf: surfaceOfCell,
+        titleOf: titleOfCell,
     });
     // The svg sibling draws the same world as a scalable vector document —
     // same adapters, glyphs from the unicode ladder, geometry on the shared
     // 26px tile grid (no layout breakage between canvas tabs)
     const svg = svgCanvasPlugin({
-        surfaceOf: (cell) => (cell as { biome?: string }).biome,
-        titleOf: (cell) => {
-            const column = cell as { biome?: string; height?: number; voxels?: string[] };
-            return `${column.biome} · height ${column.height} · ${(column.voxels ?? []).join(' / ')}`;
-        },
+        surfaceOf: surfaceOfCell,
+        titleOf: titleOfCell,
     });
     // The data sibling renders plain tables instead of tiles: every entity's
-    // coordinates + the terrain census (also biome-keyed)
+    // coordinates + the terrain census (also resource-keyed)
     const data = dataCanvasPlugin({
-        surfaceOf: (cell) => (cell as { biome?: string }).biome,
+        surfaceOf: surfaceOfCell,
     });
 
     const mounted = [

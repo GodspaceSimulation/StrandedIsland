@@ -5,12 +5,20 @@
 // bilinear + smoothstep) shaped by a radial falloff so the center rises above
 // the water line and the edges fall into the sea — a small island.
 //
+// Every column also carries RESOURCE DEPOSITS (TileResources on engine/types):
+// timber in forests, stone on the highlands, iron lodes where the vein noise
+// concentrates, and the unlimited sands of the beaches and dirts of the
+// meadows. The deposits are what the tile appears as on the canvas
+// (tileSurfaceKey below) and what the inventory plugin seeds its gatherable
+// cell stocks from.
+//
 // Everything is deterministic: the same seed produces the exact same island,
 // which is what the tests assert. `@presource/core` has no seeded PRNG, so the
 // stream comes from engine/random.ts (mulberry32).
 
 import { randomCreate, type RandomSource } from '../../engine/random';
-import type { Biome, Canvas, TerrainCell, VoxelKind } from '../../engine/types';
+import type { Biome, Canvas, TerrainCell, TileResource, TileResources, VoxelKind } from '../../engine/types';
+import { TILE_RESOURCES, UNLIMITED_TILE_RESOURCES } from '../../engine/types';
 import type { PluginContext, WorldPlugin } from '../../engine/plugin';
 
 export type IslandTerrainOptions = {
@@ -32,7 +40,17 @@ export type IslandStats = {
     land: number;
     water: number;
     forest: number;
+    /** Cells carrying an iron lode deposit. */
+    iron: number;
 };
+
+/**
+ * Vein-noise threshold for iron lodes: a dry stone-surface cell whose vein
+ * sample exceeds it carries an iron deposit. Calibrated so lodes stay rare
+ * landmarks — on the reference seed-7 island 3 of the 9 highland cells
+ * lode (vein samples 0.0756 … 0.5158).
+ */
+export const IRON_LODE_THRESHOLD = 0.5;
 
 /**
  * Lattice value noise with bilinear interpolation and a smoothstep fade.
@@ -133,12 +151,20 @@ export const generateIsland = (
     // that decides where forests grow on grass. Noise samples live in
     // grid space (0..width−1), NOT centered space — the lattice indexes
     // arrays and cannot take negative positions.
+    //
+    // STREAM SAFETY: every lattice consumes its random draws in creation
+    // order, before the per-cell loop samples them (the loop draws nothing).
+    // The vein lattice is created LAST, so its draws land at the tail of the
+    // stream — adding it never shifts the coarse/fine/moisture values, and
+    // the pinned seed-7 biome maps stay byte-identical.
     const coarse = latticeNoise(random, width, height, 4);
     const fine = latticeNoise(random, width, height, 2);
     const moisture = latticeNoise(random, width, height, 3);
+    // Ore-vein map — where iron lodes hide inside the stone highlands
+    const veins = latticeNoise(random, width, height, 2);
 
     const cells: TerrainCell[] = [];
-    const stats: IslandStats = { land: 0, water: 0, forest: 0 };
+    const stats: IslandStats = { land: 0, water: 0, forest: 0, iron: 0 };
 
     for (let row = 0; row < height; row++) {
         for (let col = 0; col < width; col++) {
@@ -208,6 +234,37 @@ export const generateIsland = (
             }
 
             const biome = deriveBiome(surface, submerged, depth, forested);
+
+            // ── Resource deposits ───────────────────────────────────────
+            // What the tile carries as gatherable material. Deposits are a
+            // tile property: the inventory plugin seeds its gatherable cell
+            // stocks from them, and tileSurfaceKey derives the canvas
+            // appearance from the top deposit (see below). Unlimited
+            // resources (sand, dirt) keep a symbolic count of 1 — the
+            // UNLIMITED_TILE_RESOURCES set protects them from depletion.
+            const resources: TileResources = {};
+            if (!submerged) {
+                if (forested) {
+                    // Forests stand on timber — 2 units, matching the old
+                    // forest wood stock
+                    resources.wood = 2;
+                } else if (surface === 'stone') {
+                    // Highlands are quarries: stone, plus an iron lode when
+                    // the vein noise concentrates past the threshold
+                    resources.stone = 1;
+                    if (veins(col, row) > IRON_LODE_THRESHOLD) {
+                        resources.iron = 1;
+                        stats.iron = stats.iron + 1;
+                    }
+                } else if (surface === 'sand') {
+                    // Beaches are made of sand — an unlimited deposit
+                    resources.sand = 1;
+                } else {
+                    // Meadows grow on soil — dig dirt, unlimited
+                    resources.dirt = 1;
+                }
+            }
+
             if (submerged) {
                 stats.water = stats.water + 1;
             } else {
@@ -226,12 +283,55 @@ export const generateIsland = (
                 biome,
                 // Water columns are impassable; everything dry is walkable
                 passable: !submerged,
+                resources,
             });
         }
     }
 
     return { width, height, cells, stats };
 };
+
+// ── Tile appearance ──────────────────────────────────────────────────────────
+// The tile's RESOURCES decide what it appears as on the canvas: a tile shows
+// up as the resource it carries (timber tiles, ore tiles, sand tiles…), so
+// the god reads the island as a resource map, not just a biome map.
+
+/** The minimal cell slice the surface derivation reads. */
+export type TileSurfaceCell = {
+    biome?: string;
+    resources?: TileResources;
+};
+
+/**
+ * Deposit-priority order for the canvas surface — the rarest deposit wins
+ * the tile's look so landmarks stand out (an iron lode shows through the
+ * stone it sits in; timber shows through the meadow it borders).
+ */
+const RESOURCE_SURFACE_PRIORITY: readonly TileResource[] = ['iron', 'wood', 'stone', 'sand', 'dirt'];
+
+/**
+ * The canvas surface key of a tile: its top-priority deposit, falling back
+ * to the plain biome when the tile carries no resources (sea columns, or a
+ * land tile whose finite deposits were gathered away).
+ */
+export const tileSurfaceKey = (cell: TileSurfaceCell): string | undefined => {
+    const resources = cell.resources ?? {};
+    const deposit = RESOURCE_SURFACE_PRIORITY.find((resource) => (resources[resource] ?? 0) > 0);
+    return deposit ?? cell.biome;
+};
+
+/** One "wood ×2" / "sand ×∞" fragment for hover titles and inspectors. */
+const depositFragment = (resource: TileResource, count: number): string =>
+    UNLIMITED_TILE_RESOURCES.includes(resource) ? `${resource} ×∞` : `${resource} ×${count}`;
+
+/**
+ * Human readable deposit summary of a tile's resources, in
+ * TILE_RESOURCES order: "wood ×2 · iron ×1" — empty when bare.
+ */
+export const tileDepositSummary = (resources?: TileResources): string =>
+    TILE_RESOURCES.filter((resource) => (resources?.[resource] ?? 0) > 0)
+        .map((resource) => depositFragment(resource, resources?.[resource] ?? 0))
+        .join(' · ');
 
 /**
  * The terrain plugin — installs the island as the world's canvas in `setup`.

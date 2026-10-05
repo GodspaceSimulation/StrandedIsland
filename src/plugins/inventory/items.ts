@@ -19,12 +19,16 @@ import { createItemRegistry, type ItemRegistry } from '@godspace/material';
  */
 export const materials: ItemRegistry = createItemRegistry();
 
-// Engine configuration of the shared catalog: the island coins two ids the
+// Engine configuration of the shared catalog: the island coins ids the
 // stock list doesn't carry (berry — the catalog lists the plural 'berries';
-// water — the island's drinkable rain pool). Display-only definitions: the
-// island's own stats stay in ITEM_CATALOG.
+// water — the island's drinkable rain pool; iron and dirt — the tile
+// deposits the catalog only lists in compound form, 'iron-ore'). Display-only
+// definitions: the island's own stats stay in ITEM_CATALOG. 'sand' is already
+// listed in the shared stock catalog, so it needs no definition here.
 materials.define({ id: 'berry', name: 'Berry', kind: 'food' });
 materials.define({ id: 'water', name: 'Water', kind: 'resource' });
+materials.define({ id: 'iron', name: 'Iron', kind: 'resource' });
+materials.define({ id: 'dirt', name: 'Dirt', kind: 'resource' });
 
 export type ItemKind = 'food' | 'drink' | 'material' | 'tool';
 
@@ -45,8 +49,15 @@ export const ITEM_CATALOG: Record<string, ItemDef> = {
     fish: { name: 'Fish', kind: 'food', nutrition: 26 },
     coconut: { name: 'Coconut', kind: 'food', nutrition: 18, hydration: 10 },
     water: { name: 'Water', kind: 'drink', hydration: 35 },
+    // Tile deposits — wood/stone were the original materials; iron lodes
+    // hide in the highlands; sand and dirt are the UNLIMITED deposits
+    // (gathering them never empties the tile, see engine/types.ts
+    // UNLIMITED_TILE_RESOURCES)
     wood: { name: 'Wood', kind: 'material' },
     stone: { name: 'Stone', kind: 'material' },
+    iron: { name: 'Iron', kind: 'material' },
+    sand: { name: 'Sand', kind: 'material' },
+    dirt: { name: 'Dirt', kind: 'material' },
     vine: { name: 'Vine', kind: 'material' },
     shell: { name: 'Shell', kind: 'material' },
     flint: { name: 'Flint', kind: 'tool' },
