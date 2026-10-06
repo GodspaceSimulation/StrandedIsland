@@ -22,6 +22,8 @@ import {
     type Position3D,
 } from '@godspace/core';
 import type { World } from '../../engine/world';
+import type { EntityProfiles } from '../entity/entityPlugin';
+import type { NeedsState } from '../needs/needsPlugin';
 
 export type SharksPluginOptions = {
     /** Chance per world-minute a shark swims in past the edge. Default 0.008. */
@@ -30,6 +32,20 @@ export type SharksPluginOptions = {
     leaveChancePerMinute?: number;
     /** Population cap. Default 2. */
     maxSharks?: number;
+    /**
+     * The needs plugin — the survival stats the shark lives by (the entity
+     * profiles derive its species rates; see entityPlugin). With it (and
+     * the profiles) swimming burns the profile's swim row per tile and a
+     * SPENT shark holds still in the current to recover. Absent: swimming
+     * is free (the pre-entity behavior).
+     */
+    needs?: {
+        of(entityId: string): NeedsState;
+        satisfy(entityId: string, deltas: Partial<NeedsState>): void;
+        moved(entityId: string, moveKind?: string): void;
+    };
+    /** The entity profiles — required WITH needs for the stat-driven swim. */
+    profiles?: EntityProfiles;
 };
 
 /** One shark's record — position is read live from the coordinate space. */
@@ -53,6 +69,20 @@ export type SharksPlugin = WorldPlugin<World> & {
 const SHARK_NAMES = ['Finn', 'Mako', 'Reef', 'Chum'];
 
 /**
+ * THE SWIM ECONOMICS (stat-driven, when needs + profiles are mounted): a
+ * shark whose energy has drained to this line is SPENT — it stops sweeping
+ * the sea and holds still in the current, recovering until it can swim on.
+ * Resting costs no roll and logs nothing — the sea's own telemetry.
+ */
+const SPENT_ENERGY = 20;
+
+/**
+ * Energy a spent shark recovers per world-minute of holding still — the
+ * drift's rest, the counterweight to the swim row's burn.
+ */
+const DRIFT_RECOVERY = 2;
+
+/**
  * Canvas type-glyph for sharks — the unicode/svg canvases resolve an entry's
  * TYPE through their type map, so shark entries (type 'shark') draw the fin
  * emoji. Merged into the canvas palettes by the scenario (scenario/island.ts)
@@ -60,23 +90,19 @@ const SHARK_NAMES = ['Finn', 'Mako', 'Reef', 'Chum'];
  */
 export const SHARK_TYPE_GLYPH: Record<string, string> = { shark: '🦈' };
 
-/** Direction word for a step delta — shared phrasing with the behavior and
- * birds plugins (a local copy, like birds keeps). */
-const directionWord = (dx: number, dy: number): string => {
-    const vertical = dy < 0 ? 'north' : dy > 0 ? 'south' : '';
-    const horizontal = dx > 0 ? 'east' : dx < 0 ? 'west' : '';
-    if (!vertical) {
-        return horizontal || 'nowhere';
-    }
-    return horizontal ? `${vertical}${horizontal}` : vertical;
-};
-
 export const sharksPlugin = (options: SharksPluginOptions = {}): SharksPlugin => {
     // Chances are per world-minute — every tick hook call covers exactly one
     // world-minute (engine/world.ts sub-steps), so the rolls apply directly
     const arriveChance = options.arriveChancePerMinute ?? 0.008;
     const leaveChance = options.leaveChancePerMinute ?? 0.01;
     const maxSharks = options.maxSharks ?? 2;
+
+    // The stat-driven swim economics — active only when BOTH the needs
+    // plugin and the entity profiles are mounted (see birdsPlugin for the
+    // same gating shape). Without them the shoal swims free.
+    const needs = options.needs ?? null;
+    const profiles = options.profiles ?? null;
+    const statSwim = needs !== null && profiles !== null;
 
     // Shark identity records — positions live in the coordinate space only
     const shoal = new Map<string, { name: string; marker: string }>();
@@ -251,12 +277,22 @@ export const sharksPlugin = (options: SharksPluginOptions = {}): SharksPlugin =>
                     return;
                 }
                 const step = water[Math.floor(stream() * water.length)];
+                // THE SPENT REST — the water-pick roll is consumed either
+                // way (the stream never shifts), but a shark out of steam
+                // holds still in the current and recovers instead of
+                // sweeping on
+                if (statSwim && needs && needs.of(id).energy <= SPENT_ENERGY) {
+                    needs.satisfy(id, { energy: DRIFT_RECOVERY });
+                    return;
+                }
+                // Silent swim — the log tells stories of meetings, not
+                // water telemetry
                 coordinates.move(id, position3(step.x, step.y));
-                events.emit({
-                    kind: 'move',
-                    actorId: id,
-                    message: `${shark.name} glides ${directionWord(step.dx, step.dy)}.`,
-                });
+                // The tile's burn: swimming charges the profile's swim row
+                // (stamina-scaled — see entityPlugin)
+                if (statSwim && needs) {
+                    needs.moved(id, 'swim');
+                }
             });
         },
     };

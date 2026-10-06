@@ -10,6 +10,8 @@
 import { describe, it, expect } from 'vitest';
 import { createWorld } from '../../engine/world';
 import { islandTerrainPlugin } from '../terrain/islandTerrain';
+import { needsPlugin } from '../needs/needsPlugin';
+import { entityPlugin } from '../entity/entityPlugin';
 import { sharksPlugin, SHARK_TYPE_GLYPH } from './sharksPlugin';
 
 const buildStack = (
@@ -56,29 +58,21 @@ describe('sharksPlugin', () => {
         });
     });
 
-    it('swims from water cell to water cell, never beaching', () => {
+    it('swims from water cell to water cell, never beaching — silently', () => {
         const { world, sharks } = buildStack({ arriveChancePerMinute: 0, leaveChancePerMinute: 0 });
         sharks.release();
         // Reference run (seed 7): eight minutes of pure swimming
         for (let index = 0; index < 8; index++) {
             world.step();
         }
+        // No swim telemetry in the log — the shark gliding north or south is
+        // simulation, not story (only arrivals and departures speak)
         expect(
             world.events
                 .log()
                 .filter((event) => event.actorId === 'shark-1')
                 .map((event) => event.message),
-        ).toEqual([
-            'Finn fins in from the open sea.',
-            'Finn glides south.',
-            'Finn glides south.',
-            'Finn glides north.',
-            'Finn glides southwest.',
-            'Finn glides northeast.',
-            'Finn glides northwest.',
-            'Finn glides northwest.',
-            'Finn glides southeast.',
-        ]);
+        ).toEqual(['Finn fins in from the open sea.']);
         // Reference end position and the water-bound invariant: every step
         // lands on an impassable (water) column
         expect(sharks.sharkOf('shark-1')?.position).toEqual({ x: 11, y: -3, z: 0 });
@@ -147,5 +141,47 @@ describe('sharksPlugin', () => {
         // Releasing before setup is a hard error
         const stray = sharksPlugin();
         expect(() => stray.release()).toThrow('sharks plugin released before setup');
+    });
+});
+
+describe('sharksPlugin — the entity profiles: the stat-driven swim', () => {
+    /** The stack with the needs plugin + entity profiles — sharks live by stats. */
+    const buildStatStack = (options: Parameters<typeof sharksPlugin>[0] = {}, seed = 7) => {
+        const profiles = entityPlugin();
+        const needs = needsPlugin({ profiles });
+        const sharks = sharksPlugin({ needs, profiles, ...options });
+        const world = createWorld({ seed, tickSize: 1, plugins: [islandTerrainPlugin(), needs, sharks] });
+        return { world, sharks, needs };
+    };
+
+    it('swimming burns the swim row per tile — a Speed-14 shark crosses a tile in one minute', () => {
+        const { world, sharks, needs } = buildStatStack({ arriveChancePerMinute: 0, leaveChancePerMinute: 0 });
+        sharks.release();
+        // Eight minutes of swimming (the free-swim reference run): every
+        // minute one water tile crossed — the charges consume no rolls, so
+        // the path repeats exactly
+        for (let index = 0; index < 8; index++) {
+            world.step();
+        }
+        expect(sharks.sharkOf('shark-1')?.position).toEqual({ x: 11, y: -3, z: 0 });
+        // The swim economics: eight tiles × 1.67 (the swim row) + the
+        // species decay 0.04 × 8 minutes — float drift pinned from the run
+        expect(needs.of('shark-1').energy).toBe(86.31999999999994);
+    });
+
+    it('a spent shark holds still in the current and recovers instead of sweeping on', () => {
+        const { world, sharks, needs } = buildStatStack({ arriveChancePerMinute: 0, leaveChancePerMinute: 0 });
+        sharks.release();
+        // Drain the shark under the spent line
+        needs.satisfy('shark-1', { energy: -81 }); // 19
+        const spentAt = sharks.sharkOf('shark-1')?.position;
+        world.step(); // the spent rest: the pick ran, the shark held still
+        expect(sharks.sharkOf('shark-1')?.position).toEqual(spentAt);
+        // The drift recovery (+2) outpaces the decay (−0.04)
+        expect(needs.of('shark-1').energy).toBe(20.96);
+        // Over the line again: the very next minute sweeps on
+        world.step();
+        expect(sharks.sharkOf('shark-1')?.position).not.toEqual(spentAt);
+        expect(needs.of('shark-1').energy).toBe(19.25);
     });
 });

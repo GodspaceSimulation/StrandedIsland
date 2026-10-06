@@ -1,21 +1,45 @@
-// The behavior environment plugin — the agent decision loop, TASK-DRIVEN.
+// The behavior environment plugin — the agent decision loop, TASK-DRIVEN,
+// for EVERY LIVING THING.
 //
-// The plugin no longer decides one instant action per world-minute (the old
-// per-minute priority ladder). It now REGISTERS behaviour modules into the
-// task ledger (plugins/tasks/taskLedger.ts) and applies the task EFFECTS on
-// completion. The rhythm: tasks cost WORLD MINUTES — moving ONE SCALE-0
-// TILE costs `travelMinutesPerTile` (ONE — the distribution's distance rule:
-// one Scale-0 tile move per tick, scenario/island.ts) — so an actor that
-// plans a move stays busy for one minute and the effect lands on the
-// completing minute. Behaviours add/remove update task lists per the
-// ledger rules: registering one changes future planning only; dropping one
-// cancels its queued tasks and the actors go idle again.
+// The plugin REGISTERS behaviour modules into the task ledger
+// (plugins/tasks/taskLedger.ts) and applies the task EFFECTS on completion.
+// The rhythm: tasks cost WORLD MINUTES — moving ONE SCALE-0 TILE costs
+// `travelMinutesPerTile` (ONE — the distribution's distance rule: one
+// Scale-0 tile move per tick, scenario/island.ts) — so an actor that plans
+// a move stays busy for one minute and the effect lands on the completing
+// minute. Behaviours add/remove update task lists per the ledger rules:
+// registering one changes future planning only; dropping one cancels its
+// queued tasks and the actors go idle again.
+//
+// EVERY LIVING ENTITY IS PLANNED EVERY MINUTE (this tick plans busy actors
+// too — the ledger pre-empts a busy queue only when a STRICTLY
+// higher-priority behaviour queues). The registry castaways plan through
+// their full Actor records; the COORDINATE-SPACE CREATURES (perched
+// seabirds, roaming boars — anything grounded on DRY land) plan through
+// their coordinate identity, so the survival rungs are the whole world's:
+// a hungry bird looks for food, a tired bird roosts, a boar drinks, and a
+// castaway runs the full castaway ladder. Flyers (z > ground) keep their
+// plugin-owned flight (the birds plugin drives every airborne minute), and
+// water creatures (sharks — impassable cells) keep their own swim scripts:
+// the ledger plans only what walks the ground. See taskLedger.ts TaskEntity
+// for the shared planning shape.
+//
+// Tasks are governed by behaviour plugins, and the
+// ladder is re-read per tick: an actor travelling to water (thirst) drops
+// everything the moment a wild animal closes in (the survival plugin's
+// priority-60 flee), a sleeping actor wakes hungry (hunger 40 > sleep 30),
+// a wandering actor pivots to eating. Not every task completes — an
+// interrupted task is abandoned mid-progress, and the actor acts on
+// whichever task ranks highest THIS tick.
 //
 // The registered ladder (priority DESC; the ledger plans the first module
-// whose gate passes and whose plan yields specs):
-//   thirst  50 — thirst ≥ 65       → drink from the cell's pool (2 min), or
-//                                    travel one fine step toward the
-//                                    nearest pool (1 min)
+// whose gate passes and whose plan yields specs — higher-priority modules
+// mounted by other plugins, e.g. the sleep and survival plugins, rank
+// above these):
+//   thirst  50 — thirst ≥ 65: drink from the BAG (2 min); no water carried
+//                                    → collect the cell's pool into the bag
+//                                    (3 min); no pool underfoot → travel one
+//                                    fine step toward the nearest pool (1 min)
 //   hunger  40 — hunger ≥ 60       → eat from the bag (2 min), gather the
 //                                    cell's food (10 min), or travel toward
 //                                    the nearest food stock (1 min)
@@ -32,6 +56,13 @@
 //   wander   0 — always           → one random fine step (1 min), nothing
 //                                    planned when no fine step is free
 //
+// NOTHING RECOVERS STRAIGHT FROM THE GROUND — the "go and find it" rule.
+// Water and food are world resources the actor must physically reach and
+// put INTO ITS INVENTORY first (collect → bag; gather → bag); the needs
+// only recover when an inventory item is CONSUMED (drink/eat). The rain no
+// longer floods every tile (the inventory plugin scatters pools), so the
+// thirst ladder genuinely has to travel.
+//
 // Movement runs at SCALE 0 — the simulation ground: every move task walks
 // the actor ONE SUBTILE CELL inside its tile's sub-grid
 // (world.relocateFine). A step that stays inside the parent tile is free
@@ -39,16 +70,26 @@
 // @godspace/core subTile continuity rule) and must find dry, unoccupied
 // ground there. The energy charge lands on a TILE CROSSING — milling
 // around inside a tile is free, walking into the next tile costs the move
-// (the coarse walk's economics, preserved at the fine granularity).
+// (the coarse walk's economics, preserved at the fine granularity). The
+// fine-step machinery lives in plugins/movement/fineMovement.ts, shared
+// with the survival and lumber behaviour plugins.
 //
 // Task EFFECTS (registered as a ledger completion listener, applied when a
 // task reaches 0 remaining):
 //   move    — re-validates the fine step (bounds, the wrap's tiles passable,
 //             the destination fine spot unoccupied) then fine-relocates,
-//             charges the move energy on a tile crossing and logs. A blocked
-//             move logs NOTHING — the actor re-plans next minute.
-//   drink   — takes water from the cell (re-validated), consumes it, relieves
-//             thirst.
+//             charges the move energy on a tile crossing — the movement KIND
+//             picks the burn row: a plain walk charges the profile's walk
+//             row, a flee charges the RUN row (threefold; the entity profiles
+//             derive both from the species' attributes) — and logs. A blocked
+//             move logs NOTHING — the actor re-plans next minute. Every
+//             'move' task flows through here, including the survival
+//             plugin's flee tasks and the lumber plugin's treks.
+//   collect — takes the planned item from the cell (re-validated) INTO THE
+//             BAG. The water now sits in the inventory; the drink consumes
+//             it from there on a later task.
+//   drink   — consumes water FROM THE BAG (re-validated) and relieves
+//             thirst. No bag water → the drink silently failed.
 //   eat     — consumes the planned item from the bag (re-validated), restores
 //             nutrition/hydration from the item catalog.
 //   gather  — gathers from the cell (the inventory re-validates the stock).
@@ -64,44 +105,58 @@ import { arrayEach } from '@presource/core';
 import {
     GROUND_LEVEL,
     NEIGHBOR_OFFSETS,
-    planeDistance,
-    position3,
-    subTileStep,
     type PluginContext,
     type WorldPlugin,
-    type Position3D,
 } from '@godspace/core';
 import { itemDef } from '../inventory/items';
+import {
+    chebyshev,
+    fineStep,
+    nearestCell,
+    travelSpec,
+} from '../movement/fineMovement';
 import type { World } from '../../engine/world';
-import type { Actor, TerrainCell } from '../../engine/types';
+import type { Actor } from '../../engine/types';
 import type { InventoryPlugin } from '../inventory/inventoryPlugin';
 import type { NeedsPlugin } from '../needs/needsPlugin';
 import type { RelationshipPlugin } from '../relationship/relationshipPlugin';
 import type { TasksPlugin } from '../tasks/tasksPlugin';
-import type { TaskSpec } from '../tasks/taskLedger';
+import type { TaskSpec, TaskEntity, TaskSubject } from '../tasks/taskLedger';
+import type { EntityProfiles } from '../entity/entityPlugin';
 
 export type BehaviorPluginOptions = {
     inventory: InventoryPlugin;
     needs: NeedsPlugin;
     relationship: RelationshipPlugin;
     tasks: TasksPlugin;
+    /**
+     * The entity profiles (plugins/entity/entityPlugin.ts) — the movement
+     * energy a tile crossing burns comes from the entity's species profile
+     * (attributes-derived), selected by the movement kind: a plain walk
+     * burns the walk row, a flee burns the RUN row (threefold). Absent: the
+     * needs plugin's legacy flat point applies (profiles-less runs).
+     */
+    profiles?: EntityProfiles;
     /** World minutes to move ONE SCALE-0 tile (one subtile cell). Default 1 —
      * the distribution's distance rule: one tile move per tick
      * (scenario/island.ts pins it). */
     travelMinutesPerTile?: number;
     /** World-minutes between social attempts per actor. Default 60. */
     socialCooldownMinutes?: number;
-    /** Minutes busy for the quick actions. Defaults: eat/drink 2, gather 10,
-     * social 10, rest 10. */
+    /** Minutes busy for the quick actions. Defaults: eat/drink 2,
+     * collect 3, gather 10, social 10, rest 10. */
     eatMinutes?: number;
     drinkMinutes?: number;
+    collectMinutes?: number;
     gatherMinutes?: number;
     socialMinutes?: number;
     restMinutes?: number;
 };
 
-/** Food item priority when eating/gathering (berries first — abundant). */
-const FOOD_PRIORITY = ['berry', 'fish', 'coconut'];
+/** Food item priority when eating/gathering (berries first — abundant).
+ * The island's full edible vocabulary: meadow/forest berries, forest
+ * mushrooms, the sea's fish and seaweed, the beaches' coconuts. */
+const FOOD_PRIORITY = ['berry', 'mushroom', 'fish', 'coconut', 'seaweed'];
 
 /** Trade goods a neighbour might hold — checked in this order. */
 const MATERIALS = ['shell', 'stone', 'wood', 'vine', 'flint'];
@@ -114,14 +169,15 @@ const HUNGER_SYMPATHY = 50;
 const DRINK_RELIEF = 35;
 const REST_RECOVERY = 12;
 
-/** Chebyshev distance — the grid step metric for "nearby" (plane only). */
-const chebyshev = (a: Position3D, b: Position3D): number => planeDistance(a, b);
-
 export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<World> => {
     const { inventory, needs, relationship, tasks } = options;
+    // The entity profiles — movement energy economics (run vs walk). Null:
+    // the needs plugin's legacy flat point.
+    const profiles = options.profiles ?? null;
     const travel = options.travelMinutesPerTile ?? 1;
     const eatMinutes = options.eatMinutes ?? 2;
     const drinkMinutes = options.drinkMinutes ?? 2;
+    const collectMinutes = options.collectMinutes ?? 3;
     const gatherMinutes = options.gatherMinutes ?? 10;
     const socialMinutes = options.socialMinutes ?? 10;
     const restMinutes = options.restMinutes ?? 10;
@@ -146,188 +202,22 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
         return held ?? null;
     };
 
-    /**
-     * Nearest cell (from `candidates`) by Chebyshev distance.
-     * Ties resolve to the earliest candidate — deterministic.
-     */
-    const nearest = (actor: Actor, candidates: TerrainCell[]): TerrainCell | null => {
-        let best: TerrainCell | null = null;
-        let bestDistance = Infinity;
-        arrayEach(candidates, ({ value: cell }) => {
-            // Cells are plane footprints — compare at ground level (z = 0)
-            const distance = chebyshev(actor.position, position3(cell.x, cell.y));
-            if (distance < bestDistance) {
-                best = cell;
-                bestDistance = distance;
-            }
-        });
-        return best;
-    };
-
-    /** Direction word for a step delta — used in move log lines. */
-    const directionWord = (dx: number, dy: number): string => {
-        const vertical = dy < 0 ? 'north' : dy > 0 ? 'south' : '';
-        const horizontal = dx > 0 ? 'east' : dx < 0 ? 'west' : '';
-        if (!vertical) {
-            return horizontal || 'nowhere';
-        }
-        return horizontal ? `${vertical}${horizontal}` : vertical;
-    };
-
-    // ── Scale-0 movement — the fine walk through the sub-grids ───────────────
-    // Every move task walks the actor ONE SUBTILE CELL (the tile's interior
-    // grid). A step inside the parent tile is always free ground; a step off
-    // an edge wraps into the NEIGHBOR tile (the subTile continuity rule) and
-    // must land on dry, unoccupied ground. Occupancy is per SCALE-0 tile: no
-    // two grounded actors stand on the same subtile cell.
-
-    /**
-     * Whether another GROUNDED entity stands at (sx, sy) inside the tile at
-     * (tileX, tileY) — the Scale-0 occupancy rule: no two entities stand on
-     * the same subtile cell. The scan reads the whole coordinate space (the
-     * single position registry), so registry actors AND coordinates-only
-     * creatures (birds on the ground, released fauna) block alike; flyers
-     * (z > ground) never block — they are above the Scale-0 ground.
-     */
-    const fineSpotTaken = (
-        active: World,
-        selfId: string,
-        tileX: number,
-        tileY: number,
-        sx: number,
-        sy: number,
-    ): boolean => {
-        let taken = false;
-        active.coordinates.all().forEach((other) => {
-            if (
-                other.id !== selfId &&
-                other.position.x === tileX &&
-                other.position.y === tileY &&
-                other.position.z === GROUND_LEVEL
-            ) {
-                const otherSub = active.subOf(other.id);
-                if (otherSub && otherSub.x === sx && otherSub.y === sy) {
-                    taken = true;
-                }
-            }
-        });
-        return taken;
-    };
-
-    /**
-     * Whether the actor could fine-step (dx, dy) right now — a PURE read
-     * used by both the planner and the completion effect (re-validation).
-     * Resolves the actor's fine spot, runs the subTileStep wrap, and
-     * validates the landing: interior steps need only a free fine spot;
-     * wraps additionally need the crossed tile(s) dry. Returns the crossed
-     * parent delta (the tile-crossing signal for the energy charge), or
-     * undefined when the step is impossible.
-     */
-    const fineStep = (
-        actor: Actor,
-        dx: number,
-        dy: number,
-    ): { parent: { dx: number; dy: number } } | undefined => {
-        const active = context?.world;
-        if (!active) {
-            return undefined;
-        }
-        const canvas = active.canvas;
-        if (canvas.width === 0 || canvas.height === 0) {
-            return undefined;
-        }
-        const sub = active.subOf(actor.id);
-        if (!sub) {
-            return undefined;
-        }
-        // The continuity rule: the step wraps at the sub-grid edges and
-        // reports the parent tile(s) it crossed
-        const step = subTileStep(canvas.width, canvas.height, sub.x, sub.y, dx, dy);
-        if (step.parent.dx !== 0 || step.parent.dy !== 0) {
-            // The wrap crossed into neighbor tile(s) — they must be dry
-            const crossed = active.cellAt(
-                actor.position.x + step.parent.dx,
-                actor.position.y + step.parent.dy,
-            );
-            if (!crossed || !crossed.passable) {
-                return undefined;
-            }
-        }
-        // The landing fine spot must be free of grounded actors (the tile
-        // the step lands in: the current one, or the wrapped neighbor)
-        const landingX = actor.position.x + step.parent.dx;
-        const landingY = actor.position.y + step.parent.dy;
-        if (fineSpotTaken(active, actor.id, landingX, landingY, step.x, step.y)) {
-            return undefined;
-        }
-        return { parent: step.parent };
-    };
-
-    /**
-     * One greedy fine step from the actor toward the target TILE (tx, ty):
-     * preferred steps dx→0 then dy→0, diagonal fallback, then any valid fine
-     * direction — chosen deterministically against the CURRENT occupancy.
-     * Null when the actor cannot fine-step at all.
-     */
-    const greedyFineStep = (actor: Actor, tx: number, ty: number): [number, number] | null => {
-        const dx = Math.sign(tx - actor.position.x);
-        const dy = Math.sign(ty - actor.position.y);
-
-        // Preferred step directions, most direct first
-        const preferred: Array<[number, number]> = [];
-        if (dx !== 0) {
-            preferred.push([dx, 0]);
-        }
-        if (dy !== 0) {
-            preferred.push([0, dy]);
-        }
-        if (dx !== 0 && dy !== 0) {
-            preferred.push([dx, dy]);
-        }
-
-        let step: [number, number] | null = null;
-        arrayEach(preferred, ({ value: candidate }) => {
-            if (!step && fineStep(actor, candidate[0], candidate[1])) {
-                step = candidate;
-            }
-        });
-        // Blocked toward the target — try any valid fine direction as
-        // fallback (the actor mills toward the tile edge facing the target)
-        if (!step) {
-            arrayEach(NEIGHBOR_OFFSETS, ({ value: offset }) => {
-                if (!step && fineStep(actor, offset.dx, offset.dy)) {
-                    step = [offset.dx, offset.dy];
-                }
-            });
-        }
-        return step;
-    };
-
-    /** Travel spec toward a target tile: one fine step, `travel` minutes. */
-    const travelSpec = (actor: Actor, label: string, target: TerrainCell): TaskSpec | undefined => {
-        const step = greedyFineStep(actor, target.x, target.y);
-        if (!step) {
-            return undefined;
-        }
-        return {
-            kind: 'move',
-            label,
-            minutes: travel,
-            payload: { dx: step[0], dy: step[1] },
-        };
-    };
+    /** The world while set up — every plan/effect guard reads through this. */
+    const worldOf = (): World | null => context?.world ?? null;
 
     /**
      * The social opportunity an actor has RIGHT NOW — a PURE read (no side
      * effects): the fed actor's hungry neighbour within Chebyshev 2 and the
      * interaction shape (a material trade, or a gift). The behaviour's gate
      * reads this, so the gate itself never mutates inventory or relationships;
-     * the PLAN applies the opportunity exactly once.
+     * the PLAN applies the opportunity exactly once. Social life stays a
+     * castaway affair: the neighbour scan reads the ACTOR REGISTRY, so a
+     * creature planned through the ladder finds no neighbours and declines.
      */
     const socialOpportunity = (
-        actor: Actor,
+        actor: TaskEntity,
     ): { target: Actor; itemId: string; material: string | null } | undefined => {
-        const active = context?.world;
+        const active = worldOf();
         if (!active) {
             return undefined;
         }
@@ -380,7 +270,7 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
      * re-plans next minute and no cooldown is stamped).
      */
     const applySocial = (
-        actor: Actor,
+        actor: TaskEntity,
         opportunity: { target: Actor; itemId: string; material: string | null },
     ): TaskSpec | undefined => {
         const bag = inventory.of(actor.id);
@@ -411,7 +301,7 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
         if (!itemId) {
             return undefined;
         }
-        const active = context?.world;
+        const active = worldOf();
         if (active) {
             lastSocial.set(actor.id, active.ticker.elapsed());
         }
@@ -434,12 +324,38 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
             // through the captured context
             context = pluginContext;
             const world = pluginContext.world;
-            const actorOf = (taskActorId: string): Actor | undefined =>
-                world.actors.get(taskActorId);
+            /**
+             * Resolves the LIVING BODY behind a task id at completion time —
+             * a registry castaway OR a coordinate-space creature (the task
+             * queues key by entity id either way). A despawned/despawned
+             * mid-task body resolves to undefined: the effect is dropped.
+             */
+            const actorOf = (taskActorId: string): TaskEntity | undefined => {
+                const registered = world.actors.get(taskActorId);
+                if (registered) {
+                    return registered;
+                }
+                const entry = world.coordinates.entryOf(taskActorId);
+                if (!entry) {
+                    return undefined;
+                }
+                // The creature's planning identity — the same fields the
+                // ledger plans through (taskLedger.ts TaskEntity)
+                return {
+                    id: entry.id,
+                    name: entry.name ?? entry.id,
+                    position: entry.position,
+                    kind: entry.kind,
+                    type: entry.type,
+                    marker: entry.marker,
+                };
+            };
 
             // ── the priority ladder as task behaviours ─────────────────────
 
-            // Thirst 50 — drink from the cell's pool, or travel toward one
+            // Thirst 50 — the collect-then-drink ladder: the relief only
+            // comes from water CONSUMED OUT OF THE BAG, and water only
+            // enters the bag by standing at a pool and collecting it
             tasks.behaviour({
                 id: 'thirst',
                 label: 'Thirst',
@@ -447,16 +363,30 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                 appliesTo: (subject) => needs.of(subject.actor.id).thirst >= THIRST_TRIGGER,
                 plan: (subject) => {
                     const actor = subject.actor;
-                    const stock = inventory.cellStock(actor.position.x, actor.position.y);
-                    if ((stock.water ?? 0) > 0) {
-                        // The drink itself is the task — 2 quick minutes
+                    // 1) Water in the bag — the drink is the task (the
+                    //    relief lands on completion, from the inventory)
+                    if ((inventory.of(actor.id).water ?? 0) > 0) {
                         return { kind: 'drink', label: 'drinks', minutes: drinkMinutes };
                     }
-                    const pool = nearest(actor, inventory.cellsWithItem('water'));
+                    // 2) A pool underfoot — the COLLECTION is the task: the
+                    //    water goes into the bag first (nothing recovers
+                    //    straight from the ground)
+                    const stock = inventory.cellStock(actor.position.x, actor.position.y);
+                    if ((stock.water ?? 0) > 0) {
+                        return {
+                            kind: 'collect',
+                            label: 'collects water',
+                            minutes: collectMinutes,
+                            payload: { itemId: 'water' },
+                        };
+                    }
+                    // 3) Go and find a pool — travel one fine step toward
+                    //    the nearest stocked cell
+                    const pool = nearestCell(actor, inventory.cellsWithItem('water'));
                     if (!pool) {
                         return undefined;
                     }
-                    return travelSpec(actor, 'travels to water', pool);
+                    return travelSpec(world, actor, 'travels to water', pool, travel);
                 },
             });
 
@@ -490,20 +420,11 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                     }
                     // Walk toward the nearest food-bearing cell
                     const targets = FOOD_PRIORITY.flatMap((item) => inventory.cellsWithItem(item));
-                    const target = nearest(actor, targets);
+                    const target = nearestCell(actor, targets);
                     if (!target) {
                         return undefined;
                     }
-                    const step = greedyFineStep(actor, target.x, target.y);
-                    if (!step) {
-                        return undefined;
-                    }
-                    return {
-                        kind: 'move',
-                        label: 'travels to food',
-                        minutes: travel,
-                        payload: { dx: step[0], dy: step[1] },
-                    };
+                    return travelSpec(world, actor, 'travels to food', target, travel);
                 },
             });
 
@@ -542,16 +463,34 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                 label: 'Wander',
                 priority: 0,
                 plan: (subject) => {
-                    // Idle actors fine-wander: one random valid fine step per
+                    // FLYERS keep their own flight script: the ledger's idle
+                    // filler would pin a gull to the ground forever (a task
+                    // queued every minute means the birds plugin's busy gate
+                    // never re-opens, so no takeoff roll ever fires again).
+                    // A perched bird with no pressing need stays unplanned —
+                    // its perch belongs to the birds plugin (takeoff/hop
+                    // rolls, the roost recovery). Species with the fly
+                    // ability are exempt; grounded walkers (people, boars)
+                    // fine-wander as always. No profiles → no ability
+                    // system → every body wanders (the pre-entity behavior).
+                    if (
+                        profiles &&
+                        subject.actor.kind === 'creature' &&
+                        subject.actor.type !== undefined &&
+                        profiles.hasAbility(subject.actor.type, 'fly')
+                    ) {
+                        return undefined;
+                    }
+                    // Idle bodies fine-wander: one random valid fine step per
                     // task (inside the tile, or wrapping into a neighbor tile)
                     const open: Array<[number, number]> = [];
                     arrayEach(NEIGHBOR_OFFSETS, ({ value: offset }) => {
-                        if (fineStep(subject.actor, offset.dx, offset.dy)) {
+                        if (fineStep(world, subject.actor, offset.dx, offset.dy)) {
                             open.push([offset.dx, offset.dy]);
                         }
                     });
                     if (open.length === 0) {
-                        // No fine step free — the actor stays idle this round
+                        // No fine step free — the body stays idle this round
                         return undefined;
                     }
                     const [dx, dy] = open[Math.floor(pluginContext.random() * open.length)];
@@ -579,7 +518,7 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                         // shifted under a mid-travel actor (occupancy moved,
                         // terrain regenerated). A blocked move logs nothing —
                         // the actor re-plans next minute
-                        const step = fineStep(actor, dx, dy);
+                        const step = fineStep(world, actor, dx, dy);
                         if (!step) {
                             return;
                         }
@@ -590,27 +529,36 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                         world.relocateFine(actor.id, dx, dy);
                         // The energy charge lands on a TILE CROSSING — the
                         // coarse walk's economics preserved at the fine
-                        // granularity (milling inside a tile is free)
+                        // granularity (milling inside a tile is free). The
+                        // movement KIND picks the profile's burn row: a plain
+                        // walk charges the walk row, a flee charges the RUN
+                        // row (running burns threefold — panic is expensive).
                         if (step.parent.dx !== 0 || step.parent.dy !== 0) {
-                            needs.moved(actor.id);
+                            needs.moved(actor.id, task.payload?.flee ? 'run' : 'walk');
                         }
-                        const wandering = task.payload?.wander === true;
-                        world.events.emit({
-                            kind: 'move',
-                            actorId: actor.id,
-                            message: wandering
-                                ? `${actor.name} wanders ${directionWord(dx, dy)}.`
-                                : `${actor.name} walks ${directionWord(dx, dy)}.`,
-                        });
+                        // NO log line — the log is a story teller (a
+                        // castaway's fine walk east or west is simulation
+                        // plumbing, not story). The event bus stays for
+                        // interactions and world-scale happenings.
+                        return;
+                    }
+                    case 'collect': {
+                        // The planned pool item — the pool may have run dry
+                        // during the wait, or a neighbour may have drunk it:
+                        // re-take, or the collection silently failed (the
+                        // actor re-plans next minute)
+                        const itemId = task.payload?.itemId;
+                        inventory.takeFromCell(actor, typeof itemId === 'string' ? itemId : 'water');
                         return;
                     }
                     case 'drink': {
-                        // The pool may have run dry during the 2 quick
-                        // minutes — re-take, or the drink silently failed
-                        if (!inventory.takeFromCell(actor, 'water')) {
+                        // The water must be IN THE BAG now (a mid-task
+                        // trade or gift may have moved it): the relief comes
+                        // from the consumed inventory item, never straight
+                        // from the ground. No bag water → silent failure.
+                        if (!inventory.consume(actor, 'water')) {
                             return;
                         }
-                        inventory.consume(actor, 'water');
                         needs.satisfy(actor.id, { thirst: -DRINK_RELIEF });
                         return;
                     }
@@ -640,13 +588,9 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                     case 'rest': {
                         // The instant-rest recovery, once per completed rest —
                         // the sleep plugin restores its own tasks per-minute
-                        // instead (sleepPlugin tick), never through here
+                        // instead (sleepPlugin tick), never through here.
+                        // No log line — resting is a solo beat, not a story.
                         needs.satisfy(actor.id, { energy: REST_RECOVERY });
-                        world.events.emit({
-                            kind: 'rest',
-                            actorId: actor.id,
-                            message: `${actor.name} rests for a while.`,
-                        });
                         return;
                     }
                     case 'social': {
@@ -678,17 +622,44 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
             if (!active) {
                 return;
             }
-            // Spawn-order snapshot; actors despawned mid-tick are skipped.
-            // Idle actors only — a busy actor keeps working its queue head
-            const actorIds = Array.from(active.actors.keys());
-            arrayEach(actorIds, ({ value: actorId }) => {
-                const actor = active.actors.get(actorId);
-                if (!actor) {
+            // Spawn-order snapshot; bodies despawned mid-tick are skipped.
+            // EVERY LIVING THING is planned each minute — busy bodies
+            // included: the ledger pre-empts a busy queue only when a
+            // STRICTLY higher-priority behaviour queues (the per-tick
+            // prioritization: survival outranks thirst, thirst outranks
+            // hunger, …; equal priorities never churn a queue).
+            //
+            // The registry castaways first (their full Actor records), then
+            // the coordinate-space creatures: GROUNDED (z ≤ the ground
+            // plane — flyers keep their plugin-owned flight) and standing
+            // on DRY ground (water creatures — the sharks — keep their own
+            // swim scripts; a task ladder that walks tiles is not their
+            // vocabulary). Each creature plans through its coordinate
+            // identity (taskLedger.ts TaskEntity).
+            const planned = new Set<string>(active.actors.keys());
+            active.actors.forEach((actor) => {
+                tasks.ledger.plan(actor);
+            });
+            active.coordinates.all().forEach((entry) => {
+                if (planned.has(entry.id)) {
                     return;
                 }
-                if (!tasks.busy(actorId)) {
-                    tasks.ledger.plan(actor);
+                if (entry.position.z > GROUND_LEVEL) {
+                    return;
                 }
+                const cell = active.cellAt(entry.position.x, entry.position.y);
+                if (!cell || !cell.passable) {
+                    return;
+                }
+                planned.add(entry.id);
+                tasks.ledger.plan({
+                    id: entry.id,
+                    name: entry.name ?? entry.id,
+                    position: entry.position,
+                    kind: entry.kind,
+                    type: entry.type,
+                    marker: entry.marker,
+                });
             });
         },
     };

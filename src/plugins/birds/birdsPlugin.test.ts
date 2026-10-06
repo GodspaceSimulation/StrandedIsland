@@ -17,6 +17,8 @@
 import { describe, it, expect } from 'vitest';
 import { createWorld } from '../../engine/world';
 import { islandTerrainPlugin } from '../terrain/islandTerrain';
+import { needsPlugin } from '../needs/needsPlugin';
+import { entityPlugin } from '../entity/entityPlugin';
 import { birdsPlugin, ALTITUDE_CEILING, ALTITUDE_FADE_LIMIT, BIRD_ALTITUDE_STATES } from './birdsPlugin';
 
 const buildStack = (
@@ -82,13 +84,14 @@ describe('birdsPlugin', () => {
         expect(birds.birds().map((bird) => bird.name)).toEqual(['Kiki', 'Jask', 'Sula']);
     });
 
-    it('flies through 3D space: glides, drifts altitude, lands, takes off', () => {
+    it('flies through 3D space silently: glides, drifts altitude — no telemetry in the log', () => {
         const { world, birds } = buildStack();
         birds.release();
         // Reference run (seed 7, per-minute chances): ten minutes of flight —
         // the arrival roll fires never, the land roll never, the altitude
         // roll ONCE (minute 9, z 2 → 3 — altitude drift is eventless) and
-        // every other minute a glide
+        // every other minute a glide. NONE of it logs: a bird gliding east
+        // or west is simulation, not story.
         for (let index = 0; index < 10; index++) {
             world.step();
         }
@@ -96,23 +99,13 @@ describe('birdsPlugin', () => {
             .log()
             .filter((event) => event.actorId === 'bird-1')
             .map((event) => event.message);
-        expect(path).toEqual([
-            'Kiki wheels above the island.',
-            'Kiki glides southeast.',
-            'Kiki glides east.',
-            'Kiki glides west.',
-            'Kiki glides northeast.',
-            'Kiki glides northwest.',
-            'Kiki glides south.',
-            'Kiki glides southeast.',
-            'Kiki glides east.',
-            'Kiki glides northeast.',
-        ]);
-        // Reference end position: nine glides + one altitude drift to z 3
+        expect(path).toEqual(['Kiki wheels above the island.']);
+        // Reference end position: nine glides + one altitude drift to z 3 —
+        // the flight itself never stopped, only its narration
         expect(birds.birdOf('bird-1')?.position).toEqual({ x: 4, y: 0, z: 3 });
     });
 
-    it('lands onto the ground plane (z = 0) and hops while perched', () => {
+    it('lands onto the ground plane (z = 0) and hops while perched — silently', () => {
         // Force the landing instinct: land on the first roll
         const { world, birds } = buildStack({ landChancePerMinute: 1 });
         birds.release();
@@ -125,9 +118,13 @@ describe('birdsPlugin', () => {
             position: { x: 0, y: 0, z: 0 },
         });
         expect(world.coordinates.positionOf('bird-1')).toEqual({ x: 0, y: 0, z: 0 });
-        expect(world.events.log()[1].message).toBe('Kiki lands.');
+        // No landing line — the log tells stories, not flight telemetry
+        expect(world.events.log().map((event) => event.message)).toEqual([
+            'Kiki wheels above the island.',
+        ]);
 
-        // Perched: takeoff disabled → the gull hops one step per minute
+        // Perched: takeoff disabled → the gull hops one step per minute,
+        // still silent
         const hopper = birdsPlugin({ landChancePerMinute: 1, takeoffChancePerMinute: 0 });
         const hopWorld = createWorld({ seed: 7, tickSize: 1, plugins: [islandTerrainPlugin(), hopper] });
         hopper.release();
@@ -138,11 +135,11 @@ describe('birdsPlugin', () => {
             .log()
             .filter((event) => event.actorId === 'bird-1')
             .map((event) => event.message);
-        expect(hopPath).toEqual(['Kiki wheels above the island.', 'Kiki lands.', 'Kiki hops north.']);
+        expect(hopPath).toEqual(['Kiki wheels above the island.']);
         expect(hopper.birdOf('bird-1')?.position).toEqual({ x: 0, y: -1, z: 0 });
     });
 
-    it('a perched bird takes off to an altitude within the ceiling', () => {
+    it('a perched bird takes off to an altitude within the ceiling — silently', () => {
         // Land on the first tick, then take off on the next
         const { world, birds } = buildStack({ landChancePerMinute: 1, takeoffChancePerMinute: 1 });
         birds.release();
@@ -152,7 +149,9 @@ describe('birdsPlugin', () => {
         expect(bird?.state).toBe('flying');
         // Reference takeoff altitude (seeded draw): 1 + floor(draw × 3) = 1
         expect(bird?.position).toEqual({ x: 0, y: 0, z: 1 });
-        expect(world.events.log().at(-1)?.message).toBe('Kiki takes off.');
+        expect(world.events.log().map((event) => event.message)).toEqual([
+            'Kiki wheels above the island.',
+        ]);
     });
 
     it('the fade ladder runs z 2..7 with the documented hex-alpha bands', () => {
@@ -197,17 +196,14 @@ describe('birdsPlugin', () => {
             position: { x: 0, y: 0, z: 8 },
         });
         expect(world.coordinates.all().some((entry) => entry.id === 'bird-1')).toBe(false);
-        expect(world.events.log().at(-1)).toEqual({
-            id: 2,
-            tick: 36,
-            time: 36,
-            kind: 'move',
-            message: 'Kiki soars out of sight.',
-            actorId: 'bird-1',
-        });
+        // The vanish is silent too — the flock record + the coordinate space
+        // are the truth, the log keeps to its stories
+        expect(world.events.log().map((event) => event.message)).toEqual([
+            'Kiki wheels above the island.',
+        ]);
     });
 
-    it('an aloft bird descends back into view below the fade limit', () => {
+    it('an aloft bird descends back into view below the fade limit — silently', () => {
         // Reference run (seed 11, forced altitude): the walk oscillates
         // across the fade limit — out at 24, back at 25, out 26, back 27,
         // out 28, silent drift 29-30, back at 31 (z 7)
@@ -240,20 +236,14 @@ describe('birdsPlugin', () => {
             marker: 'K',
             state: 'flying-7',
         });
+        // The whole fade cycle (out at 24, back 25, out 26, back 27, out 28,
+        // back 31) ran WITHOUT a single log line
         expect(
             world.events
                 .log()
                 .filter((event) => event.actorId === 'bird-1')
-                .map((event) => `${event.tick}:${event.message}`),
-        ).toEqual([
-            '0:Kiki wheels above the island.',
-            '24:Kiki soars out of sight.',
-            '25:Kiki descends back into view.',
-            '26:Kiki soars out of sight.',
-            '27:Kiki descends back into view.',
-            '28:Kiki soars out of sight.',
-            '31:Kiki descends back into view.',
-        ]);
+                .map((event) => event.message),
+        ).toEqual(['Kiki wheels above the island.']);
     });
 
     it('climbing to z 10 vanishes the bird into the nonexistent higher scale', () => {
@@ -275,7 +265,7 @@ describe('birdsPlugin', () => {
         expect(birds.birds()).toEqual([]);
         expect(world.coordinates.all().some((entry) => entry.id === 'bird-1')).toBe(false);
         expect(world.events.log().at(-1)).toEqual({
-            id: 3,
+            id: 2,
             tick: 38,
             time: 38,
             kind: 'despawn',
@@ -305,8 +295,8 @@ describe('birdsPlugin', () => {
         expect(birds.birdOf('bird-1')).toBeUndefined();
         expect(world.coordinates.all().some((entry) => entry.id === 'bird-1')).toBe(false);
         expect(world.events.log().at(-1)).toEqual({
-            // Event 51: the spawn + 49 glide events ran before it
-            id: 51,
+            // Event 2: the spawn ran before it — the 49 glides stayed silent
+            id: 2,
             tick: 50,
             time: 50,
             kind: 'despawn',
@@ -367,6 +357,7 @@ describe('birdsPlugin', () => {
             position: { x: -1, y: 0, z: 0 },
             marker: 'A',
             condition: 'well',
+            profile: { sex: 'male' },
         });
         expect(world.actorAt(-1, 0)?.id).toBe('a');
         // The bird hovers directly above the center column (z = 2 ≠ 0)
@@ -382,5 +373,66 @@ describe('birdsPlugin', () => {
         // Releasing before setup is a hard error
         const stray = birdsPlugin();
         expect(() => stray.release()).toThrow('birds plugin released before setup');
+    });
+});
+
+describe('birdsPlugin — the entity profiles: the stat-driven flight', () => {
+    /** The stack with the needs plugin + entity profiles — birds live by stats. */
+    const buildStatStack = (options: Parameters<typeof birdsPlugin>[0] = {}, seed = 7) => {
+        const profiles = entityPlugin();
+        const needs = needsPlugin({ profiles });
+        const birds = birdsPlugin({ needs, profiles, ...options });
+        const world = createWorld({ seed, tickSize: 1, plugins: [islandTerrainPlugin(), needs, birds] });
+        return { world, birds, needs };
+    };
+
+    it('gliding burns the fly row per tile — the roll stream never shifts', () => {
+        const { world, birds, needs } = buildStatStack();
+        birds.release();
+        // The SAME reference path the free-flight run pinned (the energy
+        // charges consume no rolls): ten minutes, nine glides, one drift
+        for (let index = 0; index < 10; index++) {
+            world.step();
+        }
+        expect(birds.birdOf('bird-1')?.position).toEqual({ x: 4, y: 0, z: 3 });
+        // The flight economics: nine glides × 2.5 (the fly row, stamina 8)
+        // + the species decay 0.05 × 10 minutes — the float drift pinned
+        // from the reference run
+        expect(needs.of('bird-1').energy).toBe(77.00000000000003);
+    });
+
+    it('a perched bird recovers faster than hopping costs — the roost nets positive', () => {
+        const { world, birds, needs } = buildStatStack({ landChancePerMinute: 1, takeoffChancePerMinute: 0 });
+        birds.release();
+        // Start drained — the clamp at 100 would hide the arithmetic
+        needs.satisfy('bird-1', { energy: -80 }); // 20
+        world.step(); // minute 1: lands (decay 19.95 — the landing is free)
+        expect(birds.birdOf('bird-1')?.state).toBe('perched');
+        world.step(); // minute 2: hop (−1.25 walk row) + roost (+3) − decay
+        expect(needs.of('bird-1').energy).toBe(21.65);
+        world.step(); // minute 3: the roost drifts the gull UP the ladder
+        expect(needs.of('bird-1').energy).toBe(23.349999999999998);
+        expect(birds.birdOf('bird-1')?.state).toBe('perched');
+    });
+
+    it('a spent gull stays perched — the takeoff gate reopens above the line', () => {
+        const { world, birds, needs } = buildStatStack({ landChancePerMinute: 1, takeoffChancePerMinute: 1 });
+        birds.release();
+        needs.satisfy('bird-1', { energy: -85 }); // 15 — below the 25 line
+        world.step(); // minute 1: lands (the landing needs no energy)
+        // Minutes 2-4: the takeoff roll fires every minute (chance 1) but
+        // the gate holds the spent gull down; the roost climbs meanwhile
+        // (three perched minutes: 15 − landing decay, +1.7 net each)
+        for (let index = 0; index < 3; index++) {
+            world.step();
+        }
+        expect(birds.birdOf('bird-1')?.state).toBe('perched');
+        expect(needs.of('bird-1').energy).toBe(20.049999999999997);
+        // Over the line: the very next perched minute takes off
+        needs.satisfy('bird-1', { energy: 30 });
+        world.step();
+        expect(birds.birdOf('bird-1')?.state).toBe('flying');
+        // The climb charged the fly row: (20.05 + 30) − decay − 2.5
+        expect(needs.of('bird-1').energy).toBe(47.5);
     });
 });

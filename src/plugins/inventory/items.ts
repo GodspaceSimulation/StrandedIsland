@@ -24,13 +24,15 @@ export const materials: ItemRegistry = createItemRegistry();
 // Engine configuration of the shared catalog: the island coins ids the
 // stock list doesn't carry (berry — the catalog lists the plural 'berries';
 // water — the island's drinkable rain pool; iron and dirt — the tile
-// deposits the catalog only lists in compound form, 'iron-ore'). Display-only
-// definitions: the island's own stats stay in ITEM_CATALOG. 'sand' is already
-// listed in the shared stock catalog, so it needs no definition here.
+// deposits the catalog only lists in compound form, 'iron-ore'; tree — the
+// standing deposit the canvas paints green). Display-only definitions: the
+// island's own stats stay in ITEM_CATALOG. 'sand' is already listed in the
+// shared stock catalog, so it needs no definition here.
 materials.define({ id: 'berry', name: 'Berry', kind: 'food' });
 materials.define({ id: 'water', name: 'Water', kind: 'resource' });
 materials.define({ id: 'iron', name: 'Iron', kind: 'resource' });
 materials.define({ id: 'dirt', name: 'Dirt', kind: 'resource' });
+materials.define({ id: 'tree', name: 'Tree', kind: 'resource' });
 
 export type ItemKind = 'food' | 'drink' | 'material' | 'tool';
 
@@ -50,20 +52,36 @@ export const ITEM_CATALOG: Record<string, ItemDef> = {
     berry: { name: 'Berry', kind: 'food', nutrition: 14 },
     fish: { name: 'Fish', kind: 'food', nutrition: 26 },
     coconut: { name: 'Coconut', kind: 'food', nutrition: 18, hydration: 10 },
+    // The forest floor's snack and the sea's greenery — the richer map's
+    // new foods: mushrooms sprout in the woods (the survey seeds them),
+    // seaweed washes ashore in the shallows and floats in the ocean
+    mushroom: { name: 'Mushroom', kind: 'food', nutrition: 10 },
+    seaweed: { name: 'Seaweed', kind: 'food', nutrition: 8, hydration: 2 },
     water: { name: 'Water', kind: 'drink', hydration: 35 },
-    // Tile deposits — wood/stone were the original materials; iron lodes
-    // hide in the highlands; sand and dirt are the UNLIMITED deposits
-    // (gathering them never empties the tile, see engine/types.ts
-    // UNLIMITED_TILE_RESOURCES)
-    wood: { name: 'Wood', kind: 'material' },
+    // Tile deposits — the standing natural features: trees (felled into
+    // wood), stone, and the iron lodes hide in the highlands; sand and
+    // dirt are the UNLIMITED deposits (gathering them never empties the
+    // tile, see engine/types.ts UNLIMITED_TILE_RESOURCES). WOOD IS NOT A
+    // DEPOSIT — it is the product of cutting a tree down (the lumber
+    // behaviour's chop → inventory.harvest), a trade good like stone.
+    tree: { name: 'Tree', kind: 'material' },
     stone: { name: 'Stone', kind: 'material' },
     iron: { name: 'Iron', kind: 'material' },
     sand: { name: 'Sand', kind: 'material' },
     dirt: { name: 'Dirt', kind: 'material' },
+    wood: { name: 'Wood', kind: 'material' },
     vine: { name: 'Vine', kind: 'material' },
     shell: { name: 'Shell', kind: 'material' },
     flint: { name: 'Flint', kind: 'tool' },
 };
+
+/**
+ * The DEPOSIT resources only a miner may take — the 'mine' ability unlock
+ * (plugins/entity/entityPlugin.ts). Taking stone or iron off a tile through
+ * the inventory plugin's takeFromCell demands the entity's species to hold
+ * the mine ability; every other item is free for any hand that reaches it.
+ */
+export const MINED_ITEMS: readonly string[] = ['stone', 'iron'];
 
 /**
  * Safe item lookup — unknown ids resolve to a generic material. The display
@@ -171,4 +189,6 @@ export const ITEM_TYPE_GLYPHS: Record<string, string> = {
     water: '💧',
     vine: '🌿',
     flint: '⛏️',
+    mushroom: '🍄',
+    seaweed: '🌱',
 };

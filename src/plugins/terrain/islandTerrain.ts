@@ -6,8 +6,8 @@
 // the water line and the edges fall into the sea — a small island.
 //
 // Every column also carries RESOURCE DEPOSITS (TileResources on engine/types):
-// timber in forests, stone on the highlands, iron lodes where the vein noise
-// concentrates, and the unlimited sands of the beaches and dirts of the
+// trees in the forests, stone on the highlands, iron lodes where the vein
+// noise concentrates, and the unlimited sands of the beaches and dirts of the
 // meadows. The deposits are what the tile appears as on the canvas
 // (tileSurfaceKey below) and what the inventory plugin seeds its gatherable
 // cell stocks from.
@@ -70,13 +70,28 @@ export const IRON_LODE_THRESHOLD = 0.5;
 
 /**
  * Moisture threshold for forests: a dry grass-surface cell whose moisture
- * sample exceeds it grows one — timber ×2 stands on the tile (the
- * deriveBiome ladder and the wood deposit both read `forested` below).
+ * sample exceeds it grows one — trees ×2 stand on the tile (the
+ * deriveBiome ladder and the tree deposit both read `forested` below).
  * Lowered from the old inline 0.6 so the meadows read as woodland more
  * often: on the seed-7 25×17 reference island the forest census moves
  * 52 → 75 (see islandTerrain.test.ts).
  */
 export const FOREST_MOISTURE_THRESHOLD = 0.5;
+
+/**
+ * The DENSE grove line — a forested cell whose moisture sample also
+ * exceeds this is a THICK wood: tree ×6 stand on the tile (a grove with
+ * room to chop and regrow), while the plain woods keep tree ×2. Calibrated
+ * so dense groves stay the landmark woods — on the seed-7 25×17 reference
+ * island a third of the forest cells densify (see islandTerrain.test.ts).
+ */
+export const DENSE_FOREST_MOISTURE_THRESHOLD = 0.78;
+
+/** Trees on a plain forested tile — the standing grove the canvas paints. */
+export const FOREST_TREES = 2;
+
+/** Trees on a DENSE forested tile — the grove a lot of trees make. */
+export const DENSE_FOREST_TREES = 6;
 
 /**
  * Lattice value noise with bilinear interpolation and a smoothstep fade.
@@ -272,9 +287,15 @@ export const generateIsland = (
             const resources: TileResources = {};
             if (!submerged) {
                 if (forested) {
-                    // Forests stand on timber — 2 units, matching the old
-                    // forest wood stock
-                    resources.wood = 2;
+                    // Forests stand on trees — a DENSE grove (the moisture
+                    // band past DENSE_FOREST_MOISTURE_THRESHOLD) carries a
+                    // lot of them, plain woods the base grove. Felled one
+                    // at a time into wood (the lumber behaviour's chop; the
+                    // wood item is the product, never the deposit)
+                    resources.tree =
+                        moisture(col, row) > DENSE_FOREST_MOISTURE_THRESHOLD
+                            ? DENSE_FOREST_TREES
+                            : FOREST_TREES;
                 } else if (surface === 'stone') {
                     // Highlands are quarries: stone, plus an iron lode when
                     // the vein noise concentrates past the threshold
@@ -320,7 +341,7 @@ export const generateIsland = (
 
 // ── Tile appearance ──────────────────────────────────────────────────────────
 // The tile's RESOURCES decide what it appears as on the canvas: a tile shows
-// up as the resource it carries (timber tiles, ore tiles, sand tiles…), so
+// up as the resource it carries (treed tiles, ore tiles, sand tiles…), so
 // the god reads the island as a resource map, not just a biome map.
 
 /** The minimal cell slice the surface derivation reads. */
@@ -332,9 +353,9 @@ export type TileSurfaceCell = {
 /**
  * Deposit-priority order for the canvas surface — the rarest deposit wins
  * the tile's look so landmarks stand out (an iron lode shows through the
- * stone it sits in; timber shows through the meadow it borders).
+ * stone it sits in; a tree grove shows through the meadow it borders).
  */
-const RESOURCE_SURFACE_PRIORITY: readonly TileResource[] = ['iron', 'wood', 'stone', 'sand', 'dirt'];
+const RESOURCE_SURFACE_PRIORITY: readonly TileResource[] = ['iron', 'tree', 'stone', 'sand', 'dirt'];
 
 /**
  * The canvas surface key of a tile: its top-priority deposit, falling back
@@ -347,13 +368,13 @@ export const tileSurfaceKey = (cell: TileSurfaceCell): string | undefined => {
     return deposit ?? cell.biome;
 };
 
-/** One "wood ×2" / "sand ×∞" fragment for hover titles and inspectors. */
+/** One "tree ×2" / "sand ×∞" fragment for hover titles and inspectors. */
 const depositFragment = (resource: TileResource, count: number): string =>
     UNLIMITED_TILE_RESOURCES.includes(resource) ? `${resource} ×∞` : `${resource} ×${count}`;
 
 /**
  * Human readable deposit summary of a tile's resources, in
- * TILE_RESOURCES order: "wood ×2 · iron ×1" — empty when bare.
+ * TILE_RESOURCES order: "tree ×2 · iron ×1" — empty when bare.
  */
 export const tileDepositSummary = (resources?: TileResources): string =>
     TILE_RESOURCES.filter((resource) => (resources?.[resource] ?? 0) > 0)
@@ -461,7 +482,7 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
      * the parent column (voxels, height, water line, passability, biome):
      * the tile's interior ground IS the tile's ground. The parent's deposits
      * distribute across the subtiles — the zoom reveals WHERE they stand:
-     *   finite deposits (wood ×2 on a forest tile) scatter one unit per
+     *   finite deposits (tree ×2 on a forest tile) scatter one unit per
      *     seeded subtile — the individual trees/rocks/ore pockets, gathered
      *     or regrown deposits reshape the scatter through the fingerprint;
      *   unlimited deposits (sand, dirt) ARE the ground — every subtile

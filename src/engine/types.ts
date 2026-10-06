@@ -35,18 +35,23 @@ export type VoxelKind = 'air' | 'water' | 'sand' | 'soil' | 'grass' | 'forest' |
 export type Biome = 'ocean' | 'shallows' | 'beach' | 'meadow' | 'forest' | 'highland';
 
 // ── Tile resources ───────────────────────────────────────────────────────────
-// Every tile carries RESOURCE DEPOSITS — the gatherable materials standing on
-// it (timber in forests, ore veins in the highlands, sand on the beaches).
+// Every tile carries RESOURCE DEPOSITS — the natural features standing on it
+// (trees in the forests, ore veins in the highlands, sand on the beaches).
 // Deposits are a property of the tile itself (written by the terrain
 // generator, kept in sync with the inventory plugin's gatherable cell stocks)
 // and they drive the tile's canvas appearance: a tile shows up as the
 // resource it holds (see plugins/terrain/islandTerrain.ts tileSurfaceKey).
+//
+// WOOD IS NOT A NATURAL RESOURCE — the standing deposit is the TREE (the
+// greenery the canvas paints). Wood is a PRODUCT: cutting a tree down
+// (the lumber behaviour's chop task → inventory.harvest) yields wood into
+// the actor's bag, and the felled tree leaves the tile until it regrows.
 
 /** The resource kinds a tile can carry as a deposit. */
-export type TileResource = 'wood' | 'stone' | 'iron' | 'sand' | 'dirt';
+export type TileResource = 'tree' | 'stone' | 'iron' | 'sand' | 'dirt';
 
 /** All tile resource kinds, in deposit-priority order (see tileSurfaceKey). */
-export const TILE_RESOURCES: readonly TileResource[] = ['wood', 'stone', 'iron', 'sand', 'dirt'];
+export const TILE_RESOURCES: readonly TileResource[] = ['tree', 'stone', 'iron', 'sand', 'dirt'];
 
 /**
  * Unlimited resources — deposits that can never be exhausted (you cannot
@@ -118,6 +123,26 @@ export type ActorKind = 'creature' | 'sentient';
  */
 export type ActorType = string;
 
+// ── Actor profile ────────────────────────────────────────────────────────────
+// Stable personal facts carried beside the simulation state. The coordinate
+// record's display facet carries the sex (engine/world.ts facetOf), so the
+// representation plugins can draw it — the unicode canvas picks the gendered
+// person emoji for humans.
+
+/** Biological sex — the profile fact the god-view draws. */
+export type Sex = 'male' | 'female';
+
+/** The sex glyph badges — the inspector's profile line + future god-views. */
+export const SEX_BADGES: Record<Sex, string> = {
+    male: '♂', // U+2642 male sign
+    female: '♀', // U+2640 female sign
+};
+
+/** Stable personal facts of one actor. */
+export type ActorProfile = {
+    sex: Sex;
+};
+
 /**
  * One living resident of the world. Position is a 3D coordinate — sentients
  * that cannot fly or dig keep Z at ground level (birds travel the Z axis).
@@ -134,6 +159,8 @@ export type Actor = {
     /** Short grid marker (1–2 letters) shown in the god-view. */
     marker: string;
     condition: ActorCondition;
+    /** Stable personal facts (see ActorProfile) — the cast's sex, e.g. */
+    profile: ActorProfile;
 };
 
 // ── World events ─────────────────────────────────────────────────────────────

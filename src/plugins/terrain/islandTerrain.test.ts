@@ -6,12 +6,15 @@
 // canvas, so grid sizes must be ODD (even input is nudged up one cell). The
 // canvas edge is always open sea — the island never touches the border.
 //
-// Every column also carries RESOURCE DEPOSITS (TileResources): wood ×2 on
-// forests (which grow where the moisture noise exceeds
-// FOREST_MOISTURE_THRESHOLD), stone ×1 on highlands, iron lodes where the
-// vein noise exceeds IRON_LODE_THRESHOLD, and the UNLIMITED sand ×1 /
-// dirt ×1 on beaches and meadows. Deposits drive the canvas surface
-// (tileSurfaceKey) and seed the inventory plugin's cell stocks.
+// Every column also carries RESOURCE DEPOSITS (TileResources): tree ×2 on
+// plain forests — tree ×6 on a DENSE grove (the moisture noise past
+// DENSE_FOREST_MOISTURE_THRESHOLD: some tiles hold a lot of trees) — which
+// grow where the moisture noise exceeds FOREST_MOISTURE_THRESHOLD, stone ×1
+// on highlands, iron lodes where the vein noise exceeds IRON_LODE_THRESHOLD,
+// and the UNLIMITED sand ×1 / dirt ×1 on beaches and meadows. Deposits drive
+// the canvas surface (tileSurfaceKey) and seed the inventory plugin's cell
+// stocks. Wood is NOT a deposit — it is the product of felling a tree (the
+// lumber behaviour's chop → inventory.harvest).
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -22,6 +25,9 @@ import {
     tileSurfaceKey,
     IRON_LODE_THRESHOLD,
     FOREST_MOISTURE_THRESHOLD,
+    DENSE_FOREST_MOISTURE_THRESHOLD,
+    FOREST_TREES,
+    DENSE_FOREST_TREES,
 } from './islandTerrain';
 import { createWorld } from '../../engine/world';
 
@@ -87,10 +93,24 @@ describe('generateIsland', () => {
         expect(island.stats).toEqual({ land: 282, water: 143, forest: 75, iron: 0 });
     });
 
-    it('carries resource deposits: wood on forests, sand/dirt unlimited, bare sea', () => {
+    it('carries resource deposits: trees on forests, sand/dirt unlimited, bare sea', () => {
         const island = generateIsland({ seed: 7 });
-        // Forest (3,−6): timber — a finite deposit of 2
-        expect(island.cells.find((cell) => cell.x === 3 && cell.y === -6)?.resources).toEqual({ wood: 2 });
+        // The grove ladder: plain woods carry 2 trees, DENSE groves (the
+        // moisture band past the dense line) carry a lot — 6 — and the
+        // constants pin the ladder itself
+        expect(FOREST_MOISTURE_THRESHOLD).toBe(0.5);
+        expect(DENSE_FOREST_MOISTURE_THRESHOLD).toBe(0.78);
+        expect(FOREST_TREES).toBe(2);
+        expect(DENSE_FOREST_TREES).toBe(6);
+        // Forest (3,−6): a plain grove — a finite deposit of 2
+        expect(island.cells.find((cell) => cell.x === 3 && cell.y === -6)?.resources).toEqual({ tree: 2 });
+        // Forest (5,−5): a DENSE grove — 6 trees standing on one tile (the
+        // landmark woods a lot of trees make)
+        expect(island.cells.find((cell) => cell.x === 5 && cell.y === -5)?.resources).toEqual({ tree: 6 });
+        // The dense census: 12 of the island's 75 forests densified past
+        // the line, 63 stay plain groves
+        expect(island.cells.filter((cell) => (cell.resources.tree ?? 0) === 6).length).toBe(12);
+        expect(island.cells.filter((cell) => (cell.resources.tree ?? 0) === 2).length).toBe(63);
         // Beach (−4,−7): unlimited sand — a symbolic count the inventory
         // never depletes (UNLIMITED_TILE_RESOURCES)
         expect(island.cells.find((cell) => cell.x === -4 && cell.y === -7)?.resources).toEqual({ sand: 1 });
@@ -124,12 +144,12 @@ describe('generateIsland', () => {
 
     it('derives the canvas surface from the tile deposits (tileSurfaceKey)', () => {
         const island = generateIsland({ seed: 7, width: 7, height: 5 });
-        // Deposits win: the 7×5 island surfaces as wood / sand / dirt
+        // Deposits win: the 7×5 island surfaces as tree / sand / dirt
         expect(island.cells.map((cell) => tileSurfaceKey(cell))).toEqual([
             'shallows', 'shallows', 'shallows', 'shallows', 'shallows', 'shallows', 'ocean',
             'shallows', 'shallows', 'sand', 'sand', 'sand', 'shallows', 'ocean',
-            'shallows', 'sand', 'wood', 'wood', 'sand', 'sand', 'shallows',
-            'ocean', 'sand', 'sand', 'wood', 'sand', 'sand', 'shallows',
+            'shallows', 'sand', 'tree', 'tree', 'sand', 'sand', 'shallows',
+            'ocean', 'sand', 'sand', 'tree', 'sand', 'sand', 'shallows',
             'ocean', 'ocean', 'ocean', 'ocean', 'ocean', 'ocean', 'shallows',
         ]);
         // Deposit priority puts the rarest resource first: a stone tile with
@@ -147,7 +167,7 @@ describe('generateIsland', () => {
     });
 
     it('summarizes deposits for hover titles and inspectors (tileDepositSummary)', () => {
-        expect(tileDepositSummary({ wood: 2 })).toBe('wood ×2');
+        expect(tileDepositSummary({ tree: 2 })).toBe('tree ×2');
         expect(tileDepositSummary({ stone: 1, iron: 1 })).toBe('stone ×1 · iron ×1');
         // Unlimited deposits render the infinity marker, never a bare count
         expect(tileDepositSummary({ sand: 1 })).toBe('sand ×∞');
@@ -185,7 +205,7 @@ describe('generateIsland', () => {
     it('builds voxel columns bottom → top with soil under the surface', () => {
         const island = generateIsland({ seed: 7, width: 7, height: 5 });
         // Forest cell (0,0) — the canvas middle: stone bedrock, soil, grass
-        // surface, forest on top, timber standing on it
+        // surface, forest on top, trees standing on it
         expect(island.cells[2 * 7 + 3]).toEqual({
             x: 0,
             y: 0,
@@ -194,7 +214,7 @@ describe('generateIsland', () => {
             waterLevel: 3,
             biome: 'forest',
             passable: true,
-            resources: { wood: 2 },
+            resources: { tree: 2 },
         });
         // Top-left corner (−3,−2): shallow seabed sand + water stacked to
         // the sea level — no deposits on a sea column
@@ -282,7 +302,8 @@ describe('islandTerrainPlugin', () => {
         expect(world.canvas.cells.length).toBe(273);
         expect(plugin.size()).toEqual({ width: 21, height: 13 });
         expect(plugin.stats()).toEqual({ land: 162, water: 111, forest: 44, iron: 0 });
-        // The redraw is announced on the world log
+        // The redraw is announced on the story feed (a world-scale
+        // happening — the god reshaped the world)
         expect(world.events.log()[events]).toEqual({
             id: events + 1,
             tick: 0,
@@ -373,13 +394,13 @@ describe('islandTerrainPlugin', () => {
     it('distributes the parent deposits onto the subtiles (the zoomed view)', () => {
         const plugin = islandTerrainPlugin({ width: 7, height: 5 });
         const world = createWorld({ seed: 7, plugins: [plugin] });
-        // The forest center carries wood ×2 → exactly two wood subtiles,
+        // The forest center carries tree ×2 → exactly two tree subtiles,
         // pinned to their seeded positions
         const forest = plugin.canvasFor([{ x: 0, y: 0 }]);
-        const woodTiles = forest?.cells.filter((cell) => (cell.resources.wood ?? 0) > 0);
-        expect(woodTiles?.map((cell) => [cell.x, cell.y, cell.resources.wood])).toEqual([
-            [-3, -2, 1],
-            [-1, -2, 1],
+        const treeTiles = forest?.cells.filter((cell) => (cell.resources.tree ?? 0) > 0);
+        expect(treeTiles?.map((cell) => [cell.x, cell.y, cell.resources.tree])).toEqual([
+            [2, -2, 1],
+            [1, 0, 1],
         ]);
         // The rest of the forest interior is bare ground (biome surface)
         expect(forest?.cells.filter((cell) => Object.keys(cell.resources).length === 0).length).toBe(33);
@@ -400,13 +421,13 @@ describe('islandTerrainPlugin', () => {
         // A length-1 path resolves the root canvas cell
         expect(plugin.cellFor([{ x: 0, y: 0 }])).toEqual(world.cellAt(0, 0));
         // A length-2 path resolves a subtile of the forest's sub-grid — one
-        // of the two seeded wood subtiles
-        const subtile = plugin.cellFor([{ x: 0, y: 0 }, { x: -3, y: -2 }]);
+        // of the two seeded tree subtiles
+        const subtile = plugin.cellFor([{ x: 0, y: 0 }, { x: 2, y: -2 }]);
         expect(subtile?.biome).toBe('forest');
-        expect(subtile?.resources).toEqual({ wood: 1 });
+        expect(subtile?.resources).toEqual({ tree: 1 });
         // Depth 1: a length-2 path still resolves; length 3 is beyond the
         // generated content (the ladder bounds the reach)
-        expect(plugin.cellFor([{ x: 0, y: 0 }, { x: -3, y: -2 }, { x: 0, y: 0 }])).toBeUndefined();
+        expect(plugin.cellFor([{ x: 0, y: 0 }, { x: 2, y: -2 }, { x: 0, y: 0 }])).toBeUndefined();
         expect(plugin.canvasFor([{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }])).toBeUndefined();
         // Out-of-bounds tiles are undefined
         expect(plugin.cellFor([{ x: 99, y: 0 }])).toBeUndefined();
@@ -417,22 +438,22 @@ describe('islandTerrainPlugin', () => {
     it('regenerates sub-grids when the parent deposits change (fingerprint)', () => {
         const plugin = islandTerrainPlugin({ width: 7, height: 5 });
         const world = createWorld({ seed: 7, plugins: [plugin] });
-        // The forest carries wood ×2 → two wood subtiles; the first seeded
-        // slot sits at (−3, −2)
-        const before = plugin.cellFor([{ x: 0, y: 0 }, { x: -3, y: -2 }]);
-        expect(before?.resources).toEqual({ wood: 1 });
-        // The god gathers one wood unit off the parent tile
-        world.cellAt(0, 0)!.resources.wood = 1;
-        // The cached sub-grid invalidated — one wood subtile remains, at
+        // The forest carries tree ×2 → two tree subtiles; the first seeded
+        // slot sits at (2, −2)
+        const before = plugin.cellFor([{ x: 0, y: 0 }, { x: 2, y: -2 }]);
+        expect(before?.resources).toEqual({ tree: 1 });
+        // The god fells one tree off the parent tile
+        world.cellAt(0, 0)!.resources.tree = 1;
+        // The cached sub-grid invalidated — one tree subtile remains, at
         // the first seeded scatter position
-        const after = plugin.cellFor([{ x: 0, y: 0 }, { x: -3, y: -2 }]);
-        expect(after?.resources).toEqual({ wood: 1 });
-        const woodTiles = plugin
+        const after = plugin.cellFor([{ x: 0, y: 0 }, { x: 2, y: -2 }]);
+        expect(after?.resources).toEqual({ tree: 1 });
+        const treeTiles = plugin
             .canvasFor([{ x: 0, y: 0 }])
-            ?.cells.filter((cell) => (cell.resources.wood ?? 0) > 0);
-        expect(woodTiles?.length).toBe(1);
-        // Gathered to zero: the whole interior goes bare
-        world.cellAt(0, 0)!.resources.wood = 0;
+            ?.cells.filter((cell) => (cell.resources.tree ?? 0) > 0);
+        expect(treeTiles?.length).toBe(1);
+        // Felled to zero: the whole interior goes bare
+        world.cellAt(0, 0)!.resources.tree = 0;
         expect(
             plugin.canvasFor([{ x: 0, y: 0 }])?.cells.every((cell) => Object.keys(cell.resources).length === 0),
         ).toBe(true);

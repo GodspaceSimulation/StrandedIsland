@@ -8,7 +8,7 @@
 //   (−12,−8)  shallows           h2  voxels [soil, sand, water]  deposits {}         stock {fish:1}
 //   (0,0)     stone tile (highland) h7  voxels [stone ×5, soil, stone]  deposits {stone:1}  stock {stone:1}  Kiki flies at z 2
 //   (1,−4)    dirt tile (meadow) h5  voxels [stone ×3, soil, grass]  deposits {dirt:1}  stock {dirt:1, berry:2}
-//   (−7,0)    wood tile (forest) h5  voxels [stone ×3, soil, grass, forest]  deposits {wood:2}  stock {wood:2, berry:1}
+//   (−7,0)    tree tile (forest) h5  voxels [stone ×3, soil, grass, forest]  deposits {tree:2}  stock {tree:2, berry:1}
 //   (−5,3)    iron tile (lode — on the 37×25 reference board; the smaller
 //             25×17 default keeps every vein sample below the threshold)
 //             h7  deposits {stone:1, iron:1}  stock {stone:1, iron:1, flint:1}
@@ -198,7 +198,7 @@ describe('tileGround', () => {
         //   coconut on (−11,0) → subtile (−11,5)
         //   fish on (−12,−8) → subtile (9,5)
         //   berries on (1,−4) → subtiles (7,−6) and (5,1)
-        // Tile-resource stock (the sand/dirt/wood mirrors) never scatters —
+        // Tile-resource stock (the sand/dirt/tree mirrors) never scatters —
         // those units stand as the subtile deposits the terrain distributed
         expect(tileGround(island, [{ x: -11, y: 0 }, { x: -11, y: 5 }])).toEqual([
             { item: 'coconut', count: 1 },
@@ -236,9 +236,9 @@ describe('tileResources', () => {
         expect(tileResources(island.world.cellAt(1, -4)?.resources)).toEqual([
             { resource: 'dirt', count: 1, unlimited: true },
         ]);
-        // The forest keeps a finite timber deposit
+        // The forest keeps a finite tree deposit
         expect(tileResources(island.world.cellAt(-7, 0)?.resources)).toEqual([
-            { resource: 'wood', count: 2, unlimited: false },
+            { resource: 'tree', count: 2, unlimited: false },
         ]);
         // An iron lode carries stone AND iron, both finite (the 37×25
         // reference board — the default island holds no lodes)
@@ -313,11 +313,10 @@ describe('tileSummary', () => {
             { resource: 'stone', count: 1, unlimited: false },
             { resource: 'iron', count: 1, unlimited: false },
         ]);
-        // Stone and iron aggregate as materials; the flint is a tool —
-        // its own category
+        // Stone and iron aggregate as materials — this run's lode drew no
+        // flint (the survey's chance stream moved with the richer map)
         expect(summary?.ground).toEqual([
             { category: 'material', label: 'Materials', count: 2 },
-            { category: 'tool', label: 'Tools', count: 1 },
         ]);
     });
 
@@ -380,6 +379,9 @@ describe('scaleView', () => {
                 name: 'Ael',
                 marker: 'A',
                 state: 'well',
+                // The profile rides the coordinate facet (engine/world.ts
+                // facetOf) so the canvases draw the gendered emoji
+                sex: 'male',
             },
             {
                 id: 'ground:coconut:0',

@@ -2,15 +2,24 @@
 // where every task costs WORLD MINUTES and pluggable "behaviour modules"
 // decide what gets queued.
 //
-// The behavior plugin (plugins/behavior/behaviorPlugin.ts) currently decides
-// one instant action per actor per world-minute. This ledger is the
-// replacement substrate: behaviours QUEUE time-costing tasks (moving one
-// Scale-0 tile = 1 world minute — TRAVEL_MINUTES_PER_TILE —, sleeping = tens,
-// …) and the actor stays busy while the head task counts down. The heartbeat
+// The behaviour plugins queue time-costing tasks (moving one Scale-0 tile
+// = 1 world minute — TRAVEL_MINUTES_PER_TILE —, sleeping = tens, …) and
+// the actor stays busy while the head task counts down. The heartbeat
 // contract: the world runs one world-minute per plugin tick hook call
 // (the engine core's step() sub-stepping), so one ledger tick() call
 // decrements task progress by exactly one minute — and ONLY each queue's
 // head advances (time is serial; queued followers wait their turn).
+//
+// PRIORITIZATION PER TICK — an actor can hold many tasks and not all of
+// them complete. plan() runs for BUSY actors too: a behaviour whose
+// priority is STRICTLY HIGHER than the head task's behaviour priority
+// pre-empts — the in-progress task is abandoned mid-work (its remaining
+// minutes and effect are lost) and the urgent task takes the head, the
+// old queue's survivors following behind. So an actor travelling to water
+// (thirst) drops everything the tick a wild animal closes in (the
+// survival plugin's higher-priority flee), and picks the find-food /
+// find-water queue back up once the threat is gone. Equal priorities
+// never churn a running queue.
 //
 // Behaviour modules are pluggable slices of conduct ('sleep', 'thirst', …).
 // The add/remove update rule: registering one changes future planning only;
@@ -22,6 +31,7 @@
 // only counts the minutes down. No randomness, no world access — pure logic.
 
 import { arrayEach } from '@presource/core';
+import type { Position3D } from '@godspace/core';
 import type { Actor } from '../../engine/types';
 
 /** What a behaviour wants queued: one unit of work with a time cost. */
@@ -51,12 +61,31 @@ export type ActiveTask = TaskSpec & {
 };
 
 /**
+ * The minimal entity shape the ledger plans through. EVERY living thing can
+ * hold tasks (all entities plan through the behaviours plugin script): a
+ * castaway satisfies this with its full Actor record, and a coordinate-space
+ * creature (a seabird, a wild boar — plugins/birds, plugins/predators) is
+ * planned through the same id/name/position identity. The `kind`/`type`
+ * facets ride along so behaviour modules can gate per species (the survival
+ * flee and the lumber chop stay sentient-only; the hunger/rest rungs apply
+ * to every living thing).
+ */
+export type TaskEntity = {
+    id: string;
+    name: string;
+    position: Position3D;
+    kind?: string;
+    type?: string;
+    marker?: string;
+};
+
+/**
  * The subject a behaviour module's gate/plan reads. Behaviour modules close
  * over whatever plugin APIs they need (needs, inventory, …); the ledger only
- * hands them the actor.
+ * hands them the entity.
  */
 export type TaskSubject = {
-    actor: Actor;
+    actor: TaskEntity;
 };
 
 /** A pluggable behaviour module — one named slice of conduct that queues tasks. */
@@ -65,7 +94,11 @@ export type TaskBehaviour = {
     id: string;
     /** Display label for rosters. */
     label?: string;
-    /** Planning priority — higher modules are consulted first. Default 0. */
+    /**
+     * Planning priority — higher modules are consulted first. Default 0.
+     * The priority also governs pre-emption: while an actor is busy, only
+     * a module with a STRICTLY higher priority may interrupt its queue.
+     */
     priority?: number;
     /** Circumstance gate — does this behaviour want to act for this actor now? */
     appliesTo?: (subject: TaskSubject) => boolean;
@@ -106,12 +139,19 @@ export type TaskLedger = {
     /** Whether the actor has at least one queued task. */
     busy(actorId: string): boolean;
     /**
-     * Consults the registered behaviour modules for an actor: the first
-     * module (planning order) whose gate passes and whose plan yields specs
-     * gets them queued. No-op when the actor is already busy. Returns the
+     * Consults the registered behaviour modules for an entity. IDLE
+     * entities: the first module (planning order) whose gate passes and
+     * whose plan yields specs gets them queued. BUSY entities: only a
+     * module whose priority is STRICTLY HIGHER than the head task's
+     * behaviour priority may pre-empt — the in-progress task is abandoned
+     * mid-work (not every task completes) and the new specs take the head,
+     * the old queue's survivors following behind. Equal or lower priorities
+     * never churn a running queue. Accepts ANY living entity — a castaway
+     * (the registry Actor) or a coordinate-space creature (a seabird, a
+     * wild boar) planned through the same behaviour ladder. Returns the
      * newly queued head task, or undefined when nothing was queued.
      */
-    plan(actor: Actor): ActiveTask | undefined;
+    plan(entity: TaskEntity): ActiveTask | undefined;
     /**
      * One world-minute heartbeat: ONLY the head task of each non-empty queue
      * progresses (time is serial). Its remaining decrements by 1; a task
@@ -249,17 +289,25 @@ export const createTaskLedger = (): TaskLedger => {
 
         busy: (actorId) => (queues.get(actorId)?.length ?? 0) > 0,
 
-        plan: (actor) => {
-            // Busy actors keep working on their head task — planning is idle-only
-            if ((queues.get(actor.id)?.length ?? 0) > 0) {
-                return undefined;
-            }
-            const subject: TaskSubject = { actor };
-            let queued: ActiveTask | undefined;
+        plan: (entity) => {
+            const queue = queues.get(entity.id);
+            const head = queue?.[0];
+            // The bar a pre-empting module must clear: the head task's own
+            // behaviour priority. An idle entity (no head) accepts anything —
+            // the walk below consults every module in planning order.
+            const floor = head ? behaviours.get(head.behaviour)?.priority ?? 0 : -Infinity;
+            const subject: TaskSubject = { actor: entity };
+            let queued: ActiveTask[] | undefined;
             // Block-bodied walk in planning order: gates and plans vary per
             // module, so nothing may short-circuit the consultation
             arrayEach(planningOrder(), ({ value: module }) => {
                 if (!queued) {
+                    // A busy entity only yields to a STRICTLY higher-priority
+                    // module — equal priorities never churn the queue (the
+                    // in-progress task keeps its turn; time is serial)
+                    if (head && (module.priority ?? 0) <= floor) {
+                        return;
+                    }
                     // No gate = the behaviour always applies
                     const applies = module.appliesTo ? module.appliesTo(subject) : true;
                     if (applies) {
@@ -268,15 +316,35 @@ export const createTaskLedger = (): TaskLedger => {
                         // continues with the next behaviour; an empty specs
                         // array queues nothing and counts as declined too
                         if (specs !== undefined) {
-                            const created = enqueue(actor.id, module.id, specList(specs));
+                            const created = enqueue(entity.id, module.id, specList(specs));
                             if (created.length > 0) {
-                                queued = created[0];
+                                queued = created;
                             }
                         }
                     }
                 }
             });
-            return queued;
+            if (!queued) {
+                return undefined;
+            }
+            if (head) {
+                // Pre-emption: the in-progress task is abandoned mid-work —
+                // its remaining minutes and its eventual effect are lost
+                // (not every task completes). The freshly queued specs were
+                // APPENDED by enqueue; lift them to the head so they run
+                // before the old queue's surviving followers.
+                const live = queues.get(entity.id) as ActiveTask[];
+                live.shift();
+                const created = queued;
+                const lifted = live.splice(live.length - created.length, created.length);
+                // Unshift in REVERSE so the lifted block keeps its order at
+                // the head (head first)
+                for (let index = lifted.length - 1; index >= 0; index--) {
+                    live.unshift(lifted[index]);
+                }
+                return live[0];
+            }
+            return queued[0];
         },
 
         tick: () => {

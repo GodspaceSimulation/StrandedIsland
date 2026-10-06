@@ -48,7 +48,7 @@ body {
 
 /* ---- Scrollbars -------------------------------------------------------- */
 
-/* Flat thin dark-native scrollbars (world log / actor history overflow). */
+/* Flat thin dark-native scrollbars (the story feed overflow). */
 .si-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
 .si-scroll::-webkit-scrollbar-track { background: transparent; }
 .si-scroll::-webkit-scrollbar-thumb {

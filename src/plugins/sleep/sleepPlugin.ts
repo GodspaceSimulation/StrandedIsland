@@ -17,9 +17,9 @@
 // restores once, on completion, through the behavior plugin's completion
 // listener — a 'sleep' task never routes there).
 //
-// Sleep/wake transitions are logged: the first minute a sleeping task is
-// seen emits "curls up and sleeps", the first minute the actor is no longer
-// sleeping emits "wakes up".
+// Sleep/wake transitions are NOT logged — the log is a story teller (the
+// scenario system's encounters), and dozing off is a solo beat, not a
+// story between entities.
 
 import { arrayEach } from '@presource/core';
 import type { PluginContext, WorldPlugin } from '@godspace/core';
@@ -46,13 +46,9 @@ export const sleepPlugin = (options: SleepPluginOptions): SleepPlugin => {
     const restorePerMinute = options.restorePerMinute ?? 1.2;
     const durationMinutes = options.durationMinutes ?? 45;
 
-    // The world reference arrives with setup — the tick reads actors and
-    // emits sleep/wake log lines through it
+    // The world reference arrives with setup — the tick reads the cast's
+    // live tasks and restores their energy through it
     let world: PluginContext<World>['world'] | null = null;
-
-    // Which actors were sleeping at the END of the previous minute — the
-    // transition detector for the sleep/wake log lines (per-actor flag)
-    const sleeping = new Set<string>();
 
     return {
         id: 'sleep',
@@ -82,7 +78,6 @@ export const sleepPlugin = (options: SleepPluginOptions): SleepPlugin => {
             // actors fall back to the 'rest' ladder immediately (the ledger
             // update-on-remove rule). Own state goes with the plugin.
             tasks.dropBehaviour('sleep');
-            sleeping.clear();
             world = null;
         },
 
@@ -93,35 +88,31 @@ export const sleepPlugin = (options: SleepPluginOptions): SleepPlugin => {
             }
             // One world-minute of sleep per tick hook call — the restore rate
             // applies directly. Spawn-order snapshot; despawned actors skip.
-            const actorIds = Array.from(active.actors.keys());
-            arrayEach(actorIds, ({ value: actorId }) => {
+            // EVERY living thing restores: the castaway registry AND the
+            // coordinate-space creatures the behavior plugin plans through
+            // the ledger (a sleeping bird roosts back to full the same way a
+            // sleeping castaway does) — the dedup reads the registry first.
+            const restored = new Set<string>(active.actors.keys());
+            arrayEach(Array.from(active.actors.keys()), ({ value: actorId }) => {
                 const actor = active.actors.get(actorId);
                 if (!actor) {
                     return;
                 }
                 const task = tasks.taskOf(actorId);
                 if (task?.kind === 'sleep') {
-                    // Restoring while the sleep task is the queue head
+                    // Restoring while the sleep task is the queue head —
+                    // silently: dozing off is not a story beat
                     needs.satisfy(actorId, { energy: restorePerMinute });
-                    if (!sleeping.has(actorId)) {
-                        // Sleep start transition — logged once per slumber
-                        sleeping.add(actorId);
-                        active.events.emit({
-                            kind: 'sleep',
-                            actorId,
-                            message: `${actor.name} curls up and sleeps.`,
-                        });
-                    }
+                }
+            });
+            active.coordinates.all().forEach((entry) => {
+                if (restored.has(entry.id)) {
                     return;
                 }
-                // No sleep task this minute — the wake transition
-                if (sleeping.has(actorId)) {
-                    sleeping.delete(actorId);
-                    active.events.emit({
-                        kind: 'sleep',
-                        actorId,
-                        message: `${actor.name} wakes up.`,
-                    });
+                restored.add(entry.id);
+                const task = tasks.taskOf(entry.id);
+                if (task?.kind === 'sleep') {
+                    needs.satisfy(entry.id, { energy: restorePerMinute });
                 }
             });
         },

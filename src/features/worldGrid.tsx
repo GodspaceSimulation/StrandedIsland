@@ -6,12 +6,15 @@
 // dimensions are identical at scale 0, scale 1 and beyond — a tile's
 // sub-grid has the same width × height as the world grid, so zooming in
 // re-renders the SAME components over the zoomed slice (features/tileDetails
-// scaleView) instead of switching to a special board. The scale bar zooms:
-// Zoom In needs an inspected tile (it descends into that tile's sub-grid and
-// inspects its center), Zoom Out pops back up the lineage. The ladder counts
-// UP from the lowest level: scale 0 is the tile interior — the simulation
-// ground, where the entities move around — and scale 1 is the island, THE
-// DEFAULT VIEW, which shows where those entities are.
+// scaleView) instead of switching to a special board. The scale bar holds
+// ONE toggle: this version's ladder is two rungs (scale 1 the island, the
+// default view — scale 0 the tile interior), so the button flips between
+// them — at the island view it zooms into the INSPECTED tile (its target;
+// without a pick it stands off), at the interior it pops back up the
+// lineage. The ladder counts UP from the lowest level: scale 0 is the tile
+// interior — the simulation ground, where the entities move around — and
+// scale 1 is the island, THE DEFAULT VIEW, which shows where those
+// entities are.
 //
 // Four representations of the CURRENT view, one per tab (all loaded as
 // plugins from @godspace/canvas by the scenario, see scenario/island.ts):
@@ -22,19 +25,22 @@
 //             (surface palette), one glyph letter per entity
 //   Unicode — the unicode canvas plugin: the emoji twin — semantic emoji
 //             per entity (resolved from the kind/type taxonomy), terrain
-//             drawn as color only (no per-tile emoji flood), same colors.
-//             THE DEFAULT VIEW
+//             drawn as color only (no per-tile emoji flood) EXCEPT the
+//             standing DECORATIONS the engine hangs on tiles: a treed tile
+//             draws the 🌳 tree emoji when no entity stands on it (the
+//             woods, visible at last — scenario/island.ts decorationOf),
+//             same colors. THE DEFAULT VIEW
 //   SVG     — the svg canvas plugin: the vector twin — the world as a
 //             scalable SVG document (one rect per ground cell, one text
-//             per entity, native <title> hovers); geometry on the SAME
-//             26px tile grid, so every tab occupies the same board
-//             footprint
+//             per entity, native <title> hovers, the vector TREE icon on
+//             treed tiles); geometry on the SAME 26px tile grid, so every
+//             tab occupies the same board footprint
 //
 // At the island view (scale 1 = the ladder's top) the canvases render their
 // bound root view (frame()); deeper levels re-bind through frameFor with the
 // zoomed slice — the zoom seam (@godspace/canvas AsciiFrameSource). Zoomed
 // in, the tiles are SUBTILES: the parent tile's deposits stand distributed
-// on them (a forest tile's wood ×2 scatters into two wood subtiles — the
+// on them (a forest tile's tree ×2 scatters into two tree subtiles — the
 // trees, visible at last), and its residents stand at their fine positions
 // (world.subOf).
 //
@@ -56,8 +62,16 @@
 // tile holds a castaway, the god's actor inspector opens for them too
 // (birds and other non-registry residents stay view-only). The data tab is
 // read-only — it shows the exact coordinates the other three draw as glyphs.
+//
+// WHEEL ZOOM — scrolling the mouse over a tile board drives the same zoom
+// ladder the ScaleBar toggle drives: scroll up = Zoom In (descends into the
+// SELECTED tile — the same target contract the toggle has), scroll down =
+// Zoom Out (pops back up the lineage). It is active only while a tile is
+// selected; with no selection (or at a rung's end) the wheel stays with the
+// page scroll. The Data tab is excluded — its tables scroll natively.
 
-import { useStateHook } from '@presource/react';
+import { useEffect, type ForwardRefExoticComponent, type HTMLAttributes, type RefAttributes } from 'react';
+import { useStateHook, useReferenceHook } from '@presource/react';
 import {
     type AsciiFrame,
     type SvgFrame,
@@ -76,6 +90,7 @@ import {
     selectActor,
     zoomIn,
     zoomOut,
+    toggleZoom,
     useTile,
     selectTile,
 } from './worldBridge';
@@ -137,7 +152,7 @@ const TabButton = styled<{ active: string }>('button', {
     textTransform: 'uppercase',
 });
 
-// ── Scale bar — the zoom ladder controls (identical at every scale) ─────────
+// ── Scale bar — the ONE zoom toggle (identical at every scale) ───────────────
 
 const ScaleBar = styled('div', {
     display: 'flex',
@@ -146,11 +161,15 @@ const ScaleBar = styled('div', {
     flexWrap: 'wrap',
 });
 
-// A zoom button mirrors the TabButton paint, plus a disabled read: zoom-in
-// needs an inspected tile (its target), zoom-out needs a step below. The
-// `off` style prop is a STRING ('true'/'false' — the styled factory reads
-// it for the paint); the HTML `disabled` attribute is passed separately as
-// a real boolean so the DOM gets true button semantics.
+// The single zoom control. This version's ladder holds only two rungs —
+// scale 1 (the island, the default) and scale 0 (the tile interior) — so
+// one button toggles between them: at the island view it reads Zoom In
+// (descends into the inspected tile), at the interior it reads Zoom Out
+// (pops back up). The `off` style prop is a STRING ('true'/'false' — the
+// styled factory reads it for the paint); the HTML `disabled` attribute is
+// passed separately as a real boolean so the DOM gets true button
+// semantics. Zooming IN needs an inspected tile (its target), so at the
+// top of the ladder with nothing picked the button stands off.
 const ZoomButton = styled<{ off: string }>('button', {
     background: '#232c37',
     color: ({ off }) => (off === 'true' ? PALETTE.textDim : PALETTE.text),
@@ -165,7 +184,7 @@ const ZoomButton = styled<{ off: string }>('button', {
     textTransform: 'uppercase',
 });
 
-// The current rung of the ladder, between the two buttons
+// The current rung of the ladder, beside the toggle
 const ScaleBadge = styled('span', {
     fontSize: 11,
     letterSpacing: 1,
@@ -177,7 +196,7 @@ const ScaleBadge = styled('span', {
 });
 
 // The note when a zoomed view cannot resolve its slice (a stale lineage
-// after a world redraw) — the Zoom Out button stays the way back
+// after a world redraw) — the toggle's Zoom Out side stays the way back
 const ZoomEmpty = styled('span', {
     fontSize: 12,
     color: PALETTE.textDim,
@@ -216,7 +235,7 @@ const TableData = styled('td', {
 
 /**
  * Legend order — the island's surface ladder. Resource surfaces first-class
- * (the tiles appear as the deposits they carry — wood, stone, iron and the
+ * (the tiles appear as the deposits they carry — trees, stone, iron and the
  * unlimited sand/dirt), then the plain biome fallbacks that surface when a
  * tile's finite deposits are gathered away (or on sea columns). The SAME
  * ladder serves every zoom level — subtile surfaces come from the same
@@ -225,7 +244,7 @@ const TableData = styled('td', {
 const SURFACE_ORDER: string[] = [
     'ocean',
     'shallows',
-    'wood',
+    'tree',
     'stone',
     'iron',
     'sand',
@@ -235,6 +254,40 @@ const SURFACE_ORDER: string[] = [
     'forest',
     'highland',
 ];
+
+// Board layer — the wheel-zoom wrapper around each mounted tile board
+// (ascii / unicode / svg). Column layout with the Panel's 10px gap
+// reproduced inside so the Grid + Legend spacing is unchanged. Ref-
+// forwarded because the wheel listener attaches through the ref (Emotion
+// forwards refs at runtime; the cast only surfaces the ref in TypeScript).
+const BoardLayer = styled('div', {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 10,
+}) as unknown as ForwardRefExoticComponent<
+    RefAttributes<HTMLDivElement> & HTMLAttributes<HTMLDivElement>
+>;
+
+// The tile BORDER — the selection highlights. Two DIFFERENT colors so the
+// two selections never read as one on the canvas:
+//   ENTITY pick — a castaway selected for the Entity Inspector wears the
+//                 teal `accent` (the roster chip highlight's family)
+//   TILE pick   — the tile under the Tile Inspector's lens wears the amber
+//                 `tileAccent`
+// One tile can be both (clicking a castaway inspects their tile AND
+// selects the actor): the entity pick wins the paint — it is the stronger
+// subject. Every canvas view (ascii/unicode/svg) shares the rule.
+const tileBorder = (isSelected: boolean, isInspected: boolean): string =>
+    isSelected
+        ? `2px solid ${PALETTE.accent}`
+        : isInspected
+          ? `2px solid ${PALETTE.tileAccent}`
+          : '1px solid rgba(0,0,0,0.3)';
+
+// The SVG twin of tileBorder — a stroke COLOR (geometry attributes carry no
+// width shorthand)
+const tileStroke = (isSelected: boolean, isInspected: boolean): string =>
+    isSelected ? PALETTE.accent : isInspected ? PALETTE.tileAccent : 'rgba(0,0,0,0.3)';
 
 export const WorldGrid = () => {
     const island = useWorld();
@@ -247,6 +300,42 @@ export const WorldGrid = () => {
     const scale = useScale();
     // Active representation tab — the emoji (unicode) view is the default
     const tab = useStateHook<CanvasTab>('unicode');
+    // The live board wrapper — the mount point of the wheel-zoom listener
+    const boardLayer = useReferenceHook<HTMLDivElement | null>(null);
+
+    // Wheel zoom — scrolling over a tile board rides the SAME view ladder
+    // the ScaleBar toggle drives: scroll up descends into the SELECTED
+    // tile's sub-grid (the same target contract the toggle has at the
+    // island view — a selection is the zoom target), scroll down pops back
+    // up the lineage. The listener is native and NON-passive so a zooming
+    // scroll can preventDefault (React's synthetic onWheel registers
+    // passive and cannot) — whenever the ladder cannot move (no tile
+    // selected, or the view already sits at a rung's end) the wheel is left
+    // to the page. Re-attached on every render (no deps) so the closure
+    // always reads fresh ladder state; it is only live while a board is
+    // mounted (the Data tab wraps its scrollable tables in nothing).
+    useEffect(() => {
+        const node = boardLayer();
+        if (!node || !island) {
+            return undefined;
+        }
+        const handleWheel = (event: WheelEvent) => {
+            // Only vertical wheel motion zooms; horizontal trackpad
+            // scrolls pass through untouched
+            if (event.deltaY < 0 && island.scale.canZoomIn() && inspected !== null) {
+                event.preventDefault();
+                zoomIn();
+            } else if (event.deltaY > 0 && island.scale.canZoomOut()) {
+                event.preventDefault();
+                zoomOut();
+            }
+        };
+        node.addEventListener('wheel', handleWheel, { passive: false });
+        return () => {
+            node.removeEventListener('wheel', handleWheel);
+        };
+    });
+
     if (!island) {
         return null;
     }
@@ -275,7 +364,8 @@ export const WorldGrid = () => {
     // world redraw (the root regenerated under the god's feet)
     const zoomFailed = scale < depth && !slice;
     // The inspected tile's TAIL coordinates — what the tile renderers
-    // highlight (the accent border) and what the tile tests click by
+    // highlight (the amber tile-selection border) and what the tile tests
+    // click by
     const inspectedTail = inspected
         ? { x: inspected[inspected.length - 1].x, y: inspected[inspected.length - 1].y }
         : null;
@@ -295,34 +385,35 @@ export const WorldGrid = () => {
         }
     };
 
-    // Zoom-in targets the INSPECTED tile — without one there is nothing to
-    // zoom into (the button states that in its hover title)
-    const canZoomIn = zoom.canZoomIn() && inspected !== null;
+    // The zoom toggle at the ISLAND view needs an inspected tile — without
+    // one there is nothing to zoom into (the button states that in its
+    // hover title); at the interior view the toggle always can zoom out
+    const canToggle = scale < depth ? true : zoom.canZoomIn() && inspected !== null;
 
     return (
         <Panel>
             <PanelTitle>Island Canvas</PanelTitle>
-            {/* The zoom ladder: out / current rung / in. Zoom In needs an
-                inspected tile — it zooms INTO that tile's sub-grid */}
+            {/* The ONE zoom control: badge (the current rung) + the toggle.
+                This version's ladder is two rungs — scale 1 the island,
+                scale 0 the tile interior — so one button flips between
+                them: it reads Zoom In at the island view (descends into the
+                inspected tile) and Zoom Out at the interior (pops back up) */}
             <ScaleBar data-testid="scale-controls">
-                <ZoomButton
-                    off={zoom.canZoomOut() ? 'false' : 'true'}
-                    disabled={!zoom.canZoomOut()}
-                    data-testid="zoom-out"
-                    title="Zoom out one scale"
-                    onClick={() => zoomOut()}
-                >
-                    Zoom Out
-                </ZoomButton>
                 <ScaleBadge data-testid="scale-badge">Scale {scale}</ScaleBadge>
                 <ZoomButton
-                    off={canZoomIn ? 'false' : 'true'}
-                    disabled={!canZoomIn}
-                    data-testid="zoom-in"
-                    title={inspected ? 'Zoom into the inspected tile' : 'Select a tile to zoom into'}
-                    onClick={() => zoomIn()}
+                    off={canToggle ? 'false' : 'true'}
+                    disabled={!canToggle}
+                    data-testid="zoom-toggle"
+                    title={
+                        scale < depth
+                            ? 'Zoom out one scale'
+                            : inspected
+                              ? 'Zoom into the inspected tile'
+                              : 'Select a tile to zoom into'
+                    }
+                    onClick={() => toggleZoom()}
                 >
-                    Zoom In
+                    {scale < depth ? 'Zoom Out' : 'Zoom In'}
                 </ZoomButton>
             </ScaleBar>
             {zoomFailed ? (
@@ -371,40 +462,46 @@ export const WorldGrid = () => {
                         </TableWrap>
                     ) : null}
                     {tab() === 'ascii' ? (
-                        <AsciiView
-                            world={world}
-                            frame={slice ? ascii.frameFor(slice) : ascii.frame()}
-                            palette={ascii.palette().tiles}
-                            inspected={inspectedTail}
-                            selected={selected}
-                            size={26}
-                            onTile={inspectTile}
-                        />
+                        <BoardLayer ref={boardLayer}>
+                            <AsciiView
+                                world={world}
+                                frame={slice ? ascii.frameFor(slice) : ascii.frame()}
+                                palette={ascii.palette().tiles}
+                                inspected={inspectedTail}
+                                selected={selected}
+                                size={26}
+                                onTile={inspectTile}
+                            />
+                        </BoardLayer>
                     ) : null}
                     {tab() === 'unicode' ? (
-                        <UnicodeView
-                            world={world}
-                            frame={slice ? unicode.frameFor(slice) : unicode.frame()}
-                            palette={unicode.palette().tiles}
-                            inspected={inspectedTail}
-                            selected={selected}
-                            // SAME TILE OCCUPATION AS ASCII (26) — the emoji tab once
-                            // painted 30px tiles and blew the panel wide; all tile
-                            // tabs now share the ascii grid so switching never breaks
-                            // the layout
-                            size={26}
-                            onTile={inspectTile}
-                        />
+                        <BoardLayer ref={boardLayer}>
+                            <UnicodeView
+                                world={world}
+                                frame={slice ? unicode.frameFor(slice) : unicode.frame()}
+                                palette={unicode.palette().tiles}
+                                inspected={inspectedTail}
+                                selected={selected}
+                                // SAME TILE OCCUPATION AS ASCII (26) — the emoji tab once
+                                // painted 30px tiles and blew the panel wide; all tile
+                                // tabs now share the ascii grid so switching never breaks
+                                // the layout
+                                size={26}
+                                onTile={inspectTile}
+                            />
+                        </BoardLayer>
                     ) : null}
                     {tab() === 'svg' ? (
-                        <SvgView
-                            world={world}
-                            frame={slice ? svg.frameFor(slice) : svg.frame()}
-                            palette={svg.palette().tiles}
-                            inspected={inspectedTail}
-                            selected={selected}
-                            onTile={inspectTile}
-                        />
+                        <BoardLayer ref={boardLayer}>
+                            <SvgView
+                                world={world}
+                                frame={slice ? svg.frameFor(slice) : svg.frame()}
+                                palette={svg.palette().tiles}
+                                inspected={inspectedTail}
+                                selected={selected}
+                                onTile={inspectTile}
+                            />
+                        </BoardLayer>
                     ) : null}
                 </>
             )}
@@ -466,7 +563,7 @@ const AsciiView = ({
                 const castaway = tile.glyphs.find((entry) => world.actors.has(entry.id));
                 const isSelected = glyph !== undefined && glyph.id === selected;
                 // The inspected tile (any column — sea, sand, forest) wears
-                // the accent border so the god sees what the Tile
+                // the amber tile border so the god sees what the Tile
                 // Inspector below is reading
                 const isInspected =
                     inspected !== null && inspected.x === tile.x && inspected.y === tile.y;
@@ -474,11 +571,7 @@ const AsciiView = ({
                     <Cell
                         key={`${tile.x},${tile.y}`}
                         background={tile.background}
-                        border={
-                            isSelected || isInspected
-                                ? `2px solid ${PALETTE.accent}`
-                                : '1px solid rgba(0,0,0,0.3)'
-                        }
+                        border={tileBorder(isSelected, isInspected)}
                         title={tile.title}
                         data-testid={`grid-tile-${tile.x}-${tile.y}`}
                         onClick={() => onTile(tile, castaway?.id)}
@@ -533,18 +626,19 @@ const UnicodeView = ({
                 const isSelected = glyph !== undefined && glyph.id === selected;
                 const isInspected =
                     inspected !== null && inspected.x === tile.x && inspected.y === tile.y;
-                // Entities draw their emoji in the state color; empty tiles
-                // stay bare — terrain shows through its background color
-                // alone (no per-tile emoji flood)
+                // Entities draw their emoji in the state color; EMPTY treed
+                // tiles draw their standing decoration — the 🌳 tree emoji
+                // (the woods, visible at last; an entity always wins the
+                // tile over the decoration). Everything else stays bare —
+                // terrain shows through its background color alone (no
+                // per-tile emoji flood)
+                const decorationGlyph =
+                    glyph === undefined && tile.decoration === 'tree' ? '🌳' : null;
                 return (
                     <Cell
                         key={`${tile.x},${tile.y}`}
                         background={tile.background}
-                        border={
-                            isSelected || isInspected
-                                ? `2px solid ${PALETTE.accent}`
-                                : '1px solid rgba(0,0,0,0.3)'
-                        }
+                        border={tileBorder(isSelected, isInspected)}
                         title={tile.title}
                         data-testid={`unicode-tile-${tile.x}-${tile.y}`}
                         onClick={() => onTile(tile, castaway?.id)}
@@ -553,12 +647,17 @@ const UnicodeView = ({
                             <Marker color={glyph.color}>
                                 {glyph.glyph}
                             </Marker>
+                        ) : decorationGlyph ? (
+                            <Marker color={palette.tree ?? '#4caf50'} data-testid="tree-icon-unicode">
+                                {decorationGlyph}
+                            </Marker>
                         ) : null}
                     </Cell>
                 );
             })}
         </Grid>
-        {/* Terrain is color-only here — the legend matches the ascii view */}
+        {/* Terrain is color-only here except the tree decorations — the
+            legend matches the ascii view */}
         <Legend data-testid="grid-legend-unicode">
             {SURFACE_ORDER.map((surface) => (
                 <LegendItem key={surface} color={palette[surface]}>
@@ -600,6 +699,39 @@ const SvgGlyph = styled('text', {
     fontSize: 13,
     fontWeight: 700,
 });
+
+// The vector TREE icon — the svg twin of the unicode view's 🌳 emoji. The
+// canopy is a circle crowning the tile's center; the trunk is a slim rect
+// rising to the tile's lower third (the silhouette that separates tree
+// from bush). Colors mirror the @godspace/canvas svg plugin's own tree
+// painter (packages/godspace/canvas src/svg drawTree) so the React view and
+// the plugin's DOM mount draw the same icon.
+const TREE_TRUNK = '#7a5230';
+const TREE_CANOPY = '#2e7d32';
+
+const SvgTree = ({ x, y, size }: { x: number; y: number; size: number }) => (
+    <>
+        {/* The canopy — a circle crowning the center, sized a bit over half
+            the tile edge so it stays inside the rounded rect */}
+        <circle
+            cx={x}
+            cy={y - size * 0.12}
+            r={size * 0.26}
+            fill={TREE_CANOPY}
+            data-testid="tree-icon-svg-canopy"
+        />
+        {/* The trunk — a slim rect rising from below the canopy */}
+        <rect
+            x={x - size * 0.06}
+            y={y - size * 0.02}
+            width={size * 0.12}
+            height={size * 0.3}
+            rx={1}
+            fill={TREE_TRUNK}
+            data-testid="tree-icon-svg-trunk"
+        />
+    </>
+);
 
 const SvgView = ({
     world,
@@ -661,15 +793,14 @@ const SvgView = ({
                             width={frame.size - 2}
                             height={frame.size - 2}
                             fill={tile.background}
-                            stroke={
-                                isSelected || isInspected
-                                    ? PALETTE.accent
-                                    : 'rgba(0,0,0,0.3)'
-                            }
+                            stroke={tileStroke(isSelected, isInspected)}
                         />
                         {/* Entities draw their glyph in the state color at
                             the dead-center of the tile — the same visual
-                            position the flex-centered DOM cells produce */}
+                            position the flex-centered DOM cells produce.
+                            Empty treed tiles draw their standing decoration
+                            instead — the vector tree icon (an entity always
+                            wins the tile over the decoration) */}
                         {glyph ? (
                             <SvgGlyph
                                 x={column * frame.size + frame.size / 2}
@@ -678,12 +809,19 @@ const SvgView = ({
                             >
                                 {glyph.glyph}
                             </SvgGlyph>
+                        ) : tile.decoration === 'tree' ? (
+                            <SvgTree
+                                x={column * frame.size + frame.size / 2}
+                                y={row * frame.size + frame.size / 2}
+                                size={frame.size}
+                            />
                         ) : null}
                     </g>
                 );
             })}
         </SvgBoard>
-        {/* Terrain is color-only here — the legend matches the ascii view */}
+        {/* Terrain is color-only here except the tree decorations — the
+            legend matches the ascii view */}
         <Legend data-testid="grid-legend-svg">
             {SURFACE_ORDER.map((surface) => (
                 <LegendItem key={surface} color={palette[surface]}>

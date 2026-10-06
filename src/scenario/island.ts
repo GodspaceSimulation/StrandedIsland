@@ -2,9 +2,15 @@
 //
 // This is the composition root of the god simulator: choose a seed, how many
 // actors wash ashore, and which environment plugins to mount. Every plugin
-// is optional — drop `tasks` and the behavior plugin cannot mount at all
+// is optional — drop `tasks` and the behaviour plugins cannot mount at all
 // (the agents plan through the ledger), so the actors stand still; drop
-// `inventory` and there is nothing to gather, eat or trade.
+// `inventory` and there is nothing to gather, fell, drink or trade.
+//
+// The TASK LADDER is governed by behaviour plugins (the sampled conduct
+// set): the behavior plugin mounts the survival needs rungs (thirst,
+// hunger, rest, social, wander); the sleep, survival and lumber plugins
+// each register one more governance slice into the same ledger (timed
+// sleep, flee-from-wild-animals at the top rung, tree felling → wood).
 //
 // The engine core comes from the @godspace workspace packages (imported as
 // dependencies, not source):
@@ -28,7 +34,12 @@
 // relationships, read the ASCII frame, regenerate the island, etc.
 
 import { arrayEach } from '@presource/core';
-import { createScaleSystem, position3, type ScaleSystem } from '@godspace/core';
+import {
+    createScaleSystem,
+    position3,
+    type CoordinateEntry,
+    type ScaleSystem,
+} from '@godspace/core';
 import {
     asciiCanvasPlugin,
     unicodeCanvasPlugin,
@@ -48,18 +59,27 @@ import {
 } from '../plugins/terrain/islandTerrain';
 import { inventoryPlugin, type InventoryPlugin } from '../plugins/inventory/inventoryPlugin';
 import { ITEM_TYPE_GLYPHS } from '../plugins/inventory/items';
+import { entityPlugin, type EntityPlugin } from '../plugins/entity/entityPlugin';
 import { needsPlugin, type NeedsPlugin, type NeedsPluginOptions } from '../plugins/needs/needsPlugin';
 import { relationshipPlugin, type RelationshipPlugin } from '../plugins/relationship/relationshipPlugin';
 import { behaviorPlugin } from '../plugins/behavior/behaviorPlugin';
 import { tasksPlugin, type TasksPlugin } from '../plugins/tasks/tasksPlugin';
 import { sleepPlugin, type SleepPlugin } from '../plugins/sleep/sleepPlugin';
+import { survivalPlugin, type SurvivalPlugin } from '../plugins/survival/survivalPlugin';
+import { lumberPlugin, type LumberPlugin } from '../plugins/lumber/lumberPlugin';
+import { storyPlugin, type StoryPlugin } from '../plugins/story/storyPlugin';
 import {
     birdsPlugin,
     BIRD_ALTITUDE_STATES,
     type BirdsPlugin,
 } from '../plugins/birds/birdsPlugin';
 import { sharksPlugin, SHARK_TYPE_GLYPH, type SharksPlugin } from '../plugins/sharks/sharksPlugin';
-import type { Actor, TileResources } from '../engine/types';
+import {
+    predatorsPlugin,
+    BOAR_TYPE_GLYPH,
+    type PredatorsPlugin,
+} from '../plugins/predators/predatorsPlugin';
+import type { Actor, Sex, TileResources } from '../engine/types';
 
 export type IslandOptions = {
     /** Simulation seed — drives terrain, resources and all agent randomness. */
@@ -73,6 +93,13 @@ export type IslandOptions = {
     /** Plugin toggles — every environment module can be swapped out. */
     plugins?: {
         terrain?: boolean;
+        /**
+         * The entity profiles — the species registry every living thing
+         * reads (stats, attributes, abilities, movement economics,
+         * inventory sizes). Default on; dropping it leaves unlimited bags,
+         * flat needs rates and free movement (the pre-entity behavior).
+         */
+        entity?: boolean;
         inventory?: boolean;
         needs?: boolean;
         relationship?: boolean;
@@ -81,9 +108,30 @@ export type IslandOptions = {
         behavior?: boolean;
         /** Timed sleep as a ledger behaviour (shadows the rest fallback). Default on. */
         sleep?: boolean;
+        /**
+         * The flee-from-wild-animals behaviour (priority 60 — the highest
+         * rung; a threat nearby pre-empts every other queue). Needs tasks +
+         * behavior (the flee is a move task the behavior plugin applies).
+         * Default on.
+         */
+        survival?: boolean;
+        /**
+         * The tree-felling behaviour (chop a tree → wood). Needs tasks +
+         * inventory + behavior. Default on.
+         */
+        lumber?: boolean;
+        /**
+         * The storyteller — scenario encounters sampled from the one-shot
+         * deck, injected into the log as story blocks. Needs needs +
+         * relationships. Default on.
+         */
+        story?: boolean;
         birds?: boolean;
         /** The sharks — water creatures swimming in past the edge. Default on. */
         sharks?: boolean;
+        /** The wild boars — the land predators that maul castaways. Needs
+         * needs (the bite drains energy). Default on. */
+        predators?: boolean;
         /** The @godspace/canvas ASCII representation plugin. Default on. */
         ascii?: boolean;
         /** The @godspace/canvas unicode (emoji) representation. Default on. */
@@ -98,6 +146,14 @@ export type IslandOptions = {
 export type IslandHandle = {
     world: World;
     terrain: ReturnType<typeof islandTerrainPlugin>;
+    /**
+     * The entity profiles — the species registry: stats, attributes,
+     * abilities, movement economics and inventory sizes for every living
+     * thing (plugins/entity/entityPlugin.ts). The needs, inventory,
+     * behavior and creature plugins read their per-type definitions
+     * through it.
+     */
+    entity: EntityPlugin;
     inventory: InventoryPlugin;
     needs: NeedsPlugin;
     relationship: RelationshipPlugin;
@@ -109,10 +165,28 @@ export type IslandHandle = {
     tasks: TasksPlugin;
     /** The sleep behaviour plugin — priority-30 timed sleep. */
     sleep: SleepPlugin;
+    /**
+     * The survival behaviour plugin — priority-60 flee-from-wild-animals.
+     * The highest rung of the task ladder: a boar or shark within threat
+     * range pre-empts every other queue (the ledger's per-tick
+     * prioritization).
+     */
+    survival: SurvivalPlugin;
+    /** The lumber behaviour plugin — fells trees into wood (chop → bag). */
+    lumber: LumberPlugin;
+    /**
+     * The storyteller plugin — samples one unused scenario per encounter
+     * (two castaways within the meeting ring), routes the play's profile
+     * adjustments onto needs + relationships and injects the narrative
+     * into the log as a story block.
+     */
+    story: StoryPlugin;
     /** Seabirds — the Z-axis travelers of the world. */
     birds: BirdsPlugin;
     /** Sharks — the water creatures that come in past the world edge. */
     sharks: SharksPlugin;
+    /** The wild boars — the land predators that maul castaways. */
+    predators: PredatorsPlugin;
     /**
      * The view-scale ladder (@godspace/core src/scale) — the ladder counts
      * UP from the lowest level: Scale 0 is the tile interior (the
@@ -138,8 +212,20 @@ export type IslandHandle = {
     data: DataCanvasPlugin;
 };
 
-/** The stranded cast — markers are the first letters, all distinct. */
-const CAST = ['Ael', 'Bram', 'Cove', 'Dune', 'Eir', 'Fenn'];
+/**
+ * The stranded cast — markers are the first letters, all distinct. Each
+ * castaway carries a fixed sex (their profile fact): the god-view draws it
+ * (the gendered emoji on the unicode/svg canvases, the Entity Inspector's
+ * profile row).
+ */
+const CAST: Array<{ name: string; sex: Sex }> = [
+    { name: 'Ael', sex: 'male' },
+    { name: 'Bram', sex: 'male' },
+    { name: 'Cove', sex: 'female' },
+    { name: 'Dune', sex: 'male' },
+    { name: 'Eir', sex: 'female' },
+    { name: 'Fenn', sex: 'male' },
+];
 
 /** Starting kit: something to eat and a tool to work with. */
 const STARTING_KIT = { berry: 2, flint: 1 };
@@ -171,14 +257,19 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     // Plugin toggles default to all-on
     const toggles = {
         terrain: true,
+        entity: true,
         inventory: true,
         needs: true,
         relationship: true,
         tasks: true,
         behavior: true,
         sleep: true,
+        survival: true,
+        lumber: true,
+        story: true,
         birds: true,
         sharks: true,
+        predators: true,
         ascii: true,
         unicode: true,
         svg: true,
@@ -191,21 +282,52 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     // architecture: swap any piece by removing it from the list below.
     // Behavior coordinates with tasks + inventory + needs + relationship, so
     // it only mounts when all four do. The tasks plugin is the ledger the
-    // agents plan through (plugins/tasks/taskLedger.ts); the sleep plugin
-    // registers its timed-sleep behaviour into it and needs only tasks + needs.
+    // agents plan through (plugins/tasks/taskLedger.ts); the behaviour
+    // plugins (sleep, survival, lumber) register their conduct slices into
+    // it and coordinate with the pieces they act on.
     const terrain = islandTerrainPlugin(options.terrain ?? {});
-    const inventory = inventoryPlugin();
-    const needs = needsPlugin(options.needs ?? {});
+    // The entity profiles — the species registry every living thing reads
+    // (needs rates, bag sizes, abilities, movement economics)
+    const entity = entityPlugin();
+    // The profiles ride along only while the entity plugin is mounted —
+    // dropping it drops the whole per-type vocabulary with it (unlimited
+    // bags, flat rates, free movement)
+    const profiles = toggles.entity ? entity : undefined;
+    const inventory = inventoryPlugin({ profiles });
+    const needs = needsPlugin({ profiles, ...options.needs });
     const relationship = relationshipPlugin();
     const tasks = tasksPlugin();
     const sleep = sleepPlugin({ needs, tasks });
+    const story = storyPlugin({ needs, relationship });
     const behavior = behaviorPlugin({
         inventory,
         needs,
         relationship,
         tasks,
+        profiles,
         travelMinutesPerTile: TRAVEL_MINUTES_PER_TILE,
     });
+    // The behaviour plugins — each registers one conduct slice into the
+    // ledger (the sampled behaviour set: thirst/hunger/rest/social/wander
+    // ride the behavior plugin itself; sleep, survival and lumber are
+    // separate governance plugins):
+    //   survival — the flee rung (priority 60): needs the move effect the
+    //     behavior plugin applies, so it mounts only beside it
+    //   lumber   — the wood-production rung (priority 10): fells trees into
+    //     wood; needs the inventory (harvest) and the move effect too
+    const survival = survivalPlugin({ tasks, travelMinutesPerTile: TRAVEL_MINUTES_PER_TILE });
+    const lumber = lumberPlugin({
+        inventory,
+        tasks,
+        travelMinutesPerTile: TRAVEL_MINUTES_PER_TILE,
+    });
+    // The wild boars — the land predators. The bite drains the victim's
+    // energy AND wounds its health through the needs plugin (health at 0 is
+    // death — a cornered castaway can bleed out); the entity profiles derive
+    // the lumbering pace from the boar's Speed attribute and make roaming
+    // burn the walk row. The tasks handle gates the roam against the boars'
+    // own ledger tasks (planned creatures never double-step)
+    const predators = predatorsPlugin({ needs, profiles, tasks: toggles.tasks ? tasks : undefined });
 
     // The view-scale ladder — godspace/core owns the scale concept (the
     // ladder counts UP from the lowest level: scale 0 the simulation
@@ -226,10 +348,10 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     // The tiles appear as the RESOURCES they carry (scenario-wide rule for
     // all four @godspace/canvas representations): a tile's surface key is
     // derived from its deposits by the terrain plugin's tileSurfaceKey —
-    // timber tiles, ore tiles, and the unlimited sand/dirt tiles — falling
+    // treed tiles, ore tiles, and the unlimited sand/dirt tiles — falling
     // back to the plain biome when the tile carries no resources (sea, or
     // finite deposits gathered away). Hover text keeps the biome/voxel
-    // summary and appends the deposit line ("wood ×2 · sand ×∞").
+    // summary and appends the deposit line ("tree ×2 · sand ×∞").
     const surfaceOfCell = (cell: unknown): string | undefined =>
         tileSurfaceKey(cell as { biome?: string; resources?: TileResources });
     const titleOfCell = (cell: unknown): string => {
@@ -239,38 +361,85 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         return deposits ? `${ground} · ${deposits}` : ground;
     };
 
+    // ── Tile decorations — the standing ICONS the canvases draw ─────────────
+    // A tile may carry a DECORATION on top of its color: the canvas plugins
+    // expose it per tile (AsciiTile.decoration) and the god-views draw it.
+    // THE TREE: a treed tile (a standing tree deposit — the lumber
+    // behaviour's harvest target) decorates as 'tree', so the unicode tab
+    // draws the 🌳 emoji and the SVG tab draws the vector tree icon on
+    // every tile trees stand on — at every zoom level (the decorationOf
+    // adapter runs per-cell on each frame's canvas, zoomed slices included,
+    // where the tile's tree subtiles each decorate too). Tiles WITHOUT
+    // trees decorate nothing (color-only — the same no-flood rule the
+    // terrain emoji fix established).
+    const decorationOfCell = (cell: unknown): string | undefined =>
+        ((cell as { resources?: TileResources }).resources?.tree ?? 0) > 0 ? 'tree' : undefined;
+
+    // ── Profile glyphs — the gendered human emoji ───────────────────────────
+    // The cast's PROFILE (engine/types ActorProfile) rides the coordinate
+    // facet (engine/world.ts facetOf), and the unicode/svg canvases resolve
+    // it per entry through their `glyphOf` override: a HUMAN's sex emoji
+    // replaces the stock standing person (🧍 — UNICODE_TYPE_GLYPHS.human),
+    // every other type (birds, boars, ground items) returns undefined and
+    // falls through to the stock taxonomy ladder.
+    const HUMAN_SEX_GLYPHS: Record<string, string> = {
+        'human:male': '🧍‍♂️', // U+1F9CD U+200D U+2642 U+FE0F — person standing, male
+        'human:female': '🧍‍♀️', // U+1F9CD U+200D U+2640 U+FE0F — person standing, female
+    };
+    const sexGlyphOf = (entry: CoordinateEntry): string | undefined =>
+        entry.type && entry.sex ? HUMAN_SEX_GLYPHS[`${entry.type}:${entry.sex}`] : undefined;
+
     // The representation plugin from @godspace/canvas — binds itself through
     // the engine's plugin context (world.canvas + world.coordinates)
     const ascii = asciiCanvasPlugin({
         // Tiles appear as the resources they carry (see surfaceOfCell above)
         surfaceOf: surfaceOfCell,
         titleOf: titleOfCell,
+        // Treed tiles decorate (the ASCII view stays color-only — the frame
+        // data carries the decoration for the emoji/vector siblings)
+        decorationOf: decorationOfCell,
         // The birds' altitude fade bands — flying-N states draw with their
         // hex-alpha tint (plugins/birds/birdsPlugin.ts BIRD_ALTITUDE_STATES)
         states: BIRD_ALTITUDE_STATES,
     });
-    const birds = birdsPlugin();
-    const sharks = sharksPlugin();
+    const birds = birdsPlugin({
+        needs,
+        profiles,
+        // The ledger's busy gate — a perched bird with queued tasks skips
+        // its takeoff/hop rolls (the behavior plugin plans grounded
+        // creatures; two drivers would double-step the gull)
+        tasks: toggles.tasks ? tasks : undefined,
+    });
+    const sharks = sharksPlugin({ needs, profiles });
     // The unicode sibling binds the SAME structural slice as the ascii canvas
     // (same surfaceOf/titleOf adapters) — an emoji-skinned twin of the god view.
     // The type palette extends with ITEM_TYPE_GLYPHS so ground-item entries
     // (typed with the item id, see features/tileDetails scaleView) draw their
-    // emoji in every zoomed view, plus SHARK_TYPE_GLYPH for the sharks
+    // emoji in every zoomed view, plus SHARK_TYPE_GLYPH for the sharks and
+    // BOAR_TYPE_GLYPH for the wild boars
     const unicode = unicodeCanvasPlugin({
         surfaceOf: surfaceOfCell,
         titleOf: titleOfCell,
-        types: { ...ITEM_TYPE_GLYPHS, ...SHARK_TYPE_GLYPH },
+        // Treed tiles decorate — the unicode view draws the 🌳 tree emoji
+        decorationOf: decorationOfCell,
+        types: { ...ITEM_TYPE_GLYPHS, ...SHARK_TYPE_GLYPH, ...BOAR_TYPE_GLYPH },
         states: BIRD_ALTITUDE_STATES,
+        // The gendered human emoji — the profile's sex resolves per entry
+        glyphOf: sexGlyphOf,
     });
     // The svg sibling draws the same world as a scalable vector document —
-    // same adapters, glyphs from the unicode ladder (with the item emoji and
-    // the shark fin), geometry on the shared 26px tile grid (no layout
-    // breakage between canvas tabs)
+    // same adapters, glyphs from the unicode ladder (with the item emoji,
+    // the shark fin and the boar), geometry on the shared 26px tile grid
+    // (no layout breakage between canvas tabs)
     const svg = svgCanvasPlugin({
         surfaceOf: surfaceOfCell,
         titleOf: titleOfCell,
-        types: { ...ITEM_TYPE_GLYPHS, ...SHARK_TYPE_GLYPH },
+        // Treed tiles decorate — the SVG view draws the vector tree icon
+        decorationOf: decorationOfCell,
+        types: { ...ITEM_TYPE_GLYPHS, ...SHARK_TYPE_GLYPH, ...BOAR_TYPE_GLYPH },
         states: BIRD_ALTITUDE_STATES,
+        // The gendered human emoji — same per-entry sex resolver as unicode
+        glyphOf: sexGlyphOf,
     });
     // The data sibling renders plain tables instead of tiles: every entity's
     // coordinates + the terrain census (also resource-keyed)
@@ -280,24 +449,42 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
 
     const mounted = [
         ...(toggles.terrain ? [terrain] : []),
+        // The entity profiles mount right behind the terrain — the species
+        // vocabulary the rest of the environment reads (its setup is data
+        // only; plugin order is tick order and this plugin has no tick)
+        ...(toggles.entity ? [entity] : []),
         ...(toggles.inventory ? [inventory] : []),
         ...(toggles.needs ? [needs] : []),
         ...(toggles.relationship ? [relationship] : []),
         // The ledger advances BEFORE the behavior tick — a completed task's
         // effect (tasks.ledger.onComplete, see behaviorPlugin setup) lands on
-        // the completing minute, then the idle actor re-plans the same minute
+        // the completing minute, then the actor re-plans the same minute
+        // (the behavior tick plans EVERY actor — the ledger pre-empts busy
+        // queues only for strictly higher-priority behaviours)
         ...(toggles.tasks ? [tasks] : []),
         ...(toggles.behavior && toggles.tasks && toggles.inventory && toggles.needs && toggles.relationship
             ? [behavior]
             : []),
-        // Sleep registers its behaviour into the tasks ledger at setup and
-        // restores energy AFTER the behavior tick (sleeping actors restore
-        // while their task counts down)
+        // The behaviour governance plugins register into the tasks ledger at
+        // setup, right behind the behavior ladder:
+        //   sleep    — priority 30 timed sleep, restores energy AFTER the
+        //              behavior tick (sleeping actors restore while their
+        //              task counts down)
+        //   survival — priority 60 flee (needs the behavior move effect)
+        //   lumber   — priority 10 chop (needs the inventory + move effect)
         ...(toggles.sleep && toggles.tasks && toggles.needs ? [sleep] : []),
+        ...(toggles.survival && toggles.tasks && toggles.behavior ? [survival] : []),
+        ...(toggles.lumber && toggles.tasks && toggles.inventory && toggles.behavior ? [lumber] : []),
+        // The storyteller runs after the whole environment minute (needs,
+        // tasks, behavior, sleep) — an encounter reads the freshest state
+        // and needs the needs + relationship systems
+        ...(toggles.story && toggles.needs && toggles.relationship ? [story] : []),
         ...(toggles.birds ? [birds] : []),
-        // Sharks mount after the birds — the sea creatures tick behind the
-        // air ones (fixed plugin order, scenario roster tests pin it)
+        // Sharks mount after the birds, the boars after the sharks — the
+        // creatures tick in their realm order (air, sea, land; fixed plugin
+        // order, scenario roster tests pin it)
         ...(toggles.sharks ? [sharks] : []),
+        ...(toggles.predators && toggles.needs ? [predators] : []),
         ...(toggles.ascii ? [ascii] : []),
         ...(toggles.unicode ? [unicode] : []),
         ...(toggles.svg ? [svg] : []),
@@ -337,18 +524,21 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         const stride = Math.max(1, Math.floor(edge.length / count));
         arrayEach(Array.from({ length: count }, (_, index) => index), ({ value: index }) => {
             const cell = edge[index * stride];
-            const name = CAST[index];
+            const cast = CAST[index];
             const actor: Actor = {
                 id: `actor-${index + 1}`,
-                name,
+                name: cast.name,
                 // The cast are stranded people — sentients of the human race
                 // (kind 'sentient', type 'human'; never the generic 'person',
                 // future plugins may add orcs, elves, …)
                 kind: 'sentient',
                 type: 'human',
                 position: position3(cell.x, cell.y),
-                marker: name.slice(0, 1),
+                marker: cast.name.slice(0, 1),
                 condition: 'well',
+                // The castaway's profile — the sex the god-view draws
+                // (gendered emoji + the Entity Inspector's profile row)
+                profile: { sex: cast.sex },
             };
             world.spawn(actor);
             inventory.spawnKit(actor.id, STARTING_KIT);
@@ -360,5 +550,5 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         birds.release();
     }
 
-    return { world, terrain, inventory, needs, relationship, tasks, sleep, birds, sharks, scale, ascii, unicode, svg, data };
+    return { world, terrain, entity, inventory, needs, relationship, tasks, sleep, survival, lumber, story, birds, sharks, predators, scale, ascii, unicode, svg, data };
 };

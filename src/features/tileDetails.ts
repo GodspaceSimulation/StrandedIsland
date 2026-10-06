@@ -17,10 +17,10 @@
 //               any depth resolve through the terrain plugin's
 //               canvasFor/cellFor (sub-grids generate deterministically
 //               from their parent).
-//   resources — the tile's resource DEPOSITS (wood, stone, iron and the
+//   resources — the tile's resource DEPOSITS (trees, stone, iron and the
 //               unlimited sand/dirt). At the island view these are the
 //               tile's own; deeper they are the PARENT's deposits
-//               distributed onto the subtiles (wood ×2 → two tree subtiles)
+//               distributed onto the subtiles (tree ×2 → two tree subtiles)
 //               — the zoom reveals where the deposits stand.
 //   ground    — what lies on the terrain. At the island view the inventory
 //               plugin's cell stock; deeper, the parent's stock scatters
@@ -51,7 +51,7 @@
 //             (scaleView below scatters them with the same seeded streams).
 //   deeper   — each unit shows WHERE it stands (canvas objects at exact
 //             spots); the parent subtile lists them by name.
-// Tile-resource items (wood/stone/iron/sand/dirt) are skipped from every
+// Tile-resource items (tree/stone/iron/sand/dirt) are skipped from every
 // DEEPER list and scatter: their gatherable stock IS their deposit, and the
 // deposit units stand as the subtile surfaces the terrain generator
 // distributed — drawing them again would double every tree. The island
@@ -281,7 +281,7 @@ export type TileResourceStack = {
 };
 
 /**
- * The tile's resource deposits, in TILE_RESOURCES order (wood, stone, iron,
+ * The tile's resource deposits, in TILE_RESOURCES order (tree, stone, iron,
  * sand, dirt). Deposits are what the tile APPEARS as on the canvas and what
  * its gatherable cell stock hangs off.
  */
@@ -316,7 +316,7 @@ export type TileSummary = {
     passable: boolean;
     /** The full voxel stack, bottom → top. */
     voxels: VoxelKind[];
-    /** The tile's resource deposits (wood/stone/iron/sand/dirt). */
+    /** The tile's resource deposits (tree/stone/iron/sand/dirt). */
     resources: TileResourceStack[];
     /**
      * The ground stock AT THE INSPECTED GRANULARITY: category aggregates

@@ -8,16 +8,26 @@ describe('createIslandWorld', () => {
         const handle = createIslandWorld({ seed: 7 });
         expect(handle.world.plugins.list().map((plugin) => plugin.id)).toEqual([
             'island-terrain',
+            // The species registry — the per-type vocabulary the rest of the
+            // environment reads (stats, attributes, abilities, movement,
+            // inventory sizes)
+            'entity',
             'inventory',
             'needs',
             'relationship',
-            // The task ledger advances before the behavior tick; sleep restores
-            // after it (scenario/island.ts mount order)
+            // The task ledger advances before the behavior tick; the
+            // behaviour governance plugins (sleep, survival, lumber) register
+            // into the ledger right behind it; the storyteller runs after the
+            // whole environment minute (scenario/island.ts mount order)
             'tasks',
             'behavior',
             'sleep',
+            'survival',
+            'lumber',
+            'story',
             'birds',
             'sharks',
+            'predators',
             // The @godspace/canvas representation plugins, loaded by the engine
             'ascii-canvas',
             'unicode-canvas',
@@ -38,16 +48,19 @@ describe('createIslandWorld', () => {
         const handle = createIslandWorld({ seed: 7 });
         // The ship wrecked on the coast — every castaway comes ashore on the
         // outermost dry ring (ranked by rim closeness, spread by stride).
-        // Captured reference positions for the default 25×17 island.
+        // Captured reference positions for the default 25×17 island. The
+        // PROFILE rides along: each castaway's fixed sex (the gendered
+        // emoji + the Entity Inspector's profile row draw it)
         expect(Array.from(handle.world.actors.values()).map((actor) => ({
             id: actor.id,
             name: actor.name,
             position: actor.position,
+            sex: actor.profile.sex,
         }))).toEqual([
-            { id: 'actor-1', name: 'Ael', position: { x: -11, y: 0, z: 0 } },
-            { id: 'actor-2', name: 'Bram', position: { x: 9, y: -1, z: 0 } },
-            { id: 'actor-3', name: 'Cove', position: { x: 1, y: 5, z: 0 } },
-            { id: 'actor-4', name: 'Dune', position: { x: 5, y: -1, z: 0 } },
+            { id: 'actor-1', name: 'Ael', position: { x: -11, y: 0, z: 0 }, sex: 'male' },
+            { id: 'actor-2', name: 'Bram', position: { x: 9, y: -1, z: 0 }, sex: 'male' },
+            { id: 'actor-3', name: 'Cove', position: { x: 1, y: 5, z: 0 }, sex: 'female' },
+            { id: 'actor-4', name: 'Dune', position: { x: 5, y: -1, z: 0 }, sex: 'male' },
         ]);
         // Every landing spot is dry land, ranked from the outermost dry ring
         // inward (Ael's pick — edge[0] — IS the outermost land cell: no dry
@@ -113,17 +126,27 @@ describe('createIslandWorld', () => {
         expect(Array.from(handle.world.actors.keys())).toEqual(['actor-1', 'actor-2']);
     });
 
-    it('runs: one Scale-0 tile per tick — the cast fine-wanders every minute', () => {
+    it('runs: one Scale-0 tile per tick — the woodless cast works the woods, silently', () => {
         const handle = createIslandWorld({ seed: 7 });
         handle.world.step();
         expect(handle.world.ticker.ticks()).toBe(1);
         // One step = ONE world minute (the Scale-0 pace). The task rhythm:
-        // the cast queued their 1-minute wander tasks at minute 1, so the
-        // first ledger decrement lands at minute 2 — after ONE step every
-        // wander task still holds one minute and nobody has moved; Kiki
-        // glides once and the seeded rain of minute 1 fills the pools
+        // the lumber rung ranks above the idle wander — the woodless cast
+        // plans wood first: Ael came ashore on a bare beach and travels to
+        // the woods (1-minute fine steps), while the castaways standing on
+        // treed tiles queue the 15-minute chop. The first ledger decrement
+        // lands at minute 2 — after ONE step every task still holds time.
+        // Kiki glides once and the seeded rain of minute 1 pools water.
         expect(handle.world.ticker.elapsed()).toBe(1);
-        expect(handle.world.events.log().filter((event) => event.kind === 'move').length).toBe(1);
+        // The whole motion stays out of the log — the event bus carries the
+        // story (spawns, encounters, exchanges), never the position plumbing
+        expect(handle.world.events.log().map((event) => event.kind)).toEqual([
+            'spawn',
+            'spawn',
+            'spawn',
+            'spawn',
+            'spawn',
+        ]);
         expect(Array.from(handle.world.actors.values()).map((actor) => ({ ...actor.position }))).toEqual([
             { x: -11, y: 0, z: 0 },
             { x: 9, y: -1, z: 0 },
@@ -131,24 +154,23 @@ describe('createIslandWorld', () => {
             { x: 5, y: -1, z: 0 },
         ]);
         expect(handle.tasks.tasks().map((task) => ({ actorId: task.actorId, kind: task.kind, label: task.label, remaining: task.remaining }))).toEqual([
-            { actorId: 'actor-1', kind: 'move', label: 'wanders', remaining: 1 },
-            { actorId: 'actor-2', kind: 'move', label: 'wanders', remaining: 1 },
-            { actorId: 'actor-3', kind: 'move', label: 'wanders', remaining: 1 },
-            { actorId: 'actor-4', kind: 'move', label: 'wanders', remaining: 1 },
+            { actorId: 'actor-1', kind: 'move', label: 'travels to trees', remaining: 1 },
+            { actorId: 'actor-2', kind: 'chop', label: 'chops a tree', remaining: 15 },
+            { actorId: 'actor-3', kind: 'chop', label: 'chops a tree', remaining: 15 },
+            { actorId: 'actor-4', kind: 'chop', label: 'chops a tree', remaining: 15 },
         ]);
-        // The SECOND minute carries the completing tasks: each castaway
-        // fine-steps exactly ONE Scale-0 tile (their wander task completes on
-        // its decrement). The simulation runs at Scale 0 — the steps stay
-        // INSIDE the tiles (interior moves), so the island view's coarse
-        // positions do not move yet; the fine spots do.
+        // The SECOND minute carries the first completing task: Ael
+        // fine-steps exactly ONE Scale-0 tile east (an interior move — the
+        // island view's coarse position does not move yet); the choppers
+        // stay put, counting their trees down.
         handle.world.step();
         expect(handle.world.ticker.elapsed()).toBe(2);
-        expect(handle.world.events.log().filter((event) => event.kind === 'move').length).toBe(6);
-        expect(handle.world.events.log().filter((event) => event.kind === 'move' && event.actorId?.startsWith('actor')).map((event) => ({ message: event.message, time: event.time }))).toEqual([
-            { message: 'Ael wanders north.', time: 2 },
-            { message: 'Bram wanders south.', time: 2 },
-            { message: 'Cove wanders south.', time: 2 },
-            { message: 'Dune wanders east.', time: 2 },
+        expect(handle.world.events.log().map((event) => event.kind)).toEqual([
+            'spawn',
+            'spawn',
+            'spawn',
+            'spawn',
+            'spawn',
         ]);
         expect(Array.from(handle.world.actors.values()).map((actor) => ({ ...actor.position }))).toEqual([
             { x: -11, y: 0, z: 0 },
@@ -157,42 +179,51 @@ describe('createIslandWorld', () => {
             { x: 5, y: -1, z: 0 },
         ]);
         expect(Array.from(handle.world.actors.keys()).map((id) => handle.world.subOf(id))).toEqual([
-            { x: -8, y: -1 },
-            { x: -9, y: -4 },
-            { x: -2, y: 4 },
-            { x: -10, y: 8 },
+            { x: -7, y: 0 },
+            { x: -9, y: -5 },
+            { x: -2, y: 3 },
+            { x: -11, y: 8 },
         ]);
-        // Eighteen more minutes: the cast keeps milling inside their tiles —
-        // an occasional fine step wraps off a tile edge and the ISLAND
-        // position moves with it (the world flows across its boundaries).
-        // 76 castaway fine steps + 19 Kiki glides over 19 minutes.
+        // Eighteen more minutes: Ael keeps trekking east toward the woods
+        // (19 interior fine steps — the wrap onto the next tile is still
+        // one step away), the choppers finished at minute 16 and wandered
+        // on (Dune's wandering wrapped off the tile's west edge — the
+        // island position moved with it). The log gains the wilds' own
+        // beat: Tusk the boar wanders in from the far shore at minute 6
+        // (far from the cast — no meeting). The seeded rain of minute 10
+        // shifted past the window — the survey's richer map moved the
+        // inventory plugin's roll stream (the vine/seaweed draws), so no
+        // rain lands inside these twenty minutes.
         for (let index = 0; index < 18; index++) {
             handle.world.step();
         }
         expect(handle.world.ticker.elapsed()).toBe(20);
-        expect(handle.world.events.log().filter((event) => event.kind === 'move').length).toBe(95);
-        expect(handle.world.events.log().filter((event) => event.kind === 'move' && event.actorId?.startsWith('actor')).length).toBe(76);
-        expect(handle.world.events.log().filter((event) => event.kind === 'move' && event.actorId?.startsWith('actor')).slice(0, 8).map((event) => ({ message: event.message, time: event.time }))).toEqual([
-            { message: 'Ael wanders north.', time: 2 },
-            { message: 'Bram wanders south.', time: 2 },
-            { message: 'Cove wanders south.', time: 2 },
-            { message: 'Dune wanders east.', time: 2 },
-            { message: 'Ael wanders northeast.', time: 3 },
-            { message: 'Bram wanders northwest.', time: 3 },
-            { message: 'Cove wanders northeast.', time: 3 },
-            { message: 'Dune wanders northeast.', time: 3 },
+        expect(handle.world.events.log().map((event) => ({ kind: event.kind, message: event.message, time: event.time }))).toEqual([
+            { kind: 'spawn', message: 'Ael washes ashore.', time: 0 },
+            { kind: 'spawn', message: 'Bram washes ashore.', time: 0 },
+            { kind: 'spawn', message: 'Cove washes ashore.', time: 0 },
+            { kind: 'spawn', message: 'Dune washes ashore.', time: 0 },
+            { kind: 'spawn', message: 'Kiki wheels above the island.', time: 0 },
+            { kind: 'spawn', message: 'Tusk wanders in from the wilds.', time: 6 },
+        ]);
+        // The boar roams the far shore — no castaway has met it yet. Tusk
+        // is a living thing: the behavior plugin plans it through the
+        // ledger (the predators plugin's own roam yields to the busy gate),
+        // so its wandered position reads from the ledger's picks
+        expect(handle.predators.predators()).toEqual([
+            { id: 'boar-1', name: 'Tusk', marker: 'T', x: 3, y: 7 },
         ]);
         expect(Array.from(handle.world.actors.values()).map((actor) => ({ ...actor.position }))).toEqual([
             { x: -11, y: 0, z: 0 },
-            { x: 8, y: -1, z: 0 },
+            { x: 9, y: -1, z: 0 },
             { x: 1, y: 5, z: 0 },
-            { x: 4, y: -1, z: 0 },
+            { x: 5, y: -1, z: 0 },
         ]);
         expect(Array.from(handle.world.actors.keys()).map((id) => handle.world.subOf(id))).toEqual([
-            { x: -12, y: 0 },
-            { x: 12, y: -6 },
-            { x: 3, y: 4 },
-            { x: 8, y: 3 },
+            { x: 11, y: 0 },
+            { x: -9, y: -3 },
+            { x: 0, y: 4 },
+            { x: -12, y: 7 },
         ]);
     });
 
@@ -230,7 +261,7 @@ describe('createIslandWorld', () => {
             },
             actorCount: 0,
         });
-        expect(bare.world.plugins.list().map((plugin) => plugin.id)).toEqual(['island-terrain']);
+        expect(bare.world.plugins.list().map((plugin) => plugin.id)).toEqual(['island-terrain', 'entity']);
         expect(bare.world.canvas.width).toBe(25);
 
 
@@ -269,29 +300,21 @@ describe('createIslandWorld', () => {
         expect(handle.world.plugins.has('behavior')).toBe(true);
         // Drain Dune to the rest trigger (energy ≤ 22) and run 20 steps
         // (20 world minutes — the rest task is planned at minute 1 and
-        // completes at minute 11, then Dune fine-wanders on)
+        // completes at minute 11; then the lumber rung takes over — Dune
+        // stands on a treed tile and chops)
         handle.needs.satisfy('actor-4', { energy: -80 });
         for (let index = 0; index < 20; index++) {
             handle.world.step();
         }
         // The priority-25 rest rung of the behavior ladder handled it: the
         // 10-minute rest task with the one-shot +12 recovery (no per-minute
-        // sleep restore)
-        expect(handle.needs.of('actor-4').energy).toBe(28.800000000000026);
-        // After the rest, Dune wanders again (1-minute tasks)
-        expect(handle.tasks.taskOf('actor-4')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 1 });
+        // sleep restore), then pure decay through minute 20
+        expect(handle.needs.of('actor-4').energy).toBe(30.800000000000026);
+        // After the rest, the woodless Dune chops the tree standing on
+        // Dune's tile (the lumber rung, priority 10 — below the rest rung)
+        expect(handle.tasks.taskOf('actor-4')).toMatchObject({ kind: 'chop', label: 'chops a tree', remaining: 6 });
         expect(handle.world.events.log().filter((event) => event.actorId === 'actor-4').map((event) => ({ kind: event.kind, message: event.message, time: event.time }))).toEqual([
             { kind: 'spawn', message: 'Dune washes ashore.', time: 0 },
-            { kind: 'rest', message: 'Dune rests for a while.', time: 11 },
-            { kind: 'move', message: 'Dune wanders northwest.', time: 12 },
-            { kind: 'move', message: 'Dune wanders northwest.', time: 13 },
-            { kind: 'move', message: 'Dune wanders northwest.', time: 14 },
-            { kind: 'move', message: 'Dune wanders south.', time: 15 },
-            { kind: 'move', message: 'Dune wanders northwest.', time: 16 },
-            { kind: 'move', message: 'Dune wanders northeast.', time: 17 },
-            { kind: 'move', message: 'Dune wanders east.', time: 18 },
-            { kind: 'move', message: 'Dune wanders northeast.', time: 19 },
-            { kind: 'move', message: 'Dune wanders north.', time: 20 },
         ]);
     });
 
@@ -323,12 +346,13 @@ describe('createIslandWorld', () => {
         // The highland's stone deposit surfaces the tile with the stone
         // palette color
         expect(frame.tiles[212].background).toBe('#8d939e');
-        // A timber tile: (3,−6) → tile 2×25+15 = 65 surfaces as wood, the
+        // A treed tile: (3,−6) → tile 2×25+15 = 65 surfaces as tree, the
         // forest's deposit (no iron lode fits the 25×17 seed-7 island —
-        // every vein sample stays below the lode threshold)
-        expect(frame.tiles[65].background).toBe('#8a6642');
+        // every vein sample stays below the lode threshold). Trees paint
+        // GREEN on the canvas — the greenery of the standing woods.
+        expect(frame.tiles[65].background).toBe('#4caf50');
         expect(frame.tiles[65].title).toBe(
-            'forest · height 5 · stone / stone / stone / soil / grass / forest · wood ×2',
+            'forest · height 5 · stone / stone / stone / soil / grass / forest · tree ×2',
         );
     });
 
@@ -339,10 +363,16 @@ describe('createIslandWorld', () => {
         expect(frame.columns).toBe(25);
         expect(frame.rows).toBe(17);
         expect(frame.tiles.length).toBe(425);
-        // Ael renders as the human emoji at his shore position (tile 201) —
-        // his type 'human' resolves the glyph through the type map
+        // Ael renders as the GENDERED human emoji at his shore position
+        // (tile 201) — his profile (male) resolves the glyph through the
+        // plugin's per-entry `glyphOf` override (scenario sexGlyphOf), not
+        // the stock type map (whose 🧍 stays the coarse fallback)
         expect(frame.tiles[201].glyphs).toEqual([
-            { id: 'actor-1', glyph: '🧍', color: '#5cb85c', elevation: 0, kind: 'sentient', type: 'human', state: 'well' },
+            { id: 'actor-1', glyph: '🧍‍♂️', color: '#5cb85c', elevation: 0, kind: 'sentient', type: 'human', state: 'well' },
+        ]);
+        // Cove stands at (1,5): tile 13×25+13 = 338 — the FEMALE emoji
+        expect(frame.tiles[338].glyphs).toEqual([
+            { id: 'actor-3', glyph: '🧍‍♀️', color: '#5cb85c', elevation: 0, kind: 'sentient', type: 'human', state: 'well' },
         ]);
         // Kiki renders as the bird emoji with her altitude superscript —
         // her type 'bird' resolves through the type map, her color the z-2
@@ -380,10 +410,15 @@ describe('createIslandWorld', () => {
         expect(frame.rows).toBe(17);
         expect(frame.size).toBe(26);
         expect(frame.tiles.length).toBe(425);
-        // Ael renders as the human emoji (unicode glyph ladder) at his shore
-        // position, colored by the shared state palette
+        // Ael renders as the GENDERED human emoji (the per-entry sex
+        // resolver, same as the unicode canvas) at his shore position,
+        // colored by the shared state palette
         expect(frame.tiles[201].glyphs).toEqual([
-            { id: 'actor-1', glyph: '🧍', color: '#5cb85c', elevation: 0, kind: 'sentient', type: 'human', state: 'well' },
+            { id: 'actor-1', glyph: '🧍‍♂️', color: '#5cb85c', elevation: 0, kind: 'sentient', type: 'human', state: 'well' },
+        ]);
+        // Cove — the FEMALE emoji at her spot (1,5) → tile 338
+        expect(frame.tiles[338].glyphs).toEqual([
+            { id: 'actor-3', glyph: '🧍‍♀️', color: '#5cb85c', elevation: 0, kind: 'sentient', type: 'human', state: 'well' },
         ]);
         // Kiki renders as the bird emoji with her altitude superscript
         expect(frame.tiles[212].glyphs).toEqual([
@@ -412,7 +447,7 @@ describe('createIslandWorld', () => {
             ['actor-4', 'sentient', 'human', 'Dune', 'well', 5, -1, 0],
         ]);
         // Terrain census: cell counts per SURFACE key (the tiles appear as
-        // the resources they carry — dirt/sand/wood/stone/iron — with plain
+        // the resources they carry — dirt/sand/tree/stone/iron — with plain
         // water left as biome), alphabetical
         expect(frame.tables[1].rows).toEqual([
             ['dirt', 38],
@@ -420,7 +455,7 @@ describe('createIslandWorld', () => {
             ['sand', 160],
             ['shallows', 97],
             ['stone', 9],
-            ['wood', 75],
+            ['tree', 75],
         ]);
         // Canvas overview: the 25×17 frame
         expect(frame.tables[2].rows).toEqual([
@@ -500,6 +535,16 @@ describe('createIslandWorld', () => {
 
     it('exposes the plugin handles for god-side control', () => {
         const handle = createIslandWorld({ seed: 7, actorCount: 2 });
+        // The entity profiles ride the handle too — the god reads any
+        // species' definition (stats, attributes, abilities, movement,
+        // inventory size)
+        expect(handle.entity.profileOf('human')?.attributes).toEqual({
+            strength: 8, stamina: 10, speed: 10, dexterity: 10,
+        });
+        expect(handle.entity.hasAbility('human', 'mine')).toBe(true);
+        expect(handle.entity.hasAbility('human', 'fly')).toBe(false);
+        expect(handle.entity.moveEnergyOf('bird', 'fly')).toBe(2.5);
+        expect(handle.entity.inventorySizeOf('shark')).toBe(1);
         // The god can force an exchange between the two castaways
         const ael = handle.world.actors.get('actor-1');
         const bram = handle.world.actors.get('actor-2');
@@ -508,12 +553,53 @@ describe('createIslandWorld', () => {
         expect(handle.inventory.of('actor-1')).toEqual({ berry: 3 });
         expect(handle.inventory.of('actor-2')).toEqual({ berry: 1, flint: 2 });
         expect(handle.relationship.relation('actor-1', 'actor-2')).toBe(0);
-        // …and inspect needs directly
-        expect(handle.needs.of('actor-1')).toEqual({ hunger: 20, thirst: 20, energy: 100 });
+        // …and inspect needs directly (health full — the reservoir every
+        // body wakes unharmed with)
+        expect(handle.needs.of('actor-1')).toEqual({ hunger: 20, thirst: 20, energy: 100, health: 100 });
         // The task ledger and sleep plugins ride the handle too — the god
         // can read the cast's current tasks straight away
         expect(handle.tasks.ledger).toBeDefined();
         expect(handle.tasks.tasks()).toEqual([]);
         expect(handle.sleep).toBeDefined();
+    });
+
+    it('every living thing carries the survival stats — the bird decays by its species rates', () => {
+        const handle = createIslandWorld({ seed: 7 });
+        // Kiki is not a castaway, but she carries the four survival stats
+        // all the same — starting values and decay rates from the bird
+        // profile, health full like every fresh body
+        expect(handle.needs.of('bird-1')).toEqual({ hunger: 10, thirst: 10, energy: 100, health: 100 });
+        handle.world.step();
+        handle.world.step();
+        // Bird decay: 0.02 / 0.03 / −0.05 per world minute (a human decays
+        // 0.1 / 0.15 / −0.06 — the species' own metabolism). Kiki glided
+        // both minutes: two fly-row charges (2.5 each) ride on top. Health
+        // stays full — nothing hurt her
+        expect(handle.needs.of('bird-1')).toEqual({
+            hunger: 10.04,
+            thirst: 10.059999999999999,
+            energy: 94.9,
+            health: 100,
+        });
+        // The castaways decayed at the human rates for the same two minutes
+        // — float drift pinned from the run
+        expect(handle.needs.of('actor-1')).toEqual({
+            hunger: 20.200000000000003,
+            thirst: 20.299999999999997,
+            energy: 99.88,
+            health: 100,
+        });
+        // The god can drive a creature's stats directly (the bite drains,
+        // the god can too)
+        handle.needs.satisfy('bird-1', { energy: -90 });
+        expect(handle.needs.of('bird-1').energy).toBe(4.900000000000006);
+    });
+
+    it('the entity profiles govern the bags — the cast starting kit fits the eight-unit bag', () => {
+        const handle = createIslandWorld({ seed: 7, actorCount: 1 });
+        // The kit (berry 2 + flint 1 = 3 units) clamped nowhere near the
+        // human's eight-unit capacity
+        expect(handle.inventory.capacityOf('actor-1')).toBe(8);
+        expect(handle.inventory.of('actor-1')).toEqual({ berry: 2, flint: 1 });
     });
 });

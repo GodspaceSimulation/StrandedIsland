@@ -24,10 +24,12 @@ import { needsPlugin } from '../needs/needsPlugin';
 import { relationshipPlugin } from '../relationship/relationshipPlugin';
 import { tasksPlugin } from '../tasks/tasksPlugin';
 import { behaviorPlugin } from './behaviorPlugin';
+import { survivalPlugin } from '../survival/survivalPlugin';
+import { entityPlugin } from '../entity/entityPlugin';
 import type { Actor } from '../../engine/types';
 
 const spawn = (world: ReturnType<typeof createWorld>, id: string, name: string, x: number, y: number): Actor => {
-    const actor: Actor = { id, name, kind: 'sentient', type: 'human', position: position3(x, y), marker: name.slice(0, 1), condition: 'well' };
+    const actor: Actor = { id, name, kind: 'sentient', type: 'human', position: position3(x, y), marker: name.slice(0, 1), condition: 'well', profile: { sex: 'male' } };
     return world.spawn(actor);
 };
 
@@ -60,6 +62,185 @@ const moveTask = (behaviour: string, label: string, dx: number, dy: number, extr
     ...extra,
 });
 
+describe('behaviorPlugin — every living thing plans through the ladder', () => {
+    /** The stack the creature tests share: the ledger plans the whole
+     * coordinate space, not only the castaway registry. */
+    const buildStack = () => {
+        const inventory = inventoryPlugin({ rainChancePerMinute: 0 });
+        const needs = needsPlugin({ thirstPerMinute: 0, energyPerMinute: 0, hungerPerMinute: 0 });
+        const relationship = relationshipPlugin();
+        const tasks = tasksPlugin();
+        const behavior = behaviorPlugin({ inventory, needs, relationship, tasks });
+        const world = createWorld({
+            seed: 7,
+            tickSize: 1,
+            plugins: [islandTerrainPlugin(), inventory, needs, relationship, tasks, behavior],
+        });
+        return { world, inventory, needs, tasks };
+    };
+
+    /** A coordinate-space creature fixture — the birds/boars/sharks
+     * plugins' registry pattern (never world.actors). */
+    const place = (
+        world: ReturnType<typeof createWorld>,
+        id: string,
+        name: string,
+        type: string,
+        x: number,
+        y: number,
+        z = 0,
+        state = z > 0 ? 'flying' : 'perched',
+    ) => {
+        world.coordinates.place({
+            id,
+            position: position3(x, y, z),
+            kind: 'creature',
+            type,
+            name,
+            marker: name.slice(0, 1),
+            state,
+        });
+    };
+
+    it('a perched gull plans through the ladder: the idle filler fine-wanders its tile', () => {
+        const { world, tasks } = buildStack();
+        // The gull perches on the forest (6,2) — grounded on dry land
+        place(world, 'bird-1', 'Kiki', 'bird', 6, 2);
+        world.step();
+        // The behavior tick planned her: the idle wander queued — the same
+        // 1-minute move task a castaway gets, keyed by her creature id
+        expect(tasks.taskOf('bird-1')).toEqual({
+            id: 't-1',
+            actorId: 'bird-1',
+            behaviour: 'wander',
+            kind: 'move',
+            label: 'wanders',
+            minutes: 1,
+            payload: { dx: 0, dy: -1, wander: true },
+            total: 1,
+            remaining: 1,
+        });
+        world.step();
+        // The wander completed: the gull fine-stepped north INSIDE the tile
+        // (the coarse position holds, the fine spot moved from the derived
+        // {12,1} to {12,0})
+        expect(world.coordinates.positionOf('bird-1')).toEqual({ x: 6, y: 2, z: 0 });
+        expect(world.subOf('bird-1')).toEqual({ x: 12, y: 0 });
+        // The wander is silent — simulation plumbing, not story
+        expect(world.events.log().filter((event) => event.kind === 'move')).toEqual([]);
+    });
+
+    it('a hungry gull forages: it gathers the cell\u2019s food into its beak-bag and eats it', () => {
+        const { world, inventory, needs, tasks } = buildStack();
+        place(world, 'bird-1', 'Kiki', 'bird', 6, 2);
+        needs.satisfy('bird-1', { hunger: 45 }); // 65 ≥ 60 — the hunger rung fires
+        world.step();
+        // No food in the beak, food underfoot — the GATHER is the task (the
+        // same 10-minute forage a castaway plans)
+        expect(tasks.taskOf('bird-1')).toEqual({
+            id: 't-1',
+            actorId: 'bird-1',
+            behaviour: 'hunger',
+            kind: 'gather',
+            label: 'gathers',
+            minutes: 10,
+            total: 10,
+            remaining: 10,
+        });
+        for (let index = 0; index < 10; index++) {
+            world.step();
+        }
+        // The forage completed: one berry stands in the beak-bag (the bird
+        // carries 2–3 things — the profiles' size, read through the
+        // coordinate facet without a registry entry) and the eat is queued
+        expect(inventory.of('bird-1')).toEqual({ berry: 1 });
+        expect(tasks.taskOf('bird-1')).toMatchObject({ behaviour: 'hunger', kind: 'eat', payload: { itemId: 'berry' }, remaining: 2 });
+        for (let index = 0; index < 2; index++) {
+            world.step();
+        }
+        // The berry is eaten (−14 nutrition): the gull sates itself the
+        // same way a castaway does — out of the bag
+        expect(inventory.of('bird-1')).toEqual({});
+        expect(needs.of('bird-1').hunger).toBe(51);
+        // The tile's own food went with the forage; the woods' mushroom
+        // still stands (the gather takes the first food in stock order)
+        expect(inventory.cellStock(6, 2)).toEqual({ tree: 2, mushroom: 1 });
+        // Foraging is a solo beat — silent
+        expect(world.events.log().filter((event) => event.kind === 'gather' || event.kind === 'consume')).toEqual([]);
+    });
+
+    it('flyers and water creatures keep their own scripts: never planned', () => {
+        const { world, tasks } = buildStack();
+        // Kiki glides at z 2 — airborne, the birds plugin owns every minute
+        place(world, 'bird-1', 'Kiki', 'bird', 6, 2, 2, 'flying-2');
+        // Finn swims the shallows — an impassable cell, the sharks plugin's
+        // realm (a task ladder that walks tiles is not their vocabulary)
+        place(world, 'shark-1', 'Finn', 'shark', -12, -8, 0, 'swimming');
+        for (let index = 0; index < 3; index++) {
+            world.step();
+        }
+        // No ledger tasks for either — the gull's altitude band stays the
+        // facet state and the shark stays where its swim script put it
+        expect(tasks.taskOf('bird-1')).toBeUndefined();
+        expect(tasks.taskOf('shark-1')).toBeUndefined();
+        expect(world.coordinates.entryOf('bird-1')?.state).toBe('flying-2');
+    });
+
+    it('a boar\u2019s maul stays possible while the ledger drives it: the bite rides the needs sweep', () => {
+        // The boar carries no tasks in this stack (no behavior rung fires —
+        // needs frozen); the point is the free-mix: creatures planned
+        // through the ladder keep their own plugin hooks intact
+        const { world, needs, tasks } = buildStack();
+        place(world, 'boar-1', 'Tusk', 'boar', 6, 2, 0, 'roaming');
+        world.step();
+        // The grounded boar plans like any dry-land creature — the idle
+        // wander fills its minute
+        expect(tasks.taskOf('boar-1')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 1 });
+        // Energy untouched by planning itself — only movement charges it
+        expect(needs.of('boar-1').energy).toBe(100);
+        void world;
+    });
+
+    it('a profiled perched gull with no pressing need is NOT planned — the birds plugin owns the perch', () => {
+        // WITH the entity profiles mounted, the wander filler exempts
+        // flyers: a task queued every minute would keep the birds plugin's
+        // busy gate closed forever, and no takeoff roll would ever fire
+        // again — the gull pinned to the ground. The perch belongs to the
+        // birds plugin (takeoff/hop rolls, the roost recovery); the ledger
+        // only takes over for real needs (the forage test above)
+        const profiles = entityPlugin();
+        const inventory = inventoryPlugin({ profiles });
+        const needs = needsPlugin({ profiles, thirstPerMinute: 0, energyPerMinute: 0, hungerPerMinute: 0 });
+        const relationship = relationshipPlugin();
+        const tasks = tasksPlugin();
+        const behavior = behaviorPlugin({ inventory, needs, relationship, tasks, profiles });
+        const world = createWorld({
+            seed: 7,
+            tickSize: 1,
+            plugins: [islandTerrainPlugin(), inventory, needs, relationship, tasks, behavior, profiles],
+        });
+        world.coordinates.place({
+            id: 'bird-1',
+            position: position3(6, 2),
+            kind: 'creature',
+            type: 'bird',
+            name: 'Kiki',
+            marker: 'K',
+            state: 'perched',
+        });
+        for (let index = 0; index < 3; index++) {
+            world.step();
+        }
+        // No ledger tasks — the gull's idle minutes are the birds plugin's
+        expect(tasks.taskOf('bird-1')).toBeUndefined();
+        // A HUNGRY gull still gets planned (the need outranks the perch) —
+        // the bird profile starts hunger at 10, so +55 reaches the trigger
+        needs.satisfy('bird-1', { hunger: 55 }); // 65 ≥ 60
+        world.step();
+        expect(tasks.taskOf('bird-1')).toMatchObject({ behaviour: 'hunger', kind: 'gather' });
+    });
+});
+
 describe('behaviorPlugin', () => {
     it('a hungry actor with a berry eats AFTER the eat task completes', () => {
         const { world, inventory, needs, tasks } = buildStack({ hungerPerMinute: 6 });
@@ -70,20 +251,13 @@ describe('behaviorPlugin', () => {
             world.step();
         }
         // The 2-minute eat task was planned at minute 1 and completed at
-        // minute 3: hunger 60 + 6 × 3 = 78, one berry eaten (−14 nutrition)
-        expect(needs.of('a')).toEqual({ hunger: 64, thirst: 20, energy: 100 });
+        // minute 3: hunger 60 + 6 × 3 = 78, one berry eaten (−14 nutrition).
+        // Health stays full — nothing hurt the actor
+        expect(needs.of('a')).toEqual({ hunger: 64, thirst: 20, energy: 100, health: 100 });
         expect(inventory.of('a')).toEqual({ berry: 1, flint: 1 });
-        // The consume event carries the exact stamp of the completing minute
-        // (a 'needs' threshold event interleaves at tick 2 — hunger crossed 70)
-        const consume = world.events.log().find((event) => event.kind === 'consume');
-        expect(consume).toEqual({
-            id: 3,
-            tick: 3,
-            time: 3,
-            kind: 'consume',
-            message: 'Ael eats 1 Berry.',
-            actorId: 'a',
-        });
+        // The eat itself is silent — a solo beat, not a story between
+        // entities (only the spawn has landed in the log so far)
+        expect(world.events.log().map((event) => event.kind)).toEqual(['spawn']);
         // Still hungry (64 ≥ 60) — the actor re-plans eating immediately
         expect(tasks.taskOf('a')).toEqual({
             id: 't-2',
@@ -133,10 +307,8 @@ describe('behaviorPlugin', () => {
         expect(world.actors.get('a')).toMatchObject({ position: { x: 7, y: 2, z: 0 } });
         expect(world.subOf('a')).toEqual({ x: -12, y: -3 });
         expect(needs.of('a').energy).toBe(99);
-        expect(world.events.log().filter((event) => event.kind === 'move').map((event) => ({ message: event.message, time: event.time }))).toEqual([
-            { message: 'Ael walks east.', time: 2 },
-            { message: 'Ael walks east.', time: 3 },
-        ]);
+        // The walk is silent — the whole journey stays out of the log
+        expect(world.events.log().filter((event) => event.kind === 'move')).toEqual([]);
         // The walk across tile (7,2): 25 more east fine steps, the last one
         // wrapping onto the pool tile (8,2) at minute 28 (a second crossing,
         // a second charge)
@@ -146,22 +318,29 @@ describe('behaviorPlugin', () => {
         expect(world.ticker.elapsed()).toBe(28);
         expect(world.actors.get('a')).toMatchObject({ position: { x: 8, y: 2, z: 0 } });
         expect(needs.of('a').energy).toBe(98);
-        // On the pool tile the thirst behaviour pivots to the 2-minute drink,
-        // completing at minute 30 (−35 thirst relief)
+        // On the pool tile the thirst behaviour pivots to the 3-minute
+        // COLLECTION — the water goes INTO THE BAG first (nothing recovers
+        // straight from the ground), completing at minute 31
+        for (let index = 0; index < 3; index++) {
+            world.step();
+        }
+        expect(world.ticker.elapsed()).toBe(31);
+        // The pooled water is carried now — the bag holds it, the cell is
+        // dry. The cell's own stocks ran their rhythms (berry +1 at minute
+        // 20, mushroom +1 at 15) and the survey hung a vine on this wood
+        expect(inventory.of('a')).toEqual({ water: 1 });
+        expect(inventory.cellStock(8, 2)).toEqual({ tree: 2, berry: 2, mushroom: 2, vine: 1 });
+        // The same minute re-plans the 2-minute drink from the bag,
+        // completing at minute 33 (−35 thirst relief, the bag empties)
         for (let index = 0; index < 2; index++) {
             world.step();
         }
-        expect(world.ticker.elapsed()).toBe(30);
+        expect(world.ticker.elapsed()).toBe(33);
         expect(needs.of('a').thirst).toBe(45);
-        expect(inventory.cellStock(8, 2)).toEqual({ wood: 2, berry: 2 });
-        // 27 east fine steps + the drink's consume stamp
-        expect(world.events.log().filter((event) => event.kind === 'move').length).toBe(27);
-        expect(world.events.log().filter((event) => event.kind === 'move').slice(-1)).toEqual([
-            { id: expect.any(Number), tick: 28, time: 28, kind: 'move', message: 'Ael walks east.', actorId: 'a' },
-        ]);
-        expect(world.events.log().filter((event) => event.kind === 'consume')).toEqual([
-            { id: 29, tick: 30, time: 30, kind: 'consume', message: 'Ael drinks 1 Water.', actorId: 'a' },
-        ]);
+        expect(inventory.of('a')).toEqual({});
+        // 27 east fine steps + the collect + the drink — ALL silent, no
+        // move/consume events
+        expect(world.events.log().filter((event) => event.kind === 'move' || event.kind === 'consume')).toEqual([]);
         // Sated (45 < 65) — the actor re-plans a wander
         expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 1 });
     });
@@ -172,11 +351,13 @@ describe('behaviorPlugin', () => {
         inventory.cellStock(8, 2).water = 1;
         needs.satisfy('a', { thirst: 60 });
         world.step(); // the east travel task is queued
-        // A coordinates-only resident (no actor registry entry, no behaviour —
-        // it never moves) materializes on tile (7,2) EXACTLY on Ael's landing
-        // fine spot: the east edge of the neighbor tile, {−12,−3}. The
-        // Scale-0 occupancy rule sees it (the coordinate space is the
-        // single position registry).
+        // A coordinates-only creature (no actor registry entry) materializes
+        // on tile (7,2) EXACTLY on Ael's landing fine spot: the east edge of
+        // the neighbor tile, {−12,−3}. The Scale-0 occupancy rule sees it
+        // (the coordinate space is the single position registry). The dog is
+        // a living thing too — the behavior plugin plans it every minute, so
+        // it fine-wanders beside the drama (its own random picks, its own
+        // minute of work)
         world.coordinates.place({
             id: 'b',
             position: position3(7, 2),
@@ -193,33 +374,76 @@ describe('behaviorPlugin', () => {
         // Minute 2: the east task completes with an INTERIOR step ({11,−3} →
         // {12,−3}) — no wrap, no block yet. The same minute's re-plan sees
         // the wrap onto the taken spot and plans the FALLBACK (the first
-        // valid fine direction: north) instead of a second east step
+        // valid fine direction: north) instead of a second east step. The
+        // dog plans its own wander
         world.step();
         expect(world.ticker.elapsed()).toBe(2);
         expect(world.actors.get('a')).toMatchObject({ position: { x: 6, y: 2, z: 0 } });
         expect(world.subOf('a')).toEqual({ x: 12, y: -3 });
         expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', payload: { dx: 0, dy: -1 } });
+        expect(tasks.taskOf('b')).toMatchObject({ kind: 'move', label: 'wanders', payload: { dx: 0, dy: -1 } });
         // Minute 3: the fallback walks — a north fine step inside the tile
-        // (no crossing, no charge). The wrap was never attempted, so no move
-        // was blocked: the walk event is the fallback's.
+        // (no crossing, no charge). The dog's wander lands it one spot
+        // north — ONTO Ael's next landing ({−12,−4}) — so the re-planned
+        // east wrap is blocked AGAIN and Ael falls back north a second time
         world.step();
         expect(world.ticker.elapsed()).toBe(3);
-        // The actor still stands on (6,2) — the island view never saw the
-        // blocked wrap as a tile change
         expect(world.actors.get('a')).toMatchObject({ position: { x: 6, y: 2, z: 0 } });
+        expect(world.subOf('a')).toEqual({ x: 12, y: -4 });
+        expect(world.subOf('b')).toEqual({ x: -12, y: -4 });
         expect(needs.of('a').energy).toBe(100);
-        expect(world.events.log().filter((event) => event.kind === 'move').map((event) => ({ message: event.message, time: event.time }))).toEqual([
-            { message: 'Ael walks east.', time: 2 },
-            { message: 'Ael walks north.', time: 3 },
-        ]);
-        // Minute 4: the east attempt repeats — the wrap now lands one spot
-        // north of the resident ({−12,−4}, free) and the actor flows into
-        // (7,2) with the crossing charge
+        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', payload: { dx: 0, dy: -1 } });
+        // Minute 4: the second fallback walks ({12,−5}); the dog wanders off
+        // west ({−11,−3}) — the east wrap is finally clear and Ael plans it
         world.step();
         expect(world.ticker.elapsed()).toBe(4);
+        expect(world.subOf('a')).toEqual({ x: 12, y: -5 });
+        expect(world.subOf('b')).toEqual({ x: -11, y: -3 });
+        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', payload: { dx: 1, dy: 0 } });
+        // Minute 5: the east attempt crosses — the actor flows into (7,2)
+        // at sub {−12,−5} with the crossing charge. Every step stayed out of
+        // the log
+        world.step();
+        expect(world.ticker.elapsed()).toBe(5);
         expect(world.actors.get('a')).toMatchObject({ position: { x: 7, y: 2, z: 0 } });
-        expect(world.subOf('a')).toEqual({ x: -12, y: -4 });
+        expect(world.subOf('a')).toEqual({ x: -12, y: -5 });
         expect(needs.of('a').energy).toBe(99);
+        expect(world.events.log().filter((event) => event.kind === 'move')).toEqual([]);
+        // The walk across tile (7,2) from {−12,−5}: 24 more east fine steps
+        // (minutes 6–29), then the wrapping step itself onto the pool tile
+        // (8,2) at minute 30 (a second crossing, a second charge)
+        for (let index = 0; index < 25; index++) {
+            world.step();
+        }
+        expect(world.ticker.elapsed()).toBe(30);
+        expect(world.actors.get('a')).toMatchObject({ position: { x: 8, y: 2, z: 0 } });
+        expect(needs.of('a').energy).toBe(98);
+        // On the pool tile the thirst behaviour pivots to the 3-minute
+        // COLLECTION — the water goes INTO THE BAG first (nothing recovers
+        // straight from the ground), completing at minute 33
+        for (let index = 0; index < 3; index++) {
+            world.step();
+        }
+        expect(world.ticker.elapsed()).toBe(33);
+        // The pooled water is carried now — the bag holds it, the cell is
+        // dry. The cell's own stocks ran their rhythms (mushroom +1 at
+        // minute 15, berry +1 at 20) and the survey hung a vine here
+        expect(inventory.of('a')).toEqual({ water: 1 });
+        expect(inventory.cellStock(8, 2)).toEqual({ tree: 2, berry: 2, mushroom: 2, vine: 1 });
+        // The same minute re-plans the 2-minute drink from the bag,
+        // completing at minute 35 (−35 thirst relief, the bag empties)
+        for (let index = 0; index < 2; index++) {
+            world.step();
+        }
+        expect(world.ticker.elapsed()).toBe(35);
+        expect(needs.of('a').thirst).toBe(45);
+        expect(inventory.of('a')).toEqual({});
+        // The whole journey — the blocked wrap, the fallbacks, the two
+        // crossings, the collect and the drink — ALL silent, no move or
+        // consume events
+        expect(world.events.log().filter((event) => event.kind === 'move' || event.kind === 'consume')).toEqual([]);
+        // Sated (45 < 65) — the actor re-plans a wander
+        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 1 });
     });
 
     it('a fed actor exchanges food for a hungry neighbour’s material AT PLAN TIME', () => {
@@ -247,14 +471,13 @@ describe('behaviorPlugin', () => {
         expect(relationship.relation('a', 'b')).toBe(5.940000000000001);
         // Ael stays busy the whole encounter — socialMinutes 10
         expect(tasks.taskOf('a')).toMatchObject({ kind: 'social', remaining: 7 });
+        // The TRADE is the story — the exchange and the bond move stay in
+        // the log; Bram's own eat and wander stay silent
         expect(world.events.log().map((event) => ({ kind: event.kind, message: event.message, time: event.time }))).toEqual([
             { kind: 'spawn', message: 'Ael washes ashore.', time: 0 },
             { kind: 'spawn', message: 'Bram washes ashore.', time: 0 },
             { kind: 'exchange', message: 'Ael and Bram trade: 1 Berry for 1 Shell.', time: 1 },
             { kind: 'relationship', message: 'Ael and Bram grow closer (trading).', time: 1 },
-            { kind: 'consume', message: 'Bram eats 1 Berry.', time: 3 },
-            // Bram, fed and idle, fine-wanders his tile (the Scale-0 filler)
-            { kind: 'move', message: 'Bram wanders north.', time: 4 },
         ]);
     });
 
@@ -291,17 +514,14 @@ describe('behaviorPlugin', () => {
         }
         // Three wander tasks completed (minutes 2-4): the seeded picks step
         // north, then south, then south — all INTERIOR fine steps, so the
-        // island view's coarse position never moves and no energy is charged
-        expect(world.events.log().filter((event) => event.kind === 'move').map((event) => ({ message: event.message, time: event.time }))).toEqual([
-            { message: 'Ael wanders north.', time: 2 },
-            { message: 'Ael wanders south.', time: 3 },
-            { message: 'Ael wanders south.', time: 4 },
-        ]);
+        // island view's coarse position never moves and no energy is charged.
+        // Wandering is silent — the log never narrates the filler.
+        expect(world.events.log().filter((event) => event.kind === 'move')).toEqual([]);
         expect(world.actors.get('a')).toMatchObject({ position: { x: 6, y: 2, z: 0 } });
         expect(world.subOf('a')).toEqual({ x: 11, y: -2 });
         // The 0.1/min hunger decay ran through all four minutes; no move
-        // charge (no tile crossing)
-        expect(needs.of('a')).toEqual({ hunger: 20.400000000000006, thirst: 20, energy: 100 });
+        // charge (no tile crossing). Health stays full
+        expect(needs.of('a')).toEqual({ hunger: 20.400000000000006, thirst: 20, energy: 100, health: 100 });
         // The wanderer re-plans immediately — a fresh 1-minute wander
         expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'wanders', payload: { dx: 1, dy: 0 }, remaining: 1 });
     });
@@ -320,36 +540,40 @@ describe('behaviorPlugin', () => {
         // Hunger: 60 at plan time + 0.1/min decay through minute 13, −14 on the eat
         expect(needs.of('a').hunger).toBe(47.30000000000002);
         // The start cell: the gathered berry is gone; berry regrowth runs on
-        // a 30-minute rhythm (offset 20) — thirteen minutes never reach it
-        expect(inventory.cellStock(6, 2)).toEqual({ wood: 2 });
-        expect(world.events.log().filter((event) => event.kind === 'gather' || event.kind === 'consume').map((event) => ({ kind: event.kind, message: event.message, time: event.time }))).toEqual([
-            { kind: 'gather', message: 'Ael gathers 1 Berry.', time: 11 },
-            { kind: 'consume', message: 'Ael eats 1 Berry.', time: 13 },
-        ]);
+        // a 30-minute rhythm (offset 20) — thirteen minutes never reach it.
+        // The woods' mushroom stands (its own rhythm starts at minute 15)
+        expect(inventory.cellStock(6, 2)).toEqual({ tree: 2, mushroom: 1 });
+        // The gather + the eat are silent solo beats
+        expect(world.events.log().filter((event) => event.kind === 'gather' || event.kind === 'consume')).toEqual([]);
     });
 
-    it('a thirsty actor drinks the rainwater pool on its own cell', () => {
+    it('a thirsty actor collects the pool on its own cell, then drinks from the bag', () => {
         const { world, inventory, needs, tasks } = buildStack({});
         spawn(world, 'a', 'Ael', 1, -4);
         inventory.cellStock(1, -4).water = 1;
-        needs.satisfy('a', { thirst: 50 }); // thirst 70 ≥ 65 → the 2-minute drink task
+        needs.satisfy('a', { thirst: 50 }); // thirst 70 ≥ 65 → the 3-minute collect first
         world.step();
+        // Nothing recovers straight from the ground: the water goes INTO
+        // THE BAG first — the collection is the task
+        expect(tasks.taskOf('a')).toMatchObject({ kind: 'collect', label: 'collects water', remaining: 3 });
+        world.step();
+        world.step();
+        world.step();
+        // The collect completed at minute 4: the bag holds the pooled
+        // water, the cell is dry
         expect(tasks.taskOf('a')).toMatchObject({ kind: 'drink', remaining: 2 });
-        world.step();
-        world.step();
-        // −35 thirst relief on the completing minute, the pool is emptied,
-        // nothing enters the bag (hunger 20.3: the 0.1/min decay ran 3 minutes)
-        expect(needs.of('a')).toEqual({ hunger: 20.300000000000004, thirst: 35, energy: 100 });
+        expect(inventory.of('a')).toEqual({ water: 1 });
         expect(inventory.cellStock(1, -4)).toEqual({ dirt: 1, berry: 2 });
+        world.step();
+        world.step();
+        // −35 thirst relief on the completing minute 6, drunk OUT OF THE
+        // BAG — the bag empties (hunger 20.6: the 0.1/min decay ran 6
+        // minutes). Health stays full
+        expect(needs.of('a')).toEqual({ hunger: 20.60000000000001, thirst: 35, energy: 100, health: 100 });
         expect(inventory.of('a')).toEqual({});
-        expect(world.events.log()[1]).toEqual({
-            id: 2,
-            tick: 3,
-            time: 3,
-            kind: 'consume',
-            message: 'Ael drinks 1 Water.',
-            actorId: 'a',
-        });
+        // The collect and the drink are silent — only the spawn has landed
+        // in the log
+        expect(world.events.log().map((event) => event.kind)).toEqual(['spawn']);
     });
 
     it('a starving actor travels toward the nearest stocked cell, tile by tile', () => {
@@ -373,18 +597,10 @@ describe('behaviorPlugin', () => {
         // interior steps from the derived spot {−4,0} then the wrapping step
         // onto (9,3) at minute 10 — then the same walk across (9,3) (wrap at
         // minute 35 onto (8,3)), then north across (8,3) (wrap at minute 44
-        // onto (8,2)), the 10-minute gather, and the berry eaten at minute 56
-        const moves = world.events.log().filter((event) => event.kind === 'move');
-        expect(moves.length).toBe(43);
-        expect(moves.filter((event) => event.message === 'Ael walks west.').length).toBe(34);
-        expect(moves[0]).toMatchObject({ message: 'Ael walks west.', time: 2 });
-        expect(moves[33]).toMatchObject({ message: 'Ael walks west.', time: 35 });
-        expect(moves[34]).toMatchObject({ message: 'Ael walks north.', time: 36 });
-        expect(moves[42]).toMatchObject({ message: 'Ael walks north.', time: 44 });
-        expect(world.events.log().filter((event) => event.kind === 'gather' || event.kind === 'consume').map((event) => ({ kind: event.kind, message: event.message, time: event.time }))).toEqual([
-            { kind: 'gather', message: 'Ael gathers 1 Berry.', time: 54 },
-            { kind: 'consume', message: 'Ael eats 1 Berry.', time: 56 },
-        ]);
+        // onto (8,2)), the 10-minute gather, and the berry eaten at minute 56.
+        // The whole trek is silent — 43 fine steps, the gather and the eat,
+        // without a single log line.
+        expect(world.events.log().filter((event) => event.kind === 'move' || event.kind === 'gather' || event.kind === 'consume')).toEqual([]);
         expect(world.actors.get('a')).toMatchObject({ position: { x: 8, y: 2, z: 0 } });
         expect(world.subOf('a')).toEqual({ x: 12, y: 8 });
         // Three tile crossings (one per walked tile); hunger 60 at plan
@@ -405,11 +621,9 @@ describe('behaviorPlugin', () => {
         }
         // The +12 recovery landed on the completing minute (11)
         expect(needs.of('a').energy).toBe(32);
+        // The rest and the wandering are silent — only the spawn exists
         expect(world.events.log().map((event) => ({ kind: event.kind, message: event.message, time: event.time }))).toEqual([
             { kind: 'spawn', message: 'Ael washes ashore.', time: 0 },
-            { kind: 'rest', message: 'Ael rests for a while.', time: 11 },
-            // Rested past the trigger (32 > 22) — the actor fine-wanders on
-            { kind: 'move', message: 'Ael wanders north.', time: 12 },
         ]);
         // The twelfth minute already completed one 1-minute wander task and
         // re-planned the next
@@ -437,5 +651,90 @@ describe('behaviorPlugin', () => {
         expect(world.events.log().filter((event) => event.kind === 'move')).toEqual([]);
         // A second drop of the same id reports false
         expect(tasks.dropBehaviour('wander')).toBe(false);
+    });
+});
+
+describe('behaviorPlugin — the entity profiles: movement energy per kind', () => {
+    /**
+     * The profiled stack — entity profiles mounted, so every tile crossing
+     * charges the entity's species movement row (attributes-derived) instead
+     * of the legacy flat point. Survival mounts too: fleeing runs.
+     */
+    const buildProfiledStack = () => {
+        const profiles = entityPlugin();
+        const inventory = inventoryPlugin({ rainChancePerMinute: 0 });
+        const needs = needsPlugin({ profiles, thirstPerMinute: 0, hungerPerMinute: 0, energyPerMinute: 0 });
+        const relationship = relationshipPlugin();
+        const tasks = tasksPlugin();
+        const behavior = behaviorPlugin({ inventory, needs, relationship, tasks, profiles });
+        const survival = survivalPlugin({ tasks, travelMinutesPerTile: 1 });
+        const world = createWorld({
+            seed: 7,
+            tickSize: 1,
+            plugins: [islandTerrainPlugin(), inventory, needs, relationship, tasks, behavior, survival],
+        });
+        return { world, inventory, needs, tasks };
+    };
+
+    /** A grounded coordinates-only beast (the survival threat). */
+    const beast = (id: string, type: string, x: number, y: number) => ({
+        id,
+        position: position3(x, y),
+        kind: 'creature' as const,
+        type,
+        name: id,
+        marker: id.slice(0, 1),
+        state: 'roaming',
+    });
+
+    it('a plain walk crossing burns the walk row — Speed 10 is the typical point', () => {
+        const { world, inventory, needs } = buildProfiledStack();
+        spawn(world, 'a', 'Ael', 6, 2);
+        // Ael's derived fine spot (seed 7) sits one cell off the tile's east
+        // edge — TWO east fine steps reach the wrap, and the wrap is where
+        // the charge lands. The species' own decay runs (profile stats
+        // override the flat options when profiles are mounted).
+        inventory.cellStock(8, 2).water = 1;
+        needs.satisfy('a', { thirst: 60 }); // thirst 80 ≥ 65 → the trek east
+        world.step(); // minute 1: the east travel task queues
+        world.step(); // minute 2: the interior east step {11,−3}→{12,−3} — no crossing
+        expect(needs.of('a').energy).toBe(99.88); // −0.06 decay × 2 minutes
+        world.step(); // minute 3: the WRAP {12,−3}→{−12,−3} — the crossing charges
+        expect(world.actors.get('a')).toMatchObject({ position: { x: 7, y: 2 } });
+        // The walk row: 1 energy a crossing (decay 0.06 × 3 = 0.18 ran too)
+        expect(needs.of('a').energy).toBe(98.82);
+    });
+
+    it('a flee crossing burns the RUN row — panic costs threefold', () => {
+        const { world, needs, tasks } = buildProfiledStack();
+        spawn(world, 'a', 'Ael', 6, 2);
+        // A boar one tile west — within the survival threat range (1). The
+        // flee runs AWAY (east), two fine steps to the wrap
+        world.coordinates.place(beast('boar-1', 'boar', 5, 2));
+        world.step(); // minute 1: the flee task queues (priority 60)
+        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'flees', payload: { flee: true } });
+        world.step(); // minute 2: the first flee — an INTERIOR east step, no charge
+        expect(world.actors.get('a')).toMatchObject({ position: { x: 6, y: 2 } });
+        expect(world.subOf('a')).toEqual({ x: 12, y: -3 });
+        expect(needs.of('a').energy).toBe(99.88);
+        world.step(); // minute 3: the second flee WRAPS — the crossing charges RUN
+        expect(world.actors.get('a')).toMatchObject({ position: { x: 7, y: 2 } });
+        // The run row: 3 energy a crossing (a walk would have burned 1);
+        // the species decay (0.06 × 3 = 0.18) ran alongside
+        expect(needs.of('a').energy).toBe(96.82);
+    });
+
+    it('the behavior ladder carries no autonomous mine rung — the ability gates, conduct comes later', () => {
+        const { world, tasks } = buildProfiledStack();
+        spawn(world, 'a', 'Ael', 6, 2);
+        world.step();
+        // The profiles are mounted, humans hold 'mine' — but the behavior
+        // plugin registers no mining conduct: the ability gates the
+        // inventory's ore takes, the ledger module arrives with the mining
+        // feature. The registered slices are the stock survival ladder plus
+        // the survival flee.
+        expect(tasks.ledger.behaviours().map((module) => module.id)).toEqual([
+            'survival', 'thirst', 'hunger', 'rest', 'social', 'wander',
+        ]);
     });
 });

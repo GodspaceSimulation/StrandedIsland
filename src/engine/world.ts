@@ -104,13 +104,17 @@ export const createWorld = (options: WorldOptions = {}): World => {
         // The island canvas IS the board: the fine ladder (Scale 0, the
         // tile interiors) resolves its sub-grid dims from it
         board: () => canvasHolder.current,
-        // The coordinate record's display state is the actor's condition
+        // The coordinate record's display state is the actor's condition.
+        // The profile rides along — the sex lands on the coordinate facet so
+        // the @godspace/canvas unicode/svg canvases draw the gendered
+        // human emoji (scenario/island.ts glyphOf resolvers)
         facetOf: (actor) => ({
             kind: actor.kind,
             type: actor.type,
             name: actor.name,
             marker: actor.marker,
             state: actor.condition,
+            sex: actor.profile.sex,
         }),
         // The island narrative — the cast washes ashore
         spawnMessage: (actor) => `${actor.name} washes ashore.`,

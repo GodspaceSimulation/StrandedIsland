@@ -2,7 +2,7 @@
 //
 // The @godspace/core temporal system is engine-agnostic; THIS file pins the
 // island's epoch and calendar shape, and both god-view features (the World
-// Ticker clock and the World Log stamps) read the calendar through
+// Ticker clock and the Story feed stamps) read the calendar through
 // `islandCalendar` so the whole view agrees on "when".
 //
 // The shape: a TRUE Earth calendar —

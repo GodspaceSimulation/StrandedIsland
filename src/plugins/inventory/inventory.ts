@@ -39,6 +39,22 @@ export const inventoryEntries = (inventory: Inventory): Array<{ item: string; co
         .filter(([, count]) => count > 0)
         .map(([item, count]) => ({ item, count }));
 
+/**
+ * The inventory's total UNITS across every stack — the measure inventory
+ * SIZE is counted in (a bird's 3-unit beak holds three berries or one
+ * berry and two shells; stacks are not the unit, things are).
+ */
+export const inventoryTotal = (inventory: Inventory): number =>
+    Object.values(inventory).reduce((sum, count) => sum + count, 0);
+
+/**
+ * Whether adding a bundle of items still fits an inventory of the given
+ * capacity. `Infinity` capacity (no entity profiles mounted) always fits.
+ * Pure read — the caller decides whether the add happens at all.
+ */
+export const inventoryFits = (inventory: Inventory, additions: Inventory, capacity: number): boolean =>
+    inventoryTotal(inventory) + inventoryTotal(additions) <= capacity;
+
 /** Whether the inventory holds at least `count` of `item`. */
 export const inventoryHas = (inventory: Inventory, item: string, count = 1): boolean =>
     inventoryCount(inventory, item) >= count;

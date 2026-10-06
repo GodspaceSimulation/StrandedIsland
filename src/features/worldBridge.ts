@@ -153,3 +153,23 @@ export const zoomOut = () => {
     tileSignal.value(path.slice(0, -1));
     scaleSignal.value(island.scale.zoomOut());
 };
+
+/**
+ * God toggles the view ladder — THE ONE zoom control (this engine's ladder
+ * only has two rungs: 1 the island, the default view, and 0 the tile
+ * interior). At the island view the toggle zooms IN (needs an inspected
+ * tile — it is the zoom target, same contract zoomIn has); anywhere below
+ * it zooms OUT. The direction is read off the mounted island's own scale
+ * system, so the signal never drifts from the engine's clamps.
+ */
+export const toggleZoom = () => {
+    const island = worldSignal.value();
+    if (!island) {
+        return;
+    }
+    if (island.scale.canZoomOut()) {
+        zoomOut();
+    } else {
+        zoomIn();
+    }
+};

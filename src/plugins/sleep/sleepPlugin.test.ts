@@ -22,7 +22,7 @@ import { sleepPlugin } from './sleepPlugin';
 import type { Actor } from '../../engine/types';
 
 const spawn = (world: ReturnType<typeof createWorld>, id: string, name: string, x: number, y: number): Actor => {
-    const actor: Actor = { id, name, kind: 'sentient', type: 'human', position: position3(x, y), marker: name.slice(0, 1), condition: 'well' };
+    const actor: Actor = { id, name, kind: 'sentient', type: 'human', position: position3(x, y), marker: name.slice(0, 1), condition: 'well', profile: { sex: 'male' } };
     return world.spawn(actor);
 };
 
@@ -58,7 +58,7 @@ describe('sleepPlugin', () => {
         ]);
     });
 
-    it('a drained actor sleeps: +1.2 energy per minute, wake logged when the task ends', () => {
+    it('a drained actor sleeps: +1.2 energy per minute, silently', () => {
         const { world, needs, tasks } = buildStack();
         spawn(world, 'a', 'Ael', 6, 2);
         needs.satisfy('a', { energy: -80 }); // energy 20 ≤ 22 → sleep shadows rest
@@ -85,15 +85,16 @@ describe('sleepPlugin', () => {
         expect(needs.of('a').energy).toBe(71.30000000000003);
         expect(tasks.taskOf('a')?.remaining).toBe(1);
         world.step();
-        // Minute 46: the sleep task completed, the actor re-planned a wander —
-        // the wake transition logs (no restore on the completing minute)
+        // Minute 46: the sleep task completed, the actor re-planned a wander
+        // (no restore on the completing minute)
         expect(needs.of('a').energy).toBe(71.24000000000002);
         expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 1 });
+        // The whole slumber stays out of the log — dozing off is a solo
+        // beat, not a story between entities
         expect(world.events.log().map((event) => ({ kind: event.kind, message: event.message, time: event.time }))).toEqual([
             { kind: 'spawn', message: 'Ael washes ashore.', time: 0 },
-            { kind: 'sleep', message: 'Ael curls up and sleeps.', time: 1 },
-            { kind: 'sleep', message: 'Ael wakes up.', time: 46 },
         ]);
+        expect(world.events.log().filter((event) => event.kind === 'sleep')).toEqual([]);
     });
 
     it('a drained actor keeps sleeping minute after minute until the slumber ends', () => {
@@ -110,8 +111,8 @@ describe('sleepPlugin', () => {
         // Minute 5: four more +1.14 net minutes (energy per step rises 1.14)
         expect(needs.of('a').energy).toBe(25.700000000000003);
         expect(tasks.taskOf('a')).toMatchObject({ kind: 'sleep', remaining: 41 });
-        // The sleep START logged exactly once across the whole slumber
-        expect(world.events.log().filter((event) => event.kind === 'sleep').length).toBe(1);
+        // Nothing logged across the whole slumber
+        expect(world.events.log().filter((event) => event.kind === 'sleep').length).toBe(0);
     });
 
     it('removing the sleep plugin falls back to the instant-rest ladder', () => {
@@ -130,20 +131,20 @@ describe('sleepPlugin', () => {
         // the +12 recovery lands once, on completion at minute 11)
         expect(needs.of('a').energy).toBe(31.340000000000014);
         expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 1 });
+        // The instant rest is silent too
         expect(world.events.log().map((event) => ({ kind: event.kind, message: event.message, time: event.time }))).toEqual([
             { kind: 'spawn', message: 'Ael washes ashore.', time: 0 },
-            { kind: 'rest', message: 'Ael rests for a while.', time: 11 },
         ]);
     });
 
-    it('removing sleep mid-slumber cancels the task; no wake line is ever logged', () => {
+    it('removing sleep mid-slumber cancels the task silently', () => {
         const { world, needs, tasks } = buildStack();
         spawn(world, 'a', 'Ael', 6, 2);
         needs.satisfy('a', { energy: -80 });
         world.step();
-        // One minute slept: the start transition logged, the task queued
+        // One minute slept: the restore applied, the task queued
         expect(needs.of('a').energy).toBe(21.14);
-        expect(world.events.log().filter((event) => event.kind === 'sleep').map((event) => event.message)).toEqual(['Ael curls up and sleeps.']);
+        expect(tasks.taskOf('a')?.kind).toBe('sleep');
         world.plugins.remove('sleep');
         // The sleep task vanished with the behaviour
         expect(tasks.tasks()).toEqual([]);
@@ -154,10 +155,8 @@ describe('sleepPlugin', () => {
         expect(needs.of('a').energy).toBe(32.48000000000002);
         expect(world.events.log().map((event) => ({ kind: event.kind, message: event.message, time: event.time }))).toEqual([
             { kind: 'spawn', message: 'Ael washes ashore.', time: 0 },
-            { kind: 'sleep', message: 'Ael curls up and sleeps.', time: 1 },
-            { kind: 'rest', message: 'Ael rests for a while.', time: 12 },
         ]);
-        // The sleep plugin was gone before any wake minute — no wake line
-        expect(world.events.log().filter((event) => event.kind === 'sleep').length).toBe(1);
+        // Nothing about the cancelled slumber or the fallback rest logged
+        expect(world.events.log().filter((event) => event.kind === 'sleep' || event.kind === 'rest').length).toBe(0);
     });
 });

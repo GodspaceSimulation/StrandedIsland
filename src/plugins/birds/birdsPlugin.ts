@@ -37,6 +37,8 @@ import {
     type Position3D,
 } from '@godspace/core';
 import type { World } from '../../engine/world';
+import type { EntityProfiles } from '../entity/entityPlugin';
+import type { NeedsState } from '../needs/needsPlugin';
 
 export type BirdsPluginOptions = {
     /** Chance per world-minute a flying bird lands. Default 0.02. */
@@ -49,6 +51,33 @@ export type BirdsPluginOptions = {
     arriveChancePerMinute?: number;
     /** Flock population cap — arrivals stop once reached. Default 4. */
     maxBirds?: number;
+    /**
+     * The needs plugin — the survival stats the bird lives by (the entity
+     * profiles derive its species rates; see entityPlugin). With it (and
+     * the profiles) the flock's flight costs energy: a glide burns the fly
+     * row per tile, a hop the walk row, a perch RECOVERS — the fly/rest
+     * cycle the stats make real. Absent: flight is free (the pre-entity
+     * behavior).
+     */
+    needs?: {
+        of(entityId: string): NeedsState;
+        satisfy(entityId: string, deltas: Partial<NeedsState>): void;
+        moved(entityId: string, moveKind?: string): void;
+    };
+    /** The entity profiles — required WITH needs for the stat-driven flight. */
+    profiles?: EntityProfiles;
+    /**
+     * The task ledger's busy gate — a PERCHED bird that carries queued
+     * tasks (the behavior plugin plans every grounded dry-land creature
+     * through the ledger: forage, roost, wander) skips its takeoff/hop
+     * rolls that minute, so the ledger's move tasks and the plugin's own
+     * rolls never double-step the same gull. Absent: no ledger, the rolls
+     * drive the perch alone.
+     */
+    tasks?: {
+        /** Whether the entity has at least one queued task. */
+        busy(entityId: string): boolean;
+    };
 };
 
 /**
@@ -115,6 +144,20 @@ const BIRD_NAMES = ['Kiki', 'Jask', 'Tern', 'Sula'];
 const CRUISE_ALTITUDE = 2;
 
 /**
+ * THE FLIGHT ECONOMICS (stat-driven, when needs + profiles are mounted):
+ * a perched bird needs this much energy before the takeoff roll may fire —
+ * a spent gull stays put and recovers instead of leaping skyward.
+ */
+const TAKEOFF_ENERGY = 25;
+
+/**
+ * Energy a perched bird recovers per world-minute — the roost: hopping
+ * (the walk row's burn) nets against this, so a perched gull drifts UP the
+ * energy ladder while grounded and pays for every airborne minute.
+ */
+const PERCH_RECOVERY = 3;
+
+/**
  * Display band state for a flying altitude — z 1 is the legacy full-color
  * 'flying', z 2..7 the fading 'flying-N' ladder. Only called for z ≤ 7
  * (z ≥ ALTITUDE_FADE_LIMIT transitions to 'aloft' before any band is read).
@@ -124,16 +167,6 @@ const bandState = (z: number): string => (z <= 1 ? 'flying' : `flying-${z}`);
 const clamp = (value: number, min: number, max: number): number =>
     Math.max(min, Math.min(max, value));
 
-/** Direction word for a step delta — shared phrasing with the behavior plugin. */
-const directionWord = (dx: number, dy: number): string => {
-    const vertical = dy < 0 ? 'north' : dy > 0 ? 'south' : '';
-    const horizontal = dx > 0 ? 'east' : dx < 0 ? 'west' : '';
-    if (!vertical) {
-        return horizontal || 'nowhere';
-    }
-    return horizontal ? `${vertical}${horizontal}` : vertical;
-};
-
 export const birdsPlugin = (options: BirdsPluginOptions = {}): BirdsPlugin => {
     // Chances are per world-minute — every tick hook call covers exactly one
     // world-minute (engine/world.ts sub-steps), so the rolls apply directly
@@ -142,6 +175,16 @@ export const birdsPlugin = (options: BirdsPluginOptions = {}): BirdsPlugin => {
     const altitudeChance = options.altitudeChancePerMinute ?? 0.03;
     const arriveChance = options.arriveChancePerMinute ?? 0.01;
     const maxBirds = options.maxBirds ?? 4;
+
+    // The stat-driven flight economics — active only when BOTH the needs
+    // plugin and the entity profiles are mounted. The `statFlight` flag
+    // gates every energy read/write: without it the flock flies free (the
+    // reference roll streams and positions stay exactly as pinned).
+    const needs = options.needs ?? null;
+    const profiles = options.profiles ?? null;
+    const statFlight = needs !== null && profiles !== null;
+    // The task ledger's busy gate — see the option docs
+    const tasks = options.tasks ?? null;
 
     // Bird identity records — the mechanical state drives the roll sets; `at`
     // mirrors the live position for visible birds and is the PRIVATE last
@@ -336,17 +379,13 @@ export const birdsPlugin = (options: BirdsPluginOptions = {}): BirdsPlugin => {
                     // Roll order per flying bird: land → altitude → glide; a
                     // fired roll owns the bird's minute and returns early
                     if (random() < landChance) {
-                        // Touch down onto the ground plane (Z = 0)
+                        // Touch down onto the ground plane (Z = 0) — silently:
+                        // the log tells stories, not flight telemetry
                         const ground = grounded(position);
                         coordinates.move(id, ground);
                         bird.state = 'perched';
                         bird.at = ground;
                         active.retag(id, { state: 'perched' });
-                        events.emit({
-                            kind: 'move',
-                            actorId: id,
-                            message: `${bird.name} lands.`,
-                        });
                         return;
                     }
                     if (random() < altitudeChance) {
@@ -361,11 +400,6 @@ export const birdsPlugin = (options: BirdsPluginOptions = {}): BirdsPlugin => {
                             coordinates.remove(id);
                             bird.state = 'aloft';
                             bird.at = position3(position.x, position.y, z);
-                            events.emit({
-                                kind: 'move',
-                                actorId: id,
-                                message: `${bird.name} soars out of sight.`,
-                            });
                             return;
                         }
                         const next = position3(position.x, position.y, z);
@@ -396,11 +430,11 @@ export const birdsPlugin = (options: BirdsPluginOptions = {}): BirdsPlugin => {
                     const next = position3(x, y, position.z);
                     coordinates.move(id, next);
                     bird.at = next;
-                    events.emit({
-                        kind: 'move',
-                        actorId: id,
-                        message: `${bird.name} glides ${directionWord(offset.dx, offset.dy)}.`,
-                    });
+                    // The glide's burn: one tile of flight charges the
+                    // profile's fly row (stamina-scaled — see entityPlugin)
+                    if (statFlight && needs) {
+                        needs.moved(id, 'fly');
+                    }
                     return;
                 }
                 if (bird.state === 'aloft') {
@@ -438,11 +472,6 @@ export const birdsPlugin = (options: BirdsPluginOptions = {}): BirdsPlugin => {
                             active.retag(id, { state: bandState(z) });
                             bird.state = 'flying';
                             bird.at = next;
-                            events.emit({
-                                kind: 'move',
-                                actorId: id,
-                                message: `${bird.name} descends back into view.`,
-                            });
                             return;
                         }
                         // Still above the fade limit: the private z drifts
@@ -452,12 +481,23 @@ export const birdsPlugin = (options: BirdsPluginOptions = {}): BirdsPlugin => {
                     return;
                 }
                 // Perched: roll order is takeoff → hop; a fired takeoff owns
-                // the minute
+                // the minute. THE TASK RESPECT — a bird with queued ledger
+                // tasks (forage / roost / wander, planned by the behavior
+                // plugin) skips both rolls this minute: the ledger is
+                // already walking it, and two drivers would double-step
                 const position = coordinates.positionOf(id);
                 if (!position) {
                     return;
                 }
-                if (random() < takeoffChance) {
+                if (tasks?.busy(id)) {
+                    return;
+                }
+                // THE TAKEOFF GATE — the roll is consumed either way (the
+                // stream never shifts), but a spent gull (below the takeoff
+                // line) watches the sky instead of leaping into it
+                const mayTakeoff =
+                    !statFlight || !needs || needs.of(id).energy >= TAKEOFF_ENERGY;
+                if (random() < takeoffChance && mayTakeoff) {
                     // A LOW takeoff: 1..3 — reaching the fade limit or the
                     // ceiling takes many minutes of drift, never one jump
                     const z = 1 + Math.floor(random() * 3);
@@ -466,11 +506,10 @@ export const birdsPlugin = (options: BirdsPluginOptions = {}): BirdsPlugin => {
                     bird.state = 'flying';
                     bird.at = next;
                     active.retag(id, { state: bandState(z) });
-                    events.emit({
-                        kind: 'move',
-                        actorId: id,
-                        message: `${bird.name} takes off.`,
-                    });
+                    // The climb costs the fly row's burn too
+                    if (statFlight && needs) {
+                        needs.moved(id, 'fly');
+                    }
                     return;
                 }
                 // Hop one step along the ground plane — grounded birds stay
@@ -484,11 +523,14 @@ export const birdsPlugin = (options: BirdsPluginOptions = {}): BirdsPlugin => {
                 const next = grounded(position3(x, y));
                 coordinates.move(id, next);
                 bird.at = next;
-                events.emit({
-                    kind: 'move',
-                    actorId: id,
-                    message: `${bird.name} hops ${directionWord(x - position.x, y - position.y)}.`,
-                });
+                // THE ROOST — a perched minute pays the hop's walk-row burn
+                // and banks the perch recovery; the recovery outpaces the
+                // hop, so a grounded gull drifts UP the energy ladder until
+                // the takeoff gate reopens
+                if (statFlight && needs) {
+                    needs.moved(id, 'walk');
+                    needs.satisfy(id, { energy: PERCH_RECOVERY });
+                }
             });
         },
     };

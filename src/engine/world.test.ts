@@ -35,12 +35,13 @@ describe('createWorld (island adapter)', () => {
     const buildActor = (overrides: Partial<Actor> = {}): Actor => ({
         id: 'actor-1',
         name: 'Ael',
-        // The stock castaway: a sentient of the human race
+        // The stock castaway: a sentient of the human race, male profile
         kind: 'sentient',
         type: 'human',
         position: position3(0, 0),
         marker: 'A',
         condition: 'well',
+        profile: { sex: 'male' },
         ...overrides,
     });
 
@@ -77,8 +78,9 @@ describe('createWorld (island adapter)', () => {
         const actor = world.spawn(buildActor({ position: position3(3, 2) }));
         expect(world.actors.get('actor-1')).toBe(actor);
         // The coordinate record carries the full display facet — the
-        // kind/type taxonomy rides along with name, marker and the
-        // condition (the actor's `condition` IS the display `state`)
+        // kind/type taxonomy rides along with name, marker, the condition
+        // (the actor's `condition` IS the display `state`) and the PROFILE
+        // (the sex the representation canvases draw)
         expect(world.coordinates.entryOf('actor-1')).toEqual({
             id: 'actor-1',
             position: { x: 3, y: 2, z: 0 },
@@ -87,6 +89,7 @@ describe('createWorld (island adapter)', () => {
             name: 'Ael',
             marker: 'A',
             state: 'well',
+            sex: 'male',
         });
         const log = world.events.log();
         expect(log.length).toBe(1);

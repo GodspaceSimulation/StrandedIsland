@@ -19,6 +19,7 @@ const makeActor = (id: string, name: string): Actor => ({
     position: { x: 0, y: 0, z: 0 },
     marker: name.slice(0, 1),
     condition: 'well',
+    profile: { sex: 'male' },
 });
 
 // A behaviour module that always applies and always queues the given specs
@@ -175,15 +176,111 @@ describe('createTaskLedger', () => {
         });
     });
 
-    it('does not plan for a busy actor', () => {
+    it('a busy actor keeps its queue when no module outranks the head task', () => {
         const ledger = createTaskLedger();
         const ael = makeActor('a', 'Ael');
-        ledger.behaviour(planning('sleep', 10, [sleep(480)]));
-        ledger.queue('a', 'walk', [stepEast]);
+        // The head task comes from a priority-10 module; a priority-10
+        // sibling (and the walk below it) can never pre-empt — equal or
+        // lower priorities never churn a running queue
+        ledger.behaviour(planning('busyWork', 10, [sleep(480)]));
+        ledger.behaviour(planning('equal', 10, [{ kind: 'eat', label: 'eats', minutes: 5 }]));
+        ledger.behaviour(planning('walk', 0, [stepEast]));
+        ledger.plan(ael);
+        expect(ledger.taskOf('a')?.behaviour).toBe('busyWork');
+        // The consult runs for the busy actor too — nothing outranks the
+        // head, so the queue is untouched
         expect(ledger.plan(ael)).toBeUndefined();
-        // The pre-existing queue is untouched — head still the walk task
-        expect(ledger.taskOf('a')?.behaviour).toBe('walk');
+        expect(ledger.taskOf('a')?.behaviour).toBe('busyWork');
         expect(ledger.queueOf('a')).toHaveLength(1);
+    });
+
+    it('a strictly higher-priority module pre-empts a busy actor: the head is abandoned', () => {
+        const ledger = createTaskLedger();
+        const ael = makeActor('a', 'Ael');
+        // Ael is mid-walk (a priority-0 task)…
+        ledger.behaviour(planning('walk', 0, [{ ...stepEast, minutes: 5 }]));
+        ledger.plan(ael);
+        expect(ledger.taskOf('a')).toEqual({
+            id: 't-1',
+            actorId: 'a',
+            behaviour: 'walk',
+            kind: 'move',
+            label: 'steps east',
+            minutes: 5,
+            payload: { dx: 1, dy: 0 },
+            total: 5,
+            remaining: 5,
+        });
+        // One minute of walking happens (remaining 4), then the survival
+        // module (priority 60) registers and wants to act — the walk task
+        // is abandoned mid-progress, the flee becomes the head
+        ledger.tick();
+        ledger.behaviour(planning('survival', 60, [sleep(3)]));
+        const flee = ledger.plan(ael);
+        expect(flee).toEqual({
+            id: 't-2',
+            actorId: 'a',
+            behaviour: 'survival',
+            kind: 'sleep',
+            label: 'sleeps',
+            minutes: 3,
+            total: 3,
+            remaining: 3,
+        });
+        // The abandoned walk is GONE — not every task completes
+        expect(ledger.queueOf('a')).toEqual([flee]);
+        expect(ledger.busy('a')).toBe(true);
+    });
+
+    it('the pre-empting task takes the head; the old queue\u2019s survivors follow behind', () => {
+        const ledger = createTaskLedger();
+        const ael = makeActor('a', 'Ael');
+        // Ael carries a 3-task queue from the priority-0 walk module —
+        // the head is in progress, two followers wait their turn
+        ledger.behaviour(planning('walk', 0, [stepEast, stepEast, stepEast]));
+        ledger.plan(ael);
+        ledger.tick();
+        // The priority-20 social module pre-empts: the in-progress head is
+        // abandoned, the encounter takes the head, the two surviving walk
+        // followers queue behind it
+        ledger.behaviour(planning('social', 20, [{ kind: 'social', label: 'trades', minutes: 10 }]));
+        ledger.plan(ael);
+        expect(ledger.queueOf('a')).toEqual([
+            {
+                id: 't-4',
+                actorId: 'a',
+                behaviour: 'social',
+                kind: 'social',
+                label: 'trades',
+                minutes: 10,
+                total: 10,
+                remaining: 10,
+            },
+            {
+                id: 't-2',
+                actorId: 'a',
+                behaviour: 'walk',
+                kind: 'move',
+                label: 'steps east',
+                minutes: 10,
+                payload: { dx: 1, dy: 0 },
+                total: 10,
+                remaining: 10,
+            },
+            {
+                id: 't-3',
+                actorId: 'a',
+                behaviour: 'walk',
+                kind: 'move',
+                label: 'steps east',
+                minutes: 10,
+                payload: { dx: 1, dy: 0 },
+                total: 10,
+                remaining: 10,
+            },
+        ]);
+        // The abandoned head (t-1) never reports a completion
+        expect(ledger.tasks().map((task) => task.id)).toEqual(['t-4', 't-2', 't-3']);
     });
 
     it('counts a task down one world-minute per tick and completes it at 0', () => {

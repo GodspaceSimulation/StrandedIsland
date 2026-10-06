@@ -6,7 +6,7 @@
 //                with (derived from the tile's resource deposits)
 //   Terrain    — height vs the water line, walkability, and the voxel stack
 //                bottom → top (runs merged, e.g. "stone ×3, soil, grass")
-//   Resources  — the tile's resource deposits (wood, stone, iron and the
+//   Resources  — the tile's resource deposits (trees, stone, iron and the
 //                unlimited sand/dirt) — what the tile appears as
 //   Ground     — what lies on the terrain (the inventory plugin's cell stock;
 //                sea tiles stock fish, beaches hide shells…)
@@ -16,7 +16,8 @@
 //                first. Castaway rows are buttons that open the full actor
 //                inspector (features/actorPanel.tsx) for that actor.
 //
-// Rendered in the GridSection right below the island canvas (dashboard.tsx).
+// Rendered in the SideSection right rail (dashboard.tsx), beneath the
+// world clock.
 
 import { styled } from '../styles/styled';
 import { PALETTE } from '../styles/theme';
@@ -92,20 +93,20 @@ const ResidentText = styled('span', {
 });
 
 /**
- * Resident row: castaways link into the actor inspector, every other living
- * thing (birds, future creatures) stays view-only here.
+ * Resident row: EVERY living thing links into the entity inspector — the
+ * castaways (world.actors) and the creatures a plugin coins (birds, sharks,
+ * boars) alike, since the inspector reads any coordinate-space resident by
+ * its coordinate id.
  */
 const ResidentRow = ({ occupant, dotColor }: { occupant: TileOccupant; dotColor: string }) => (
     <li>
         <ResidentButton
-            linked={occupant.actorId ? 'true' : 'false'}
-            title={occupant.actorId ? `Inspect ${occupant.name}` : undefined}
+            linked="true"
+            title={`Inspect ${occupant.name}`}
             onClick={() => {
-                // Open the full actor card for castaways — no-op residents
-                // stay inert
-                if (occupant.actorId) {
-                    selectActor(occupant.actorId);
-                }
+                // Open the full entity card — every resident of the column
+                // is inspectable through its coordinate id
+                selectActor(occupant.id);
             }}
         >
             <ResidentDot color={dotColor} />
@@ -163,7 +164,7 @@ export const TilePanel = () => {
                     <Row>
                         <RowName>Resources</RowName>
                         {/* The deposits the tile carries — what it appears as
-                            on the canvas (wood ×2 · sand ×∞; unlimited
+                            on the canvas (tree ×2 · sand ×∞; unlimited
                             deposits can never be exhausted) */}
                         <VoxelStack data-testid="tile-resources">
                             {summary.resources.length === 0
