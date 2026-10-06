@@ -720,8 +720,22 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                         return;
                     }
                     case 'gather': {
-                        // The inventory re-validates the stock and emits its
-                        // own gather event; a depleted cell is a no-op
+                        // A MATERIAL fetch — a gather task that names its
+                        // item takes THAT item off the cell (the
+                        // construction rungs' fetch tasks ride the core's
+                        // gather factory, which queues kind 'gather' with a
+                        // payload item; see plugins/construction). The take
+                        // revalidates stock, capacity and the mine gate;
+                        // a depleted cell is a no-op.
+                        const itemId = task.payload?.item;
+                        if (typeof itemId === 'string' && itemDef(itemId).kind !== 'food') {
+                            inventory.takeFromCell(actor, itemId);
+                            return;
+                        }
+                        // The stockless FOOD gather (the hunger rung's tasks
+                        // carry no payload): the inventory re-validates the
+                        // stock and emits its own gather event; a depleted
+                        // cell is a no-op
                         inventory.gather(actor);
                         return;
                     }

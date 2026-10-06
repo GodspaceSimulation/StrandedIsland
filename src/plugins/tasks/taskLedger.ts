@@ -2,11 +2,33 @@
 // where every task costs WORLD MINUTES and pluggable "behaviour modules"
 // decide what gets queued.
 //
-// The behaviour plugins queue time-costing tasks (moving one Scale-0 tile
-// = 1 world minute — TRAVEL_MINUTES_PER_TILE —, sleeping = tens, …) and
-// the actor stays busy while the head task counts down. The heartbeat
-// contract: the world runs one world-minute per plugin tick hook call
-// (the engine core's step() sub-stepping), so one ledger tick() call
+// THE SHARED SCHEDULER — this module is now a THIN ISLAND ADAPTER over the
+// generic task scheduler extracted into @godspace/core (src/task): the
+// island's exact queue/priority/pre-emption/completion/cancel semantics
+// (planning priority DESC walk, strictly-higher pre-emption, one-minute
+// serial heartbeats, completion listeners after all decrementing, drop-
+// behaviour and despawn cancellation) were lifted INTO the shared core
+// (packages/godspace/core/src/task/index.ts) and this file re-exports them
+// under the island's public interface. NO duplicate scheduler lives here —
+// createTaskLedger() delegates every operation to one core
+// createTaskScheduler() instance and translates at the boundary:
+//   TaskSpec      — re-exported from the core unchanged (identical shape)
+//   ActiveTask    — the core's record renames subjectId → actorId (the
+//                   island's public field name since the first ledger)
+//   TaskSubject   — the island's actor-carrying subject widened with the
+//                   core's structural minimum: the plan() call hands the
+//                   core `{ ...entity, actor: entity }`, so behaviour
+//                   modules read `subject.actor` exactly as before AND the
+//                   core's stock behaviour factories
+//                   (needTaskBehaviour/gatherTaskBehaviour/craftTaskBehaviour/
+//                   buildTaskBehaviour — plugins/construction composes the
+//                   craft/build ones) type against the same subject.
+// The island's concrete TaskEntity stays local to the distribution; the
+// core scheduler plans through the structural minimum ({ id } + open
+// fields) only.
+//
+// The heartbeat contract: the world runs one world-minute per plugin tick
+// hook call (the engine core's step() sub-stepping), so one scheduler tick()
 // decrements task progress by exactly one minute — and ONLY each queue's
 // head advances (time is serial; queued followers wait their turn).
 //
@@ -27,42 +49,39 @@
 // task list came from that behaviour lose those tasks and become idle again
 // (the next plan() round re-plans them). How long a task takes is governed
 // entirely by the behaviour module that queues it — the island engine pins
-// one Scale-0 tile = 1 world minute (TRAVEL_MINUTES_PER_TILE); the ledger
+// one Scale-0 tile = 1 world minute (TRAVEL_MINUTES_PER_TILE); the scheduler
 // only counts the minutes down. No randomness, no world access — pure logic.
 
-import { arrayEach } from '@presource/core';
+import {
+    createTaskScheduler,
+    type ActiveTask as CoreActiveTask,
+    type TaskBehaviour as CoreTaskBehaviour,
+    type TaskSpec as CoreTaskSpec,
+} from '@godspace/core';
 import type { Position3D } from '@godspace/core';
-import type { Actor } from '../../engine/types';
 
-/** What a behaviour wants queued: one unit of work with a time cost. */
-export type TaskSpec = {
-    /** Task kind — 'move' | 'wander' | 'eat' | 'drink' | 'gather' | 'social' | 'sleep' | … open set. */
-    kind: string;
-    /** Human readable label for log lines and rosters ("travels east", "sleeps"). */
-    label: string;
-    /** World minutes the task occupies the actor. */
-    minutes: number;
-    /** Open payload the kind needs (move deltas, target item id, …). */
-    payload?: Record<string, unknown>;
-};
+// The spec type is the CORE's — the shared scheduler validates and stores
+// exactly this shape (the island's original TaskSpec was structurally
+// identical, so the re-export preserves the public interface 1:1).
+export type TaskSpec = CoreTaskSpec;
 
 /** One queued task: the spec plus identity and the live countdown. */
 export type ActiveTask = TaskSpec & {
-    /** Ledger-unique task id, "t-1", "t-2", … monotonic. */
+    /** Scheduler-unique task id, "t-1", "t-2", … monotonic (resets on clear). */
     id: string;
-    /** The actor the task belongs to. */
+    /** The actor the task belongs to (the core's subjectId, island-named). */
     actorId: string;
     /** The behaviour module that queued the task (its registry id). */
     behaviour: string;
     /** Total world minutes (a copy of the spec's minutes). */
     total: number;
-    /** Minutes remaining; decremented once per ledger tick. */
+    /** Minutes remaining; decremented once per scheduler tick. */
     remaining: number;
 };
 
 /**
- * The minimal entity shape the ledger plans through. EVERY living thing can
- * hold tasks (all entities plan through the behaviours plugin script): a
+ * The minimal entity shape the scheduler plans through. EVERY living thing
+ * can hold tasks (all entities plan through the behaviours plugin script): a
  * castaway satisfies this with its full Actor record, and a coordinate-space
  * creature (a seabird, a wild boar — plugins/birds, plugins/predators) is
  * planned through the same id/name/position identity. The `kind`/`type`
@@ -81,11 +100,18 @@ export type TaskEntity = {
 
 /**
  * The subject a behaviour module's gate/plan reads. Behaviour modules close
- * over whatever plugin APIs they need (needs, inventory, …); the ledger only
- * hands them the entity.
+ * over whatever plugin APIs they need (needs, inventory, …); the scheduler
+ * only hands them the entity — carried under `actor`, beside the core's
+ * structural `id` (the plan() call builds `{ ...entity, actor: entity }`).
+ * The `id` key is what makes this subject type satisfy @godspace/core's
+ * TaskSubject structurally, so the core's stock behaviour factories
+ * (craftTaskBehaviour, buildTaskBehaviour, …) compose directly with island
+ * behaviour modules.
  */
 export type TaskSubject = {
+    id: string;
     actor: TaskEntity;
+    [key: string]: unknown;
 };
 
 /** A pluggable behaviour module — one named slice of conduct that queues tasks. */
@@ -137,7 +163,10 @@ export type TaskLedger = {
     /**
      * Appends one or more task specs to an actor's FIFO queue under the
      * given behaviour id. Returns the created ActiveTask records (queue
-     * order). Empty specs array queues nothing.
+     * order). Empty specs array queues nothing. Malformed specs throw —
+     * the shared scheduler validates at the queue boundary (a blank kind,
+     * a non-positive-integer minutes, …) so a broken spec is a caller bug,
+     * never a silently ticking task.
      */
     queue(actorId: string, behaviourId: string, specs: TaskSpec | TaskSpec[]): ActiveTask[];
     /** The actor's in-progress task (the queue head), or undefined. */
@@ -175,251 +204,124 @@ export type TaskLedger = {
     clear(): void;
 };
 
+/**
+ * The core record → the island record: the shared scheduler keys tasks by
+ * `subjectId`; the island's public field has been `actorId` since the first
+ * ledger. Built explicitly (never spread) so the island shape carries no
+ * `subjectId` field — the exact task shape the rosters and tests pin. The
+ * payload is copied once more so a caller mutating the handed-out record
+ * can never reach the queue.
+ */
+const toIslandTask = (task: CoreActiveTask): ActiveTask => ({
+    id: task.id,
+    actorId: task.subjectId,
+    behaviour: task.behaviour,
+    kind: task.kind,
+    label: task.label,
+    minutes: task.minutes,
+    // Payload only when the spec carried one — keeps the exact task shape
+    ...(task.payload !== undefined ? { payload: { ...task.payload } } : {}),
+    total: task.total,
+    remaining: task.remaining,
+});
+
+/**
+ * Creates the island task ledger — a thin adapter over the SHARED core
+ * scheduler (packages/godspace/core/src/task createTaskScheduler). Every
+ * operation delegates; the boundary translations are the subject wrap
+ * (`{ ...entity, actor: entity }`) and the ActiveTask rename
+ * (subjectId → actorId). The island keeps its public interface; the core
+ * owns the one scheduler implementation.
+ */
 export const createTaskLedger = (): TaskLedger => {
-    // Behaviour registry keyed by id — Map insertion order is the
-    // first-registration tiebreak for planning (a re-set keeps its position)
-    const behaviours = new Map<string, TaskBehaviour>();
-    // FIFO task queues keyed by actor id, insertion-ordered by first queue
-    const queues = new Map<string, ActiveTask[]>();
-    // Completion listeners in subscription order (see engine/events.ts style)
-    const listeners = new Set<(task: ActiveTask) => void>();
-    // Monotonic task id counter — "t-1", "t-2", …
-    let taskCounter = 0;
+    // The one shared scheduler — the island never re-implements the queue,
+    // the planning walk, the pre-emption lift or the heartbeat
+    const scheduler = createTaskScheduler();
 
-    // ── helpers ──────────────────────────────────────────────────────────────
+    // The ORIGINAL island modules by id — behaviours() hands these back (the
+    // caller registered them; the core holds wrapped copies it plans through)
+    const originals = new Map<string, TaskBehaviour>();
 
     /**
-     * The planning-order snapshot: priority DESC with Map insertion order as
-     * the tiebreak. Sorts a fresh array — the registry's own order is never
-     * mutated. Array#sort is stable, so equal priorities keep registration
-     * order (deterministic).
+     * Wraps an island module for the core registry: the core hands every
+     * gate/plan the subject the adapter's plan() built — the entity record
+     * spread WITH its `actor` key — so the wrapper re-presents it as the
+     * island's actor-carrying TaskSubject unchanged. The cast is sound by
+     * construction: the adapter is the only caller of the core's plan()
+     * and always builds subjects carrying `actor`.
      */
-    const planningOrder = (): TaskBehaviour[] =>
-        Array.from(behaviours.values()).sort(
-            (left, right) => (right.priority ?? 0) - (left.priority ?? 0),
-        );
-
-    /** Normalizes a plan's specs result: single spec object → one-element array. */
-    const specList = (specs: TaskSpec | TaskSpec[]): TaskSpec[] =>
-        Array.isArray(specs) ? specs : [specs];
-
-    /**
-     * The internal queue writer: builds ActiveTask records from specs and
-     * appends them to the actor's queue (the queue entry is created with the
-     * first task). The spec's payload is stored as a shallow copy so later
-     * caller mutations cannot alter a queued task.
-     */
-    const enqueue = (actorId: string, behaviourId: string, specs: TaskSpec[]): ActiveTask[] => {
-        const created: ActiveTask[] = [];
-        // Block body — task creation must never short-circuit the walk
-        arrayEach(specs, ({ value: spec }) => {
-            taskCounter = taskCounter + 1;
-            const task: ActiveTask = {
-                id: `t-${taskCounter}`,
-                actorId,
-                behaviour: behaviourId,
-                kind: spec.kind,
-                label: spec.label,
-                minutes: spec.minutes,
-                // Payload only when the spec carries one — keeps the exact
-                // task shape (same rule as EventBus actorId, engine/events.ts)
-                ...(spec.payload !== undefined ? { payload: { ...spec.payload } } : {}),
-                total: spec.minutes,
-                remaining: spec.minutes,
-            };
-            created.push(task);
-        });
-        if (created.length > 0) {
-            const existing = queues.get(actorId);
-            // `target` is the live queue array; `created` stays detached so
-            // the queue() caller cannot mutate the queue through its return
-            const target = existing ?? [];
-            if (!existing) {
-                queues.set(actorId, target);
-            }
-            arrayEach(created, ({ value: task }) => {
-                target.push(task);
-            });
-        }
-        return created;
-    };
+    const wrapModule = (module: TaskBehaviour): CoreTaskBehaviour => ({
+        id: module.id,
+        label: module.label,
+        priority: module.priority,
+        appliesTo: module.appliesTo
+            ? (subject) => module.appliesTo?.(subject as TaskSubject) ?? false
+            : undefined,
+        plan: module.plan
+            ? (subject) => module.plan?.(subject as TaskSubject)
+            : undefined,
+    });
 
     return {
         behaviour: (module) => {
-            // Map#set overwrites in place — the original insertion position
-            // is kept, so registration order (the planning tiebreak) never moves
-            behaviours.set(module.id, module);
+            originals.set(module.id, module);
+            // Map#set overwrites in place inside the core too — the original
+            // insertion position (the planning tiebreak) never moves
+            scheduler.behaviour(wrapModule(module));
         },
 
         dropBehaviour: (id) => {
-            const removed = behaviours.delete(id);
-            if (removed) {
-                // Update-on-remove: cancel every queued task that came from
-                // this behaviour — actors whose whole list came from it go
-                // idle again, and a queue drained to empty leaves the map
-                // (keeps tasks()/actor-insertion order clean). Snapshot the
-                // keys: the map is mutated inside the walk.
-                arrayEach(Array.from(queues.keys()), ({ value: actorId }) => {
-                    const queue = queues.get(actorId);
-                    if (!queue) {
-                        return;
-                    }
-                    const survivors = queue.filter((task) => task.behaviour !== id);
-                    if (survivors.length === 0) {
-                        queues.delete(actorId);
-                    } else {
-                        queues.set(actorId, survivors);
-                    }
-                });
-            }
-            return removed;
+            // The core's drop cancels every queued task under the id (the
+            // update-on-remove rule) — the original registry mirrors it
+            originals.delete(id);
+            return scheduler.dropBehaviour(id);
         },
 
-        cancel: (actorId) => {
-            // The whole queue goes with the body — the map entry itself
-            // leaves (a drained queue's rule, same as dropBehaviour/tick),
-            // so tasks()/actor-insertion order stay clean. The detached
-            // array is safe to hand out: nothing references it anymore.
-            const queue = queues.get(actorId);
-            if (!queue) {
-                return [];
-            }
-            queues.delete(actorId);
-            return queue;
+        cancel: (actorId) => scheduler.cancel(actorId).map((task) => toIslandTask(task)),
+
+        behaviours: () =>
+            // The core's planning order (priority DESC, registration order as
+            // the tiebreak) resolved back to the ORIGINAL modules
+            scheduler
+                .behaviours()
+                .map((wrapped) => originals.get(wrapped.id))
+                .filter((module) => module !== undefined) as TaskBehaviour[],
+
+        queue: (actorId, behaviourId, specs) =>
+            scheduler.queue(actorId, behaviourId, specs).map((task) => toIslandTask(task)),
+
+        taskOf: (actorId) => {
+            const task = scheduler.taskOf(actorId);
+            return task ? toIslandTask(task) : undefined;
         },
 
-        behaviours: () => planningOrder(),
+        queueOf: (actorId) => scheduler.queueOf(actorId).map((task) => toIslandTask(task)),
 
-        queue: (actorId, behaviourId, specs) => enqueue(actorId, behaviourId, specList(specs)),
+        tasks: () => scheduler.tasks().map((task) => toIslandTask(task)),
 
-        taskOf: (actorId) => queues.get(actorId)?.[0],
-
-        queueOf: (actorId) => {
-            const queue = queues.get(actorId);
-            return queue ? queue.slice() : [];
-        },
-
-        tasks: () => {
-            const all: ActiveTask[] = [];
-            // Actor-insertion order (the queue map's), then queue order inside
-            arrayEach(Array.from(queues.values()), ({ value: queue }) => {
-                arrayEach(queue, ({ value: task }) => {
-                    all.push(task);
-                });
-            });
-            return all;
-        },
-
-        busy: (actorId) => (queues.get(actorId)?.length ?? 0) > 0,
+        busy: (actorId) => scheduler.busy(actorId),
 
         plan: (entity) => {
-            const queue = queues.get(entity.id);
-            const head = queue?.[0];
-            // The bar a pre-empting module must clear: the head task's own
-            // behaviour priority. An idle entity (no head) accepts anything —
-            // the walk below consults every module in planning order.
-            const floor = head ? behaviours.get(head.behaviour)?.priority ?? 0 : -Infinity;
-            const subject: TaskSubject = { actor: entity };
-            let queued: ActiveTask[] | undefined;
-            // Block-bodied walk in planning order: gates and plans vary per
-            // module, so nothing may short-circuit the consultation
-            arrayEach(planningOrder(), ({ value: module }) => {
-                if (!queued) {
-                    // A busy entity only yields to a STRICTLY higher-priority
-                    // module — equal priorities never churn the queue (the
-                    // in-progress task keeps its turn; time is serial)
-                    if (head && (module.priority ?? 0) <= floor) {
-                        return;
-                    }
-                    // No gate = the behaviour always applies
-                    const applies = module.appliesTo ? module.appliesTo(subject) : true;
-                    if (applies) {
-                        const specs = module.plan?.(subject);
-                        // void (undefined) = declined this moment — planning
-                        // continues with the next behaviour; an empty specs
-                        // array queues nothing and counts as declined too
-                        if (specs !== undefined) {
-                            const created = enqueue(entity.id, module.id, specList(specs));
-                            if (created.length > 0) {
-                                queued = created;
-                            }
-                        }
-                    }
-                }
-            });
-            if (!queued) {
-                return undefined;
-            }
-            if (head) {
-                // Pre-emption: the in-progress task is abandoned mid-work —
-                // its remaining minutes and its eventual effect are lost
-                // (not every task completes). The freshly queued specs were
-                // APPENDED by enqueue; lift them to the head so they run
-                // before the old queue's surviving followers.
-                const live = queues.get(entity.id) as ActiveTask[];
-                live.shift();
-                const created = queued;
-                const lifted = live.splice(live.length - created.length, created.length);
-                // Unshift in REVERSE so the lifted block keeps its order at
-                // the head (head first)
-                for (let index = lifted.length - 1; index >= 0; index--) {
-                    live.unshift(lifted[index]);
-                }
-                return live[0];
-            }
-            return queued[0];
+            // The subject handed to the core AND to every behaviour module:
+            // the full entity record spread at the top level (the core's
+            // structural `id` included) with the entity under `actor` (the
+            // island's subject shape). Identity: `subject.actor` IS the
+            // caller's record — gates read the live body.
+            const subject = { ...entity, actor: entity };
+            const queued = scheduler.plan(subject);
+            return queued ? toIslandTask(queued) : undefined;
         },
 
-        tick: () => {
-            const completed: ActiveTask[] = [];
-            // Snapshot the queue ENTRIES up front: a completion listener below
-            // may queue follow-up work, and a follow-up queued DURING this
-            // heartbeat must not also be decremented by it (time is serial —
-            // only what existed before the tick progresses this minute)
-            arrayEach(Array.from(queues.entries()), ({ value: entry }) => {
-                const [actorId, queue] = entry;
-                const head = queue[0];
-                if (!head) {
-                    return;
-                }
-                // One world-minute of progress for the head task only
-                head.remaining = head.remaining - 1;
-                if (head.remaining === 0) {
-                    // Finished: pop the head (the next task becomes the new one)
-                    queue.shift();
-                    completed.push(head);
-                    // A queue drained to empty leaves the map — tasks() and
-                    // the actor-insertion order stay clean
-                    if (queue.length === 0) {
-                        queues.delete(actorId);
-                    }
-                }
-            });
-            // Notify AFTER all decrementing is done — a listener that queues
-            // follow-up work sees a consistent ledger. Block body so a
-            // listener's return value can never short-circuit the walk.
-            arrayEach(completed, ({ value: task }) => {
-                arrayEach(Array.from(listeners), ({ value: listener }) => {
-                    listener(task);
-                });
-            });
-            return completed;
-        },
+        tick: () => scheduler.tick().map((task) => toIslandTask(task)),
 
-        onComplete: (listener) => {
-            listeners.add(listener);
-            return () => {
-                listeners.delete(listener);
-            };
-        },
+        onComplete: (listener) =>
+            // The listener receives the ISLAND task shape — the same record
+            // layout tick()/taskOf() hand out
+            scheduler.onComplete((task) => listener(toIslandTask(task))),
 
         clear: () => {
-            // Full dispose: queues, behaviours, listeners and the id counter —
-            // a cleared ledger behaves as if never used ("t-1" again)
-            queues.clear();
-            behaviours.clear();
-            listeners.clear();
-            taskCounter = 0;
+            originals.clear();
+            scheduler.clear();
         },
     };
 };

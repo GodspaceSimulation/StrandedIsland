@@ -70,6 +70,7 @@ import {
     type ItemCategoryStack,
 } from '../plugins/inventory/items';
 import { tileSurfaceKey } from '../plugins/terrain/islandTerrain';
+import type { SiteCell, SiteState } from '@godspace/blueprint';
 
 // ── Voxel stack ──────────────────────────────────────────────────────────────
 
@@ -292,6 +293,146 @@ export const tileResources = (resources?: TileResources): TileResourceStack[] =>
         unlimited: (UNLIMITED_TILE_RESOURCES as readonly string[]).includes(resource),
     }));
 
+// ── Structures — the construction sites' footprints ──────────────────────────
+
+/**
+ * One construction site touching the inspected address (the construction
+ * plugin's sites, plugins/construction). NOT a living entity: structures
+ * never enter the needs sweep or the roster — they are the tile's built
+ * vocabulary, listed here and drawn on the boards (see scaleView).
+ */
+export type TileStructure = {
+    /** The site's registry id ("s-1", …). */
+    siteId: string;
+    /** The blueprint the site builds. */
+    blueprintId: string;
+    /** Display label ("Shelter"). */
+    label: string;
+    /** The site's lifecycle state. */
+    state: SiteState;
+    /** Whether the inspected address IS the site's walkable gate cell. */
+    gate: boolean;
+    /** Construction minutes accrued. */
+    workDone: number;
+    /** The blueprint's total work cost. */
+    workTotal: number;
+    /** The staging ledger per requirement line (requirement order). */
+    staged: Array<{ item: string; have: number; need: number }>;
+};
+
+/**
+ * Whether a footprint covers the inspected address — the TILE (a length-1
+ * path: any cell of the footprint standing on the tile) or the exact FINE
+ * SPOT (a length-2 path: parent tile + fine coordinates). Cancelled sites
+ * free their cells and keep no footprint; deeper paths (length 3+) hold no
+ * scale-0 sites.
+ */
+const siteCoversPath = (cells: SiteCell[] | undefined, path: TilePath): boolean => {
+    if (!cells || cells.length === 0) {
+        return false;
+    }
+    if (path.length === 1) {
+        // The island view: the footprint touches the tile
+        return cells.some(
+            (cell) => cell.parent.length === 1 && cell.parent[0].x === path[0].x && cell.parent[0].y === path[0].y,
+        );
+    }
+    if (path.length === 2) {
+        // The interior view: the footprint covers the exact fine spot
+        const upper = path[0];
+        const tail = path[1];
+        return cells.some(
+            (cell) =>
+                cell.parent.length === 1 &&
+                cell.parent[0].x === upper.x &&
+                cell.parent[0].y === upper.y &&
+                cell.x === tail.x &&
+                cell.y === tail.y,
+        );
+    }
+    // Scale-0 sites live one parent level deep — nothing deeper
+    return false;
+};
+
+/**
+ * The construction sites at the inspected address, in placement order, with
+ * their staging ledger and work progress read through the construction
+ * plugin's shared @godspace/blueprint site registry. Empty before the
+ * plugin mounts (no construction plugin, no structures).
+ */
+export const tileStructures = (island: IslandHandle, path: TilePath): TileStructure[] => {
+    const sites = island.construction.sites;
+    if (!sites) {
+        return [];
+    }
+    const structures: TileStructure[] = [];
+    sites.sites().forEach((site) => {
+        if (site.state === 'cancelled') {
+            return;
+        }
+        const cells = sites.cellsOf(site.id);
+        if (!siteCoversPath(cells, path)) {
+            return;
+        }
+        // The DISPLAY label reads the live definition (a removed definition
+        // falls back to the blueprint id) — but the STAGING LEDGER and the
+        // work total read the SITE's snapshots (`site.required` /
+        // `site.cost`, taken at placement): a blueprint removed or redefined
+        // mid-build never rewrites what an existing site was charged
+        const definition = island.construction.blueprints.definitionOf(site.blueprintId);
+        // The gate: the resolved FIRST definition cell — the walkable one
+        // (the doorway/adjacency rule, plugins/construction)
+        const gateCell = cells?.[0];
+        const gate =
+            !!gateCell &&
+            (path.length === 1
+                ? gateCell.parent.length === 1 &&
+                  gateCell.parent[0].x === path[0].x &&
+                  gateCell.parent[0].y === path[0].y
+                : path.length === 2 &&
+                  gateCell.parent.length === 1 &&
+                  gateCell.parent[0].x === path[0].x &&
+                  gateCell.parent[0].y === path[0].y &&
+                  gateCell.x === path[1].x &&
+                  gateCell.y === path[1].y);
+        structures.push({
+            siteId: site.id,
+            blueprintId: site.blueprintId,
+            label: definition?.label ?? site.blueprintId,
+            state: site.state,
+            gate,
+            workDone: site.work,
+            // THE SNAPSHOT COST — the site completes against what it was
+            // charged at placement, not the live definition's work
+            workTotal: site.cost,
+            // THE SNAPSHOT REQUIREMENTS — the staging ledger an existing
+            // site was placed with
+            staged: site.required.map((line) => ({
+                item: line.item,
+                have: site.delivered[line.item] ?? 0,
+                need: line.count,
+            })),
+        });
+    });
+    return structures;
+};
+
+/** Human readable structure line: "Shelter · building · wood 2/2 · work 3/10". */
+export const structureLine = (structure: TileStructure): string => {
+    const parts = [structure.label, structure.state];
+    if (structure.gate) {
+        parts.push('gate');
+    }
+    const staging = structure.staged
+        .map((line) => `${line.item} ${line.have}/${line.need}`)
+        .join(' · ');
+    if (staging.length > 0) {
+        parts.push(staging);
+    }
+    parts.push(`work ${structure.workDone}/${structure.workTotal}`);
+    return parts.join(' · ');
+};
+
 // ── Whole-tile summary ───────────────────────────────────────────────────────
 
 /** Everything the Tile Inspector needs for one addressed tile, or null out of bounds. */
@@ -328,6 +469,14 @@ export type TileSummary = {
     ground: Array<ItemCategoryStack | GroundStack>;
     /** All living things in the column, grounded first. */
     occupants: TileOccupant[];
+    /**
+     * The construction sites at the addressed tile (plugins/construction —
+     * the shared @godspace/blueprint site registry): site id, blueprint,
+     * state, the walkable gate flag, the staging ledger and the work
+     * progress. NOT living entities — structures never enter the needs
+     * sweep; this is the tile's built vocabulary.
+     */
+    structures: TileStructure[];
 };
 
 /**
@@ -358,6 +507,7 @@ export const tileSummary = (island: IslandHandle, path: TilePath): TileSummary |
         resources: tileResources(cell.resources),
         ground: tileGround(island, path),
         occupants: tileOccupants(island, path),
+        structures: tileStructures(island, path),
     };
 };
 
@@ -388,55 +538,114 @@ export const scaleView = (island: IslandHandle, viewPath: TilePath): ViewSlice |
     if (!canvas) {
         return null;
     }
-    if (viewPath.length === 0) {
-        // The root view binds the LIVE world slice — the same slice the
-        // canvas plugins captured at setup
-        return { canvas, coordinates: island.world.coordinates };
-    }
-    const parent = viewPath[viewPath.length - 1];
-    // Residents of the parent tile's sub-grid: every coordinate resident
-    // rooted at the parent tile, drawn at its fine spot (or the subtile's
-    // heart for views two+ levels down — see the note above)
+    // The view's RESIDENT entries: at the island view (the root, an empty
+    // path) the live world coordinate space itself; deeper, the entities
+    // rooted at the view's parent tile drawn at their fine spots. The
+    // structure entries (below) append onto this base.
+    const parent = viewPath.length > 0 ? viewPath[viewPath.length - 1] : null;
+    // Deeper views (two+ levels) hold their residents at the subtile's
+    // heart — deeper fine refinement is an engine extension (the island's
+    // ladder currently reaches depth 1)
     const deep = viewPath.length >= 2;
-    const entries = island.world.coordinates
-        .all()
-        .filter((entry) => entry.position.x === parent.x && entry.position.y === parent.y)
-        .filter((entry) => {
-            if (!deep) {
-                return true;
-            }
-            const sub = island.world.subOf(entry.id);
-            const upper = viewPath[viewPath.length - 2];
-            return !!sub && sub.x === upper.x && sub.y === upper.y;
-        })
-        .map((entry) => {
-            const sub = island.world.subOf(entry.id);
-            return {
-                ...entry,
-                position: {
-                    x: deep || !sub ? 0 : sub.x,
-                    y: deep || !sub ? 0 : sub.y,
-                    z: entry.position.z,
-                },
-            };
-        });
+    const entries: CoordinateEntry[] =
+        viewPath.length === 0
+            ? // The island view: the LIVE world slice — the same entries the
+              // canvas plugins captured at setup (copied onto the stack so
+              // the structure entries can join it without touching the space)
+              [...island.world.coordinates.all()]
+            : island.world.coordinates
+                  .all()
+                  .filter((entry) => entry.position.x === parent!.x && entry.position.y === parent!.y)
+                  .filter((entry) => {
+                      if (!deep) {
+                          return true;
+                      }
+                      const sub = island.world.subOf(entry.id);
+                      const upper = viewPath[viewPath.length - 2];
+                      return !!sub && sub.x === upper.x && sub.y === upper.y;
+                  })
+                  .map((entry) => {
+                      const sub = island.world.subOf(entry.id);
+                      return {
+                          ...entry,
+                          position: {
+                              x: deep || !sub ? 0 : sub.x,
+                              y: deep || !sub ? 0 : sub.y,
+                              z: entry.position.z,
+                          },
+                      };
+                  });
     // The ground items become CANVAS OBJECTS at every zoomed scale — each
     // unit stands at its scattered subtile (the same streams the Tile
     // Inspector's ground derivation reads, so lists and objects agree).
     // At the island view they stay list-only (the granularity ladder), so
-    // the root slice above carries no ground entries.
-    boardGroundUnits(island, viewPath).forEach((unit, index) => {
-        entries.push({
-            id: `ground:${unit.item}:${index}`,
-            position: { x: unit.x, y: unit.y, z: 0 },
-            // A ground item is a thing of its own kind ('item' — engines may
-            // coin kinds beyond creature/sentient) typed with the item id;
-            // the canvases resolve its emoji through the type map the
-            // scenario extends with ITEM_TYPE_GLYPHS
-            kind: 'item',
-            type: unit.item,
-            name: itemDef(unit.item).name,
+    // the root slice carries no ground entries.
+    if (viewPath.length > 0) {
+        boardGroundUnits(island, viewPath).forEach((unit, index) => {
+            entries.push({
+                id: `ground:${unit.item}:${index}`,
+                position: { x: unit.x, y: unit.y, z: 0 },
+                // A ground item is a thing of its own kind ('item' — engines
+                // may coin kinds beyond creature/sentient) typed with the
+                // item id; the canvases resolve its emoji through the type
+                // map the scenario extends with ITEM_TYPE_GLYPHS
+                kind: 'item',
+                type: unit.item,
+                name: itemDef(unit.item).name,
+            });
         });
-    });
+    }
+    // The construction sites join the board too — the STRUCTURE footprint
+    // entries (plugins/construction). At the island view (the root, an
+    // empty path) each live site draws ONE entry per tile it covers, at
+    // the tile position; in the interior views (length 1) every live
+    // site's fine cell ON the inspected parent tile draws at its exact
+    // spot. Structures sit at z −1 — BENEATH the ground plane, so any
+    // living body at the same spot draws on top of it (the glyph stack
+    // sorts highest Z first). The canvases resolve the entries' TYPE (the
+    // blueprint id) through the STRUCTURE_TYPE_GLYPHS palette the scenario
+    // extends them with.
+    const sites = island.construction.sites;
+    if (sites && viewPath.length <= 1) {
+        sites.sites().forEach((site) => {
+            if (site.state === 'cancelled') {
+                return;
+            }
+            const definition = island.construction.blueprints.definitionOf(site.blueprintId);
+            const cells = (sites.cellsOf(site.id) ?? []).filter((cell) =>
+                viewPath.length === 0
+                    ? // The island view: every covered tile draws the site once
+                      true
+                    : // The interior view: the fine cells of the inspected tile
+                      cell.parent.length === 1 &&
+                      cell.parent[0].x === viewPath[0].x &&
+                      cell.parent[0].y === viewPath[0].y,
+            );
+            const drawn = new Set<string>();
+            cells.forEach((cell) => {
+                const tileX = cell.parent[0]?.x ?? 0;
+                const tileY = cell.parent[0]?.y ?? 0;
+                const position =
+                    viewPath.length === 0
+                        ? { x: tileX, y: tileY, z: -1 }
+                        : { x: cell.x, y: cell.y, z: -1 };
+                const id =
+                    viewPath.length === 0
+                        ? `structure:${site.id}:${tileX},${tileY}`
+                        : `structure:${site.id}:${cell.x},${cell.y}`;
+                if (drawn.has(id)) {
+                    return;
+                }
+                drawn.add(id);
+                entries.push({
+                    id,
+                    position,
+                    kind: 'structure',
+                    type: site.blueprintId,
+                    name: definition?.label ?? site.blueprintId,
+                });
+            });
+        });
+    }
     return { canvas, coordinates: { all: () => entries } };
 };

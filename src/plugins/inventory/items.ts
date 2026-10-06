@@ -25,14 +25,16 @@ export const materials: ItemRegistry = createItemRegistry();
 // stock list doesn't carry (berry — the catalog lists the plural 'berries';
 // water — the island's drinkable rain pool; iron and dirt — the tile
 // deposits the catalog only lists in compound form, 'iron-ore'; tree — the
-// standing deposit the canvas paints green). Display-only definitions: the
-// island's own stats stay in ITEM_CATALOG. 'sand' is already listed in the
-// shared stock catalog, so it needs no definition here.
+// standing deposit the canvas paints green; frond — the palm undergrowth
+// the construction chains shed beneath the trees). Display-only
+// definitions: the island's own stats stay in ITEM_CATALOG. 'sand' is
+// already listed in the shared stock catalog, so it needs no definition here.
 materials.define({ id: 'berry', name: 'Berry', kind: 'food' });
 materials.define({ id: 'water', name: 'Water', kind: 'resource' });
 materials.define({ id: 'iron', name: 'Iron', kind: 'resource' });
 materials.define({ id: 'dirt', name: 'Dirt', kind: 'resource' });
 materials.define({ id: 'tree', name: 'Tree', kind: 'resource' });
+materials.define({ id: 'frond', name: 'Frond', kind: 'resource' });
 
 export type ItemKind = 'food' | 'drink' | 'material' | 'tool';
 
@@ -71,6 +73,10 @@ export const ITEM_CATALOG: Record<string, ItemDef> = {
     dirt: { name: 'Dirt', kind: 'material' },
     wood: { name: 'Wood', kind: 'material' },
     vine: { name: 'Vine', kind: 'material' },
+    // The palm undergrowth the trees shed (the inventory plugin's frond
+    // rhythm) — the raw stock the construction chains weave thatch and
+    // cloth from (plugins/construction)
+    frond: { name: 'Frond', kind: 'material' },
     shell: { name: 'Shell', kind: 'material' },
     flint: { name: 'Flint', kind: 'tool' },
 };
@@ -191,4 +197,5 @@ export const ITEM_TYPE_GLYPHS: Record<string, string> = {
     flint: '⛏️',
     mushroom: '🍄',
     seaweed: '🌱',
+    frond: '🍃',
 };

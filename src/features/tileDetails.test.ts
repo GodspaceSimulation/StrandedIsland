@@ -282,6 +282,9 @@ describe('tileSummary', () => {
                     actorId: 'actor-1',
                 },
             ],
+            // No construction site touches this tile at tick 0 (the
+            // construction plugin places its first project on the first tick)
+            structures: [],
         });
     });
 
@@ -299,6 +302,7 @@ describe('tileSummary', () => {
             resources: [],
             ground: [{ category: 'food', label: 'Foods', count: 1 }],
             occupants: [],
+            structures: [],
         });
     });
 

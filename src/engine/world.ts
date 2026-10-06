@@ -82,6 +82,24 @@ export type World = EngineWorld<Actor> & {
     actorAt(x: number, y: number, z?: number): Actor | undefined;
     /** All currently passable (dry) cells — used for spawn placement. */
     landCells(): TerrainCell[];
+    /**
+     * The mounted structure-blocking hook (see StructureBlocker) — the
+     * construction plugin assigns it at setup and clears it at dispose.
+     * Null: no completed structures exist to block anything.
+     */
+    structures: StructureBlocker | null;
+};
+
+/**
+ * The structure-blocking hook — the construction plugin mounts it at setup
+ * (plugins/construction) so the Scale-0 movement rules can refuse stepping
+ * ONTO a completed footprint's cells (the usable GATE cell excepted — see
+ * the plugin's doorway rule). Null when no construction plugin is mounted:
+ * the fine ground is all free, the pre-construction behavior.
+ */
+export type StructureBlocker = {
+    /** Whether the fine spot (sx, sy) inside the tile at (tileX, tileY) is walled off. */
+    blocksFineSpot(tileX: number, tileY: number, sx: number, sy: number): boolean;
 };
 
 /** Canvas holder — the terrain plugin replaces the whole canvas in `setup`,
@@ -178,6 +196,10 @@ export const createWorld = (options: WorldOptions = {}): World => {
             };
 
             world.landCells = () => canvasHolder.current.cells.filter((cell) => cell.passable);
+
+            // The structure blocker starts unmounted — the construction
+            // plugin swaps its hook in at setup (and back out at dispose)
+            world.structures = null;
         },
     });
 

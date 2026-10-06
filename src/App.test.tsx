@@ -243,39 +243,41 @@ describe('App', () => {
             Array.from(fresh.children).map((child) => child.textContent),
         ).toEqual(['Bram — neutral (0)', 'Cove — neutral (0)', 'Dune — neutral (0)']);
 
-        // 60 seeded steps (seed 7, one world minute each). Two scenarios
-        // play (Spear Lessons +12, Ael–Cove, and Quiet Distrust −8,
-        // Ael–Bram — the one-shot deck's first two cards for this seed) and
-        // the drift nets the bonds to −7.72 / 10.82 — the DISPLAYED values
-        // round to −8 and 11.
+        // 60 seeded steps (seed 7, one world minute each). The construction
+        // governance is mounted (the stock world), so the cast's wander
+        // pattern differs from the pre-construction reference — three
+        // scenarios play: Spear Lessons +12 (Ael–Cove, minute 1), Quiet
+        // Distrust −8 (Bram–Dune, minute 35) and Night Watch +12 (Ael–Cove,
+        // minute 46); the drift nets Ael's bonds to 0 / 25 / 0 — the
+        // DISPLAYED values round to 0 / 25 / 0.
         for (let tick = 0; tick < 60; tick++) {
             fireEvent.click(screen.getByTestId('step-button'));
         }
         const stepped = screen.getByTestId('actor-relations');
         expect(
             Array.from(stepped.children).map((child) => child.textContent),
-        ).toEqual(['Bram — neutral (-8)', 'Cove — neutral (11)', 'Dune — neutral (0)']);
+        ).toEqual(['Bram — neutral (0)', 'Cove — neutral (25)', 'Dune — neutral (0)']);
 
         // A different selection never shows its own name either — the list is
         // always the OTHER castaways, so pairs between third parties cannot
-        // be mislabelled as the inspected actor's bonds. Both scenarios bound
-        // Ael to Cove and Bram — Cove's own bonds are untouched.
+        // be mislabelled as the inspected actor's bonds. Quiet Distrust bound
+        // Bram to Dune — Cove's own bonds are untouched.
         fireEvent.click(screen.getByTestId('actor-chip-Ael'));
         fireEvent.click(screen.getByTestId('actor-chip-Bram'));
         const bram = screen.getByTestId('actor-relations');
         const bramRows = Array.from(bram.children).map((child) => child.textContent);
-        expect(bramRows).toEqual(['Ael — neutral (-8)', 'Cove — neutral (0)', 'Dune — neutral (0)']);
+        expect(bramRows).toEqual(['Ael — neutral (0)', 'Cove — neutral (0)', 'Dune — neutral (-8)']);
         expect(bramRows.join('|')).not.toContain('Bram');
 
-        // The story feed carries the two encounters as coherent story blocks —
+        // The story feed carries the encounters as coherent story blocks —
         // newest first, the latest scenario's block on top. The feed holds
-        // 10 beats: five spawns, the two bond moves, the two story blocks
-        // and Kiki's exit past the world's edge.
+        // 12 beats: five spawns, Kiki's exit past the world's edge, the
+        // three bond moves and the three story blocks.
         fireEvent.click(screen.getByTestId('story-tab'));
         const entries = screen.getAllByTestId('story-entry');
-        expect(entries.length).toBe(10);
-        expect(entries[0].textContent).toContain('Quiet Distrust');
-        expect(entries[0].textContent).toContain('Ael notices Bram counting the food stores');
+        expect(entries.length).toBe(12);
+        expect(entries[0].textContent).toContain('Night Watch');
+        expect(entries[0].textContent).toContain('Ael and Cove agree to split the night');
     });
 
     it('the tick carries its fixed world minute at every view — the scale ladder is a pure view', () => {

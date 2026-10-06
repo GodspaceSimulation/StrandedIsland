@@ -15,6 +15,7 @@
     "author": "NQQT",
     "license": "ISC",
     "dependencies": {
+        "@godspace/blueprint": "*",
         "@godspace/canvas": "*",
         "@godspace/core": "*",
         "@godspace/material": "*",

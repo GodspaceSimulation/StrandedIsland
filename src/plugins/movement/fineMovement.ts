@@ -71,6 +71,16 @@ export const nearestCell = (mover: FineMover, candidates: TerrainCell[]): Terrai
  * single position registry), so registry actors AND coordinates-only
  * creatures (birds on the ground, wild beasts) block alike; flyers
  * (z > ground) never block — they are above the Scale-0 ground.
+ *
+ * COMPLETED STRUCTURES BLOCK TOO (plugins/construction): a footprint that
+ * finished building walls its cells off — the fine spot of a built site
+ * refuses destination steps (the site's walkable GATE cell excepted, the
+ * plugin's doorway rule). Planned (staged/building) footprints do NOT
+ * block: their clearance is checked at placement (dry land, nobody
+ * standing in the cells), and a body standing where a wall later rises
+ * can always step OFF (only destinations are validated). The hook reads
+ * the world's `structures` blocker — null without the construction
+ * plugin, the pre-construction behavior.
  */
 export const fineSpotTaken = (
     world: World,
@@ -80,6 +90,9 @@ export const fineSpotTaken = (
     sx: number,
     sy: number,
 ): boolean => {
+    if (world.structures?.blocksFineSpot(tileX, tileY, sx, sy)) {
+        return true;
+    }
     let taken = false;
     world.coordinates.all().forEach((other) => {
         if (
@@ -257,4 +270,78 @@ export const travelSpec = (
         minutes: travel,
         payload: { dx: step[0], dy: step[1] },
     };
+};
+
+/**
+ * ONE FINE-CELL TARGET — the exact spot the construction workers stand on
+ * (a site's walkable GATE cell, plugins/construction). The island's fine
+ * coordinates are CONTIGUOUS across tiles: tile tx's sub-grid runs
+ * tx·width − half … tx·width + half, so tile (tx) cell (fx) reads as the
+ * global fine coordinate tx·width + fx and the whole ground is one plane.
+ */
+export const fineSpotAddress = (
+    tileX: number,
+    tileY: number,
+    x: number,
+    y: number,
+    grid: { width: number; height: number },
+): { x: number; y: number } => ({
+    x: tileX * grid.width + x,
+    y: tileY * grid.height + y,
+});
+
+/**
+ * One greedy fine step toward an EXACT FINE CELL (a tile plus the subtile
+ * inside it) — the fine-grained twin of greedyFineStep. Preferred
+ * directions first (toward the target on each axis, then the diagonal),
+ * validated against the CURRENT occupancy and structure walls; a blocked
+ * approach falls back to any valid fine direction (the mover mills toward
+ * the target until the block clears). Null when the mover cannot step at
+ * all. Used by the construction behaviours (deliver/build) whose work
+ * happens ON the gate cell — the tile-level trek would stop a whole tile
+ * short of the spot the staging actually happens on.
+ */
+export const fineTargetStep = (
+    world: World,
+    mover: FineMover,
+    targetTile: { x: number; y: number },
+    targetFine: { x: number; y: number },
+): [number, number] | null => {
+    const sub = world.subOf(mover.id);
+    if (!sub) {
+        return null;
+    }
+    const here = fineSpotAddress(mover.position.x, mover.position.y, sub.x, sub.y, world.canvas);
+    const there = fineSpotAddress(targetTile.x, targetTile.y, targetFine.x, targetFine.y, world.canvas);
+    const dx = Math.sign(there.x - here.x);
+    const dy = Math.sign(there.y - here.y);
+
+    // Preferred steps, most direct first (the greedy walker's ladder)
+    const preferred: Array<[number, number]> = [];
+    if (dx !== 0) {
+        preferred.push([dx, 0]);
+    }
+    if (dy !== 0) {
+        preferred.push([0, dy]);
+    }
+    if (dx !== 0 && dy !== 0) {
+        preferred.push([dx, dy]);
+    }
+
+    let step: [number, number] | null = null;
+    arrayEach(preferred, ({ value: candidate }) => {
+        if (!step && fineStep(world, mover, candidate[0], candidate[1])) {
+            step = candidate;
+        }
+    });
+    // Blocked toward the target — mill toward it along any open direction
+    // (deterministic NEIGHBOR_OFFSETS order)
+    if (!step) {
+        arrayEach(NEIGHBOR_OFFSETS, ({ value: offset }) => {
+            if (!step && fineStep(world, mover, offset.dx, offset.dy)) {
+                step = [offset.dx, offset.dy];
+            }
+        });
+    }
+    return step;
 };

@@ -67,6 +67,11 @@ import { tasksPlugin, type TasksPlugin } from '../plugins/tasks/tasksPlugin';
 import { sleepPlugin, type SleepPlugin } from '../plugins/sleep/sleepPlugin';
 import { survivalPlugin, type SurvivalPlugin } from '../plugins/survival/survivalPlugin';
 import { lumberPlugin, type LumberPlugin } from '../plugins/lumber/lumberPlugin';
+import {
+    constructionPlugin,
+    STRUCTURE_TYPE_GLYPHS,
+    type ConstructionPlugin,
+} from '../plugins/construction/constructionPlugin';
 import { storyPlugin, type StoryPlugin } from '../plugins/story/storyPlugin';
 import {
     birdsPlugin,
@@ -121,6 +126,15 @@ export type IslandOptions = {
          */
         lumber?: boolean;
         /**
+         * The construction governance — the build/craft rungs over the
+         * shared @godspace blueprint/site/crafting registries (the shelter,
+         * house, fort, raft and boat projects). Needs tasks + behavior +
+         * inventory + needs (its tasks ride the move/collect effects; the
+         * staging reads the bags and the shelter bonus reads needs).
+         * Default on.
+         */
+        construction?: boolean;
+        /**
          * The storyteller — scenario encounters sampled from the one-shot
          * deck, injected into the log as story blocks. Needs needs +
          * relationships. Default on.
@@ -174,6 +188,15 @@ export type IslandHandle = {
     survival: SurvivalPlugin;
     /** The lumber behaviour plugin — fells trees into wood (chop → bag). */
     lumber: LumberPlugin;
+    /**
+     * The construction plugin — the build/craft governance: the shared
+     * @godspace/blueprint blueprint + site registries and the island's
+     * crafting recipes over @godspace/material (plugins/construction/
+     * constructionPlugin.ts). Exposes the registries, the active project,
+     * the completed blueprint list, the moored vessels and the launch
+     * control for the god-view and the tests.
+     */
+    construction: ConstructionPlugin;
     /**
      * The storyteller plugin — samples one unused scenario per encounter
      * (two castaways within the meeting ring), routes the play's profile
@@ -266,6 +289,7 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         sleep: true,
         survival: true,
         lumber: true,
+        construction: true,
         story: true,
         birds: true,
         sharks: true,
@@ -321,6 +345,18 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         tasks,
         travelMinutesPerTile: TRAVEL_MINUTES_PER_TILE,
     });
+    // The construction governance — the build/craft rungs over the shared
+    // @godspace blueprint/site/crafting registries (plugins/construction).
+    // Its rungs sit between rest (25) and social (20): needs always
+    // interrupt construction, and the build projects are never starved by
+    // small talk or the lumber rack's one-wood habit.
+    const construction = constructionPlugin({
+        inventory,
+        needs,
+        tasks,
+        profiles,
+        travelMinutesPerTile: TRAVEL_MINUTES_PER_TILE,
+    });
     // The wild boars — the land predators. The bite drains the victim's
     // energy AND wounds its health through the needs plugin (health at 0 is
     // death — a cornered castaway can bleed out); the entity profiles derive
@@ -372,6 +408,12 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     // where the tile's tree subtiles each decorate too). Tiles WITHOUT
     // trees decorate nothing (color-only — the same no-flood rule the
     // terrain emoji fix established).
+    // (Built STRUCTURES are NOT decorations — the decoration adapter cannot
+    // tell a root cell from a zoomed subtile, and a structure is not a
+    // per-cell surface anyway. The scaleView slice appends the structure
+    // entries instead — tile-level at the island view, fine-cell level in
+    // the interior views — drawn through the same STRUCTURE_TYPE_GLYPHS
+    // type palette the entity glyphs resolve; see features/tileDetails.ts.)
     const decorationOfCell = (cell: unknown): string | undefined =>
         ((cell as { resources?: TileResources }).resources?.tree ?? 0) > 0 ? 'tree' : undefined;
 
@@ -422,14 +464,20 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     // (same surfaceOf/titleOf adapters) — an emoji-skinned twin of the god view.
     // The type palette extends with ITEM_TYPE_GLYPHS so ground-item entries
     // (typed with the item id, see features/tileDetails scaleView) draw their
-    // emoji in every zoomed view, plus SHARK_TYPE_GLYPH for the sharks and
-    // BOAR_TYPE_GLYPH for the wild boars
+    // emoji in every zoomed view, STRUCTURE_TYPE_GLYPHS so the construction
+    // sites' footprint entries (typed with the blueprint id) draw theirs,
+    // plus SHARK_TYPE_GLYPH for the sharks and BOAR_TYPE_GLYPH for the boars
     const unicode = unicodeCanvasPlugin({
         surfaceOf: surfaceOfCell,
         titleOf: titleOfCell,
         // Treed tiles decorate — the unicode view draws the 🌳 tree emoji
         decorationOf: decorationOfCell,
-        types: { ...ITEM_TYPE_GLYPHS, ...SHARK_TYPE_GLYPH, ...BOAR_TYPE_GLYPH },
+        types: {
+            ...ITEM_TYPE_GLYPHS,
+            ...STRUCTURE_TYPE_GLYPHS,
+            ...SHARK_TYPE_GLYPH,
+            ...BOAR_TYPE_GLYPH,
+        },
         states: BIRD_ALTITUDE_STATES,
         // The gendered human emoji — the profile's sex resolves per entry
         glyphOf: sexGlyphOf,
@@ -443,7 +491,12 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         titleOf: titleOfCell,
         // Treed tiles decorate — the SVG view draws the vector tree icon
         decorationOf: decorationOfCell,
-        types: { ...ITEM_TYPE_GLYPHS, ...SHARK_TYPE_GLYPH, ...BOAR_TYPE_GLYPH },
+        types: {
+            ...ITEM_TYPE_GLYPHS,
+            ...STRUCTURE_TYPE_GLYPHS,
+            ...SHARK_TYPE_GLYPH,
+            ...BOAR_TYPE_GLYPH,
+        },
         states: BIRD_ALTITUDE_STATES,
         // The gendered human emoji — same per-entry sex resolver as unicode
         glyphOf: sexGlyphOf,
@@ -482,6 +535,14 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         ...(toggles.sleep && toggles.tasks && toggles.needs ? [sleep] : []),
         ...(toggles.survival && toggles.tasks && toggles.behavior ? [survival] : []),
         ...(toggles.lumber && toggles.tasks && toggles.inventory && toggles.behavior ? [lumber] : []),
+        // The construction governance mounts right behind the lumber rung
+        // (the rungs register into the tasks ledger at setup; its tick runs
+        // after the whole environment minute — the plan cursor places the
+        // next project when nothing is live, and the sheltered-sleep bonus
+        // reads the freshest task heads)
+        ...(toggles.construction && toggles.tasks && toggles.behavior && toggles.inventory && toggles.needs
+            ? [construction]
+            : []),
         // The storyteller runs after the whole environment minute (needs,
         // tasks, behavior, sleep) — an encounter reads the freshest state
         // and needs the needs + relationship systems
@@ -557,5 +618,5 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         birds.release();
     }
 
-    return { world, terrain, entity, inventory, needs, relationship, tasks, sleep, survival, lumber, story, birds, sharks, predators, scale, ascii, unicode, svg, data };
+    return { world, terrain, entity, inventory, needs, relationship, tasks, sleep, survival, lumber, construction, story, birds, sharks, predators, scale, ascii, unicode, svg, data };
 };

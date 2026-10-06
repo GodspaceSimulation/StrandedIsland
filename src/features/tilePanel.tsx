@@ -23,7 +23,14 @@ import { styled } from '../styles/styled';
 import { PALETTE } from '../styles/theme';
 import { Panel, PanelTitle } from '../components/panel';
 import { useWorld, useRevision, useTile, selectActor } from './worldBridge';
-import { tileSummary, voxelSummary, occupantLine, type TileOccupant } from './tileDetails';
+import {
+    tileSummary,
+    voxelSummary,
+    occupantLine,
+    structureLine,
+    type TileOccupant,
+    type TileStructure,
+} from './tileDetails';
 import { itemLabel } from '../plugins/inventory/items';
 
 /** Two-column detail row — the label is dim, the value plain. */
@@ -115,6 +122,18 @@ const ResidentRow = ({ occupant, dotColor }: { occupant: TileOccupant; dotColor:
     </li>
 );
 
+/**
+ * Structure row — the construction sites at the inspected tile (NOT living
+ * entities: never clickable into the entity inspector, never in the needs
+ * sweep). The line carries the state, the gate flag, the staging ledger
+ * and the work progress ("Shelter · building · wood 2/2 · work 3/10").
+ */
+const StructureRow = ({ structure }: { structure: TileStructure }) => (
+    <li>
+        <span data-testid={`tile-structure-${structure.siteId}`}>{structureLine(structure)}</span>
+    </li>
+);
+
 export const TilePanel = () => {
     const island = useWorld();
     const revision = useRevision();
@@ -201,6 +220,27 @@ export const TilePanel = () => {
                                         <li key={entry.item}>{itemLabel(entry.item, entry.count)}</li>
                                     ),
                                 )
+                            )}
+                        </List>
+                    </div>
+                    <div>
+                        <PanelTitle>Structures</PanelTitle>
+                        <List data-testid="tile-structures">
+                            {/* The construction sites at the inspected tile
+                                (plugins/construction): what is being built
+                                here, how far its staging and work run, and
+                                whether the inspected address is its walkable
+                                gate. Structures are not living entities —
+                                they never enter the roster or the needs
+                                sweep, they are the tile's built vocabulary. */}
+                            {summary.structures.length === 0 ? (
+                                <li>
+                                    <EmptyNote>Nothing stands here.</EmptyNote>
+                                </li>
+                            ) : (
+                                summary.structures.map((structure) => (
+                                    <StructureRow key={structure.siteId} structure={structure} />
+                                ))
                             )}
                         </List>
                     </div>

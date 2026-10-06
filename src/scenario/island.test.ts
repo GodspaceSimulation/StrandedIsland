@@ -16,14 +16,16 @@ describe('createIslandWorld', () => {
             'needs',
             'relationship',
             // The task ledger advances before the behavior tick; the
-            // behaviour governance plugins (sleep, survival, lumber) register
-            // into the ledger right behind it; the storyteller runs after the
-            // whole environment minute (scenario/island.ts mount order)
+            // behaviour governance plugins (sleep, survival, lumber,
+            // construction) register into the ledger right behind it; the
+            // storyteller runs after the whole environment minute
+            // (scenario/island.ts mount order)
             'tasks',
             'behavior',
             'sleep',
             'survival',
             'lumber',
+            'construction',
             'story',
             'birds',
             'sharks',
@@ -127,7 +129,12 @@ describe('createIslandWorld', () => {
     });
 
     it('runs: one Scale-0 tile per tick — the woodless cast works the woods, silently', () => {
-        const handle = createIslandWorld({ seed: 7 });
+        // The construction governance is OFF for this pin: its rungs
+        // (deliver 24 … build 21) outrank the lumber chop (10) and would
+        // re-plan the cast onto the build projects from minute 2 — the
+        // pre-construction Scale-0 pacing contract is what's under test here
+        // (the construction march has its own test below).
+        const handle = createIslandWorld({ seed: 7, plugins: { construction: false } });
         handle.world.step();
         expect(handle.world.ticker.ticks()).toBe(1);
         // One step = ONE world minute (the Scale-0 pace). The task rhythm:
@@ -294,7 +301,11 @@ describe('createIslandWorld', () => {
     });
 
     it('with sleep off, an exhausted actor rests the old instant-rest way', () => {
-        const handle = createIslandWorld({ seed: 7, plugins: { sleep: false } });
+        // The construction governance is OFF for this pin: its rungs outrank
+        // the lumber chop and would re-route Dune's minutes 12–20 onto the
+        // build projects (the rest arithmetic below pins the pure
+        // sleep-off/instant-rest fallback, not the construction march).
+        const handle = createIslandWorld({ seed: 7, plugins: { sleep: false, construction: false } });
         expect(handle.world.plugins.has('sleep')).toBe(false);
         expect(handle.world.plugins.has('tasks')).toBe(true);
         expect(handle.world.plugins.has('behavior')).toBe(true);
@@ -658,5 +669,105 @@ describe('createIslandWorld', () => {
             'human',
         ]);
         expect(handle.predators.predators().map((boar) => boar.id)).toEqual(['boar-1', 'boar-2']);
+    });
+
+    it('the autonomous build loop: the cast completes shelter, raft, house and boat in 3000 minutes', () => {
+        // THE T4 MARCH — the construction governance (plugins/construction)
+        // plans one stock structure at a time through the shared stack: the
+        // crew fetches the raw materials demand-directed (never bagfuls of
+        // lumber the site stopped needing), crafts the processed parts
+        // (frond→thatch/cloth, vine→rope, wood→plank), ferries the staging
+        // progressively past the eight-unit bag, and works the site one
+        // world-minute stage at a time once it is fully staged. The needs
+        // ladder always outranks the construction rungs (rest 25 … flee 60),
+        // so nobody starves building. Captured from the seed-7 reference
+        // run; the whole march stays deterministic.
+        const handle = createIslandWorld({ seed: 7 });
+        const alive = (id: string) =>
+            handle.world.actors.has(id) || handle.world.coordinates.entryOf(id) !== undefined;
+        let stale = 0;
+        let deaths = 0;
+        for (let minute = 1; minute <= 3000; minute++) {
+            handle.world.step();
+            // NO STALE TASKS — every queued task's body still lives
+            handle.tasks.tasks().forEach((task) => {
+                if (!alive(task.actorId)) {
+                    stale = stale + 1;
+                }
+            });
+            deaths = deaths + handle.world.events.log().filter((event) => event.kind === 'death').length;
+        }
+        expect(stale).toBe(0);
+        expect(deaths).toBe(0);
+        expect(Array.from(handle.world.actors.keys())).toEqual(['actor-1', 'actor-2', 'actor-3', 'actor-4']);
+        // FOUR stock structures stand complete at the 3000-minute mark:
+        // the shelter (wood 2 + thatch 2, 10 work), the raft (wood 4 +
+        // rope 2, 30), the house (wood 4 + plank 4 + thatch 4 — TWELVE
+        // staging units through eight-unit bags, 40 work) and the boat
+        // (plank 6 + rope 4 + cloth 2, 60). The fort project is live with
+        // its stone delivery under way (the mined highland stone).
+        expect(handle.construction.completedBlueprints()).toEqual(['shelter', 'raft', 'house', 'boat']);
+        expect(handle.construction.project()).toBe('fort');
+        expect(
+            handle.construction.sites.sites().map((site) => ({
+                id: site.id,
+                blueprintId: site.blueprintId,
+                state: site.state,
+                parent: site.parent,
+                anchor: site.anchor,
+                scale: site.scale,
+                rotation: site.rotation,
+                work: site.work,
+                delivered: site.delivered,
+            })),
+        ).toEqual([
+            { id: 's-1', blueprintId: 'shelter', state: 'built', parent: [{ x: 0, y: 0 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 10, delivered: { wood: 2, thatch: 2 } },
+            { id: 's-2', blueprintId: 'raft', state: 'built', parent: [{ x: -7, y: 5 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 30, delivered: { wood: 4, rope: 2 } },
+            { id: 's-3', blueprintId: 'house', state: 'built', parent: [{ x: -1, y: 0 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 40, delivered: { wood: 4, thatch: 4, plank: 4 } },
+            { id: 's-4', blueprintId: 'boat', state: 'built', parent: [{ x: 7, y: 5 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 60, delivered: { plank: 6, rope: 4, cloth: 2 } },
+            { id: 's-5', blueprintId: 'fort', state: 'staged', parent: [{ x: 1, y: 0 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 0, delivered: { stone: 2, wood: 1 } },
+        ]);
+        // The staged materials cap exactly at the requirements — the shared
+        // registry refuses over-staging, so the delivered ledgers never hold
+        // a surplus unit
+        handle.construction.sites.sites().forEach((site) => {
+            const definition = handle.construction.blueprints.definitionOf(site.blueprintId);
+            definition?.requires.forEach((line) => {
+                expect(site.delivered[line.item] ?? 0).toBeLessThanOrEqual(line.count);
+            });
+        });
+        // The built footprints wall their fine cells (the gate excepted) —
+        // the completed shelter's wall blocks, its gate stays usable
+        const shelterCells = handle.construction.sites.cellsOf('s-1') ?? [];
+        expect(handle.world.structures?.blocksFineSpot(0, 0, shelterCells[1].x, shelterCells[1].y)).toBe(true);
+        expect(handle.world.structures?.blocksFineSpot(0, 0, shelterCells[0].x, shelterCells[0].y)).toBe(false);
+        // The vessels are not launched by the simulation — the launch is the
+        // god's control; both hulls stand built and launchable
+        expect(handle.construction.vessels()).toEqual([]);
+        const raftVessel = handle.construction.launch('s-2');
+        expect(raftVessel).toEqual({
+            id: 'v-1',
+            siteId: 's-2',
+            blueprintId: 'raft',
+            label: 'Raft',
+            x: -7,
+            y: 5,
+            launchedAt: 3000,
+        });
+        const boatVessel = handle.construction.launch('s-4');
+        expect(boatVessel).toEqual({
+            id: 'v-2',
+            siteId: 's-4',
+            blueprintId: 'boat',
+            label: 'Boat',
+            x: 7,
+            y: 5,
+            launchedAt: 3000,
+        });
+        // The launch log lines (world-scale happenings)
+        expect(handle.world.events.log().filter((event) => event.kind === 'launch').map((event) => event.message)).toEqual([
+            'The raft is launched into the water at (-7, 5).',
+            'The boat is launched into the water at (7, 5).',
+        ]);
     });
 });

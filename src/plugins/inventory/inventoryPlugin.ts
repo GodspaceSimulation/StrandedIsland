@@ -68,14 +68,22 @@ const REGROW_CAPS: Record<string, number> = {
     // seaweed washes back in every other tide
     mushroom: 2,
     seaweed: 1,
-    // shell / stone / iron / flint / vine are finite — no regrowth
+    // The construction materials replenish (the build projects consume
+    // dozens of vines and fronds over a campaign — finite stocks would
+    // starve the later blueprints): a vine re-hangs on its own rhythm,
+    // a frond sheds beneath the standing trees (see the frond shed below)
+    vine: 1,
+    frond: 1,
+    // shell / stone / iron / flint are finite — no regrowth
     // sand / dirt are unlimited — never depleted, never regrown
 };
 
 /**
  * Regrowth rhythm per item, in WORLD MINUTES: fires when
  * `minute % every === offset`. (The values pin the rhythm to WORLD MINUTES,
- * so the view scale never moves it.)
+ * so the view scale never moves it.) The vine rhythm fires late and
+ * staggered so the early-game stock pins and the pre-construction runs are
+ * untouched (a vine cell sits at its cap of 1 until harvested).
  */
 const REGROW_RHYTHM: Record<string, { every: number; offset: number }> = {
     berry: { every: 30, offset: 20 },
@@ -84,7 +92,23 @@ const REGROW_RHYTHM: Record<string, { every: number; offset: number }> = {
     coconut: { every: 60, offset: 10 },
     mushroom: { every: 40, offset: 15 },
     seaweed: { every: 50, offset: 25 },
+    vine: { every: 80, offset: 30 },
+    // The frond shed runs on its own rhythm (FROND_RHYTHM below) — it is
+    // keyed off the TREE stock, not the frond key, so it is not listed here
 };
+
+/**
+ * The FROND SHED — palm fronds drop beneath the standing trees on this
+ * rhythm (every 60 world minutes at offset 45): the thatch/cloth chains'
+ * raw stock. Keyed off the cell's TREE stock (a treed cell sheds; a
+ * harvested-bare one regrows its shed as long as trees stand), NOT the
+ * frond key — the regrowth sweep iterates stock keys, and a frond taken to
+ * zero would otherwise delete itself out of the sweep forever. The offset
+ * pins the FIRST shed at minute 45, past every pre-construction stock pin
+ * (the behavior and lumber plugin runs end at minutes 35/40).
+ */
+const FROND_RHYTHM = { every: 60, offset: 45 };
+const FROND_SELLER = 'tree';
 
 /**
  * Chance per rain event that ONE land cell gathers a drinking pool. Rain no
@@ -107,8 +131,9 @@ const BIOME_STOCKS: Record<string, Inventory> = {
     // water is never a drinking pool)
 };
 
-/** Chance a surveyed FOREST cell hangs a vine — the woods' finite material
- * (no regrowth: a harvested vine stays harvested). */
+/** Chance a surveyed FOREST cell hangs a vine — the woods' material
+ * (regrowing on its own rhythm since the build projects consume it —
+ * see REGROW_CAPS; a harvested vine re-hangs after the regrowth rest). */
 const VINE_CHANCE_PER_FOREST_CELL = 0.35;
 
 /** Chance a surveyed SHALLOW cell keeps a washed-ashore seaweed — the
@@ -343,8 +368,8 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
                     stock[item] = (stock[item] ?? 0) + count;
                 });
             }
-            // The woods hang vines — a finite material (the trade goods a
-            // neighbour might hold; no regrowth)
+            // The woods hang vines — a regrowing material (the trade goods
+            // a neighbour might hold; the construction chains' rope stock)
             if (cell.biome === 'forest' && context.random() < VINE_CHANCE_PER_FOREST_CELL) {
                 stock.vine = (stock.vine ?? 0) + 1;
             }
@@ -609,6 +634,23 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
                     }
                 });
                 active.events.emit({ kind: 'weather', message: 'Rain sweeps the island.' });
+            }
+
+            // THE FROND SHED — every treed cell (tree stock standing) sheds
+            // one frond on the frond rhythm, up to the cap. Fronds are not
+            // tile deposits (nothing re-skins; the shed is undergrowth), so
+            // only the gatherable stock grows. Keyed off the TREE stock so a
+            // harvested-bare frond pile regrows as long as trees stand.
+            if (minute % FROND_RHYTHM.every === FROND_RHYTHM.offset) {
+                stocks.forEach((stock) => {
+                    const trees = stock[FROND_SELLER] ?? 0;
+                    if (trees > 0) {
+                        const current = stock.frond ?? 0;
+                        if (current < (REGROW_CAPS.frond ?? 0)) {
+                            stock.frond = current + 1;
+                        }
+                    }
+                });
             }
         },
     };
