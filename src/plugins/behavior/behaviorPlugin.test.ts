@@ -25,6 +25,7 @@ import { relationshipPlugin } from '../relationship/relationshipPlugin';
 import { tasksPlugin } from '../tasks/tasksPlugin';
 import { behaviorPlugin } from './behaviorPlugin';
 import { survivalPlugin } from '../survival/survivalPlugin';
+import { sleepPlugin } from '../sleep/sleepPlugin';
 import { entityPlugin } from '../entity/entityPlugin';
 import type { Actor } from '../../engine/types';
 
@@ -169,21 +170,273 @@ describe('behaviorPlugin — every living thing plans through the ladder', () =>
         expect(world.events.log().filter((event) => event.kind === 'gather' || event.kind === 'consume')).toEqual([]);
     });
 
-    it('flyers and water creatures keep their own scripts: never planned', () => {
+    it('flyers keep their own scripts; the water realm declines an idle ladder', () => {
         const { world, tasks } = buildStack();
         // Kiki glides at z 2 — airborne, the birds plugin owns every minute
         place(world, 'bird-1', 'Kiki', 'bird', 6, 2, 2, 'flying-2');
         // Finn swims the shallows — an impassable cell, the sharks plugin's
-        // realm (a task ladder that walks tiles is not their vocabulary)
+        // realm. The water realm IS planned now (the non-travel rungs serve
+        // it), but with needs frozen every rung declines: no wander filler
+        // on water, no hunger, no rest — the gull's altitude band stays the
+        // facet state and the shark stays where its swim script put it
         place(world, 'shark-1', 'Finn', 'shark', -12, -8, 0, 'swimming');
         for (let index = 0; index < 3; index++) {
             world.step();
         }
-        // No ledger tasks for either — the gull's altitude band stays the
-        // facet state and the shark stays where its swim script put it
+        // No ledger tasks for either
         expect(tasks.taskOf('bird-1')).toBeUndefined();
         expect(tasks.taskOf('shark-1')).toBeUndefined();
         expect(world.coordinates.entryOf('bird-1')?.state).toBe('flying-2');
+    });
+
+    it('a hungry shark hunts the fish underfoot: the water realm\u2019s non-travel rungs serve it', () => {
+        const { world, inventory, needs, tasks } = buildStack();
+        // Finn swims the shallows (−12,−8) — an impassable cell, the
+        // sharks plugin's realm
+        place(world, 'shark-1', 'Finn', 'shark', -12, -8, 0, 'swimming');
+        world.step();
+        // The idle minute belongs to the swim script: the wander filler
+        // declines on the water realm, no rung fires
+        expect(tasks.taskOf('shark-1')).toBeUndefined();
+        needs.satisfy('shark-1', { hunger: 55 }); // 65 ≥ 60 — the hunger rung fires
+        world.step();
+        // Fish underfoot (every water cell stocks them) — the GATHER is
+        // the task, no ground travel involved
+        expect(tasks.taskOf('shark-1')).toEqual({
+            id: 't-1',
+            actorId: 'shark-1',
+            behaviour: 'hunger',
+            kind: 'gather',
+            label: 'gathers',
+            minutes: 10,
+            total: 10,
+            remaining: 10,
+        });
+        for (let index = 0; index < 10; index++) {
+            world.step();
+        }
+        // The fish is in the gullet-bag; the eat is queued
+        expect(inventory.of('shark-1')).toEqual({ fish: 1 });
+        expect(tasks.taskOf('shark-1')).toEqual({
+            id: 't-2',
+            actorId: 'shark-1',
+            behaviour: 'hunger',
+            kind: 'eat',
+            label: 'eats',
+            minutes: 2,
+            payload: { itemId: 'fish' },
+            total: 2,
+            remaining: 2,
+        });
+        for (let index = 0; index < 2; index++) {
+            world.step();
+        }
+        // Eaten: −26 nutrition (75 − 26), the bag empty, the swim resumes
+        expect(needs.of('shark-1')).toEqual({ hunger: 49, thirst: 20, energy: 100, health: 100 });
+        expect(inventory.of('shark-1')).toEqual({});
+        expect(tasks.taskOf('shark-1')).toBeUndefined();
+    });
+
+    it('a thirsty bird afloat declines the water trek — no mill pin on the open sea', () => {
+        const { world, needs, tasks } = buildStack();
+        // Kiki floats on the shallows — a water-realm body
+        place(world, 'bird-1', 'Kiki', 'bird', -12, -8);
+        needs.satisfy('bird-1', { thirst: 60 }); // 70 ≥ 65 — thirsty, afloat
+        for (let index = 0; index < 5; index++) {
+            world.step();
+        }
+        // No bag water, no pool on a sea column, and NO ground travel from
+        // the water realm (the wrap needs dry land): the thirst ladder
+        // declines entirely. Without the realm guard the travel fallback
+        // would mill fine steps inside the water tile every minute — a
+        // busy body forever, the birds plugin's takeoff gate never
+        // re-opening, the gull pinned afloat to die of thirst.
+        expect(tasks.taskOf('bird-1')).toBeUndefined();
+        expect(world.coordinates.positionOf('bird-1')).toEqual({ x: -12, y: -8, z: 0 });
+    });
+
+    it('a floating tired bird sleeps afloat: the roost declines on water, the slumber takes over', () => {
+        const profiles = entityPlugin();
+        const inventory = inventoryPlugin({ rainChancePerMinute: 0, profiles });
+        const needs = needsPlugin({ profiles });
+        const relationship = relationshipPlugin();
+        const tasks = tasksPlugin();
+        const behavior = behaviorPlugin({ inventory, needs, relationship, tasks, profiles });
+        const sleep = sleepPlugin({ needs, tasks });
+        const world = createWorld({
+            seed: 7,
+            tickSize: 1,
+            plugins: [islandTerrainPlugin(), inventory, needs, relationship, tasks, behavior, sleep],
+        });
+        // Kiki floats on the shallows at the tired line
+        world.coordinates.place({
+            id: 'bird-1',
+            position: position3(-12, -8),
+            kind: 'creature',
+            type: 'bird',
+            name: 'Kiki',
+            marker: 'K',
+            state: 'perched',
+        });
+        needs.satisfy('bird-1', { energy: -80 }); // energy 20 ≤ 22
+        world.step();
+        // The roost declines (no ground travel from the water realm) and
+        // the sleep rung takes the minute — the gull dozes on the swell
+        expect(tasks.taskOf('bird-1')).toEqual({
+            id: 't-1',
+            actorId: 'bird-1',
+            behaviour: 'sleep',
+            kind: 'sleep',
+            label: 'sleeps',
+            minutes: 45,
+            total: 45,
+            remaining: 45,
+        });
+        world.step();
+        world.step();
+        // The sleep plugin restores while afloat: +1.2/min against the
+        // bird profile's −0.05 decay
+        expect(needs.of('bird-1').energy).toBe(23.449999999999996);
+        expect(tasks.taskOf('bird-1')).toMatchObject({ kind: 'sleep', remaining: 43 });
+    });
+
+    it('a tired bird within reach of the woods seeks a roost — the safe sleep in the trees', () => {
+        const profiles = entityPlugin();
+        const inventory = inventoryPlugin({ rainChancePerMinute: 0, profiles });
+        const needs = needsPlugin({ profiles });
+        const relationship = relationshipPlugin();
+        const tasks = tasksPlugin();
+        const behavior = behaviorPlugin({ inventory, needs, relationship, tasks, profiles });
+        const sleep = sleepPlugin({ needs, tasks });
+        const world = createWorld({
+            seed: 7,
+            tickSize: 1,
+            plugins: [islandTerrainPlugin(), inventory, needs, relationship, tasks, behavior, sleep],
+        });
+        // Kiki perches on Ael's bare beach (−11,0); the grove (−7,0) is
+        // four tiles east — within the roost range
+        world.coordinates.place({
+            id: 'bird-1',
+            position: position3(-11, 0),
+            kind: 'creature',
+            type: 'bird',
+            name: 'Kiki',
+            marker: 'K',
+            state: 'perched',
+        });
+        needs.satisfy('bird-1', { energy: -80 }); // energy 20 ≤ 22
+        world.step();
+        // The roost outranks the sleep rung: the tired bird walks to the
+        // trees FIRST — one strict fine step east per minute
+        expect(tasks.taskOf('bird-1')).toEqual({
+            id: 't-1',
+            actorId: 'bird-1',
+            behaviour: 'roost',
+            kind: 'move',
+            label: 'seeks a roost',
+            minutes: 1,
+            payload: { dx: 1, dy: 0 },
+            total: 1,
+            remaining: 1,
+        });
+        // The Scale-0 trek: fine steps at the one-cell-per-minute pace
+        // until the bird crosses onto the grove, where the roost gate
+        // declines and the sleep rung takes over (the sleep task kind
+        // carries the sleep plugin's per-minute restore). The pre-step
+        // above was minute 1 — the loop counts world minutes from 2.
+        let sleptAt = -1;
+        for (let minute = 2; minute <= 130 && sleptAt < 0; minute++) {
+            world.step();
+            if (tasks.taskOf('bird-1')?.kind === 'sleep') {
+                sleptAt = minute;
+            }
+        }
+        expect(sleptAt).toBe(94);
+        expect(world.coordinates.positionOf('bird-1')).toEqual({ x: -7, y: 0, z: 0 });
+        // The gull roosts AMONG the trees (tree ×2 grown to ×3 on the
+        // minute-40 regrowth rhythm)
+        expect(world.cellAt(-7, 0)?.resources).toEqual({ tree: 3 });
+    });
+
+    it('a tired bird already among the trees sleeps there — the roost gate declines on a treed tile', () => {
+        const profiles = entityPlugin();
+        const inventory = inventoryPlugin({ rainChancePerMinute: 0, profiles });
+        const needs = needsPlugin({ profiles });
+        const relationship = relationshipPlugin();
+        const tasks = tasksPlugin();
+        const behavior = behaviorPlugin({ inventory, needs, relationship, tasks, profiles });
+        const sleep = sleepPlugin({ needs, tasks });
+        const world = createWorld({
+            seed: 7,
+            tickSize: 1,
+            plugins: [islandTerrainPlugin(), inventory, needs, relationship, tasks, behavior, sleep],
+        });
+        // Kiki perches on the forest (6,2) — trees underfoot already
+        world.coordinates.place({
+            id: 'bird-1',
+            position: position3(6, 2),
+            kind: 'creature',
+            type: 'bird',
+            name: 'Kiki',
+            marker: 'K',
+            state: 'perched',
+        });
+        needs.satisfy('bird-1', { energy: -80 }); // energy 20 ≤ 22
+        world.step();
+        // The roost is HERE — the sleep rung takes the minute directly
+        expect(tasks.taskOf('bird-1')).toEqual({
+            id: 't-1',
+            actorId: 'bird-1',
+            behaviour: 'sleep',
+            kind: 'sleep',
+            label: 'sleeps',
+            minutes: 45,
+            total: 45,
+            remaining: 45,
+        });
+        world.step();
+        world.step();
+        // The per-minute restore applies in the trees like anywhere
+        expect(needs.of('bird-1').energy).toBe(23.449999999999996);
+        expect(tasks.taskOf('bird-1')).toMatchObject({ kind: 'sleep', remaining: 43 });
+    });
+
+    it('a tired bird with no trees in reach sleeps where it stands', () => {
+        const profiles = entityPlugin();
+        const inventory = inventoryPlugin({ rainChancePerMinute: 0, profiles });
+        const needs = needsPlugin({ profiles });
+        const relationship = relationshipPlugin();
+        const tasks = tasksPlugin();
+        const behavior = behaviorPlugin({ inventory, needs, relationship, tasks, profiles });
+        const sleep = sleepPlugin({ needs, tasks });
+        const world = createWorld({
+            seed: 7,
+            tickSize: 1,
+            plugins: [islandTerrainPlugin(), inventory, needs, relationship, tasks, behavior, sleep],
+        });
+        world.coordinates.place({
+            id: 'bird-1',
+            position: position3(-11, 0),
+            kind: 'creature',
+            type: 'bird',
+            name: 'Kiki',
+            marker: 'K',
+            state: 'perched',
+        });
+        // Cull every grove within the ROOST_RANGE (6 tiles) of the bird:
+        // the woods are out of reach for an exhausted gull
+        world.canvas.cells.forEach((cell) => {
+            if (Math.max(Math.abs(cell.x + 11), Math.abs(cell.y)) <= 6) {
+                delete inventory.cellStock(cell.x, cell.y).tree;
+            }
+        });
+        needs.satisfy('bird-1', { energy: -80 }); // energy 20 ≤ 22
+        world.step();
+        // The roost declines (no grove within the range) — the sleep rung
+        // takes the minute on the beach rather than a boundless coastal
+        // trek at critical energy
+        expect(tasks.taskOf('bird-1')).toMatchObject({ behaviour: 'sleep', kind: 'sleep', minutes: 45 });
+        expect(world.coordinates.positionOf('bird-1')).toEqual({ x: -11, y: 0, z: 0 });
     });
 
     it('a boar\u2019s maul stays possible while the ledger drives it: the bite rides the needs sweep', () => {
@@ -641,7 +894,7 @@ describe('behaviorPlugin', () => {
         // Drop the wander module: its queued tasks cancel, actors go idle
         expect(tasks.dropBehaviour('wander')).toBe(true);
         expect(tasks.tasks()).toEqual([]);
-        expect(tasks.ledger.behaviours().map((module) => module.id)).toEqual(['thirst', 'hunger', 'rest', 'social']);
+        expect(tasks.ledger.behaviours().map((module) => module.id)).toEqual(['thirst', 'hunger', 'roost', 'rest', 'social']);
         for (let index = 0; index < 5; index++) {
             world.step();
         }
@@ -732,9 +985,9 @@ describe('behaviorPlugin — the entity profiles: movement energy per kind', () 
         // plugin registers no mining conduct: the ability gates the
         // inventory's ore takes, the ledger module arrives with the mining
         // feature. The registered slices are the stock survival ladder plus
-        // the survival flee.
+        // the survival flee and the roost rung.
         expect(tasks.ledger.behaviours().map((module) => module.id)).toEqual([
-            'survival', 'thirst', 'hunger', 'rest', 'social', 'wander',
+            'survival', 'thirst', 'hunger', 'roost', 'rest', 'social', 'wander',
         ]);
     });
 });

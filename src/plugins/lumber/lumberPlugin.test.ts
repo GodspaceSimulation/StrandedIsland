@@ -51,10 +51,12 @@ describe('lumberPlugin', () => {
     it('registers the priority-10 behaviour between social and wander', () => {
         const { tasks } = buildStack();
         // Planning order: the survival needs outrank the wood rack; the
-        // wood rack outranks the idle wander
+        // wood rack outranks the idle wander (the roost rung sits between
+        // hunger and sleep — the tired bird's safe-sleep routing)
         expect(tasks.ledger.behaviours().map((module) => ({ id: module.id, priority: module.priority }))).toEqual([
             { id: 'thirst', priority: 50 },
             { id: 'hunger', priority: 40 },
+            { id: 'roost', priority: 33 },
             { id: 'rest', priority: 25 },
             { id: 'social', priority: 20 },
             { id: 'lumber', priority: 10 },
@@ -174,7 +176,7 @@ describe('lumberPlugin', () => {
         world.plugins.remove('lumber');
         // The update-on-remove rule: the behaviour is gone AND its queued
         // tasks are cancelled — the actor is idle before any step ran
-        expect(tasks.ledger.behaviours().map((module) => module.id)).toEqual(['thirst', 'hunger', 'rest', 'social', 'wander']);
+        expect(tasks.ledger.behaviours().map((module) => module.id)).toEqual(['thirst', 'hunger', 'roost', 'rest', 'social', 'wander']);
         // The idle filler takes over — the actor fine-wanders again
         for (let index = 0; index < 3; index++) {
             world.step();

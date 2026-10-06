@@ -2,14 +2,21 @@
 // the edge of the world and can vanish past it again.
 //
 // Sharks are coordinate-space residents (kind 'creature' / type 'shark',
-// state 'swimming') but never world.actors — no needs, no behavior loop, the
-// same registry pattern as the birds plugin (plugins/birds/birdsPlugin.ts).
-// They are bound to the WATER: they spawn on rim water cells (the sea is the
-// world's edge for them), swim from water cell to water cell — never beaching
-// themselves, an impassable (dry) neighbor cell is not a step — and each
-// minute one roll may send a shark sweeping back past the edge. Things come
-// in too, like the birds: one arrival roll per tick spawns a fresh shark on
-// a rim water cell while the population stays under the cap.
+// state 'swimming') but never world.actors — the same registry pattern as
+// the birds plugin (plugins/birds/birdsPlugin.ts). They are bound to the
+// WATER: they spawn on rim water cells (the sea is the world's edge for
+// them), swim from water cell to water cell — never beaching themselves, an
+// impassable (dry) neighbor cell is not a step — and each minute one roll
+// may send a shark sweeping back past the edge. Things come in too, like
+// the birds: one arrival roll per tick spawns a fresh shark on a rim water
+// cell while the population stays under the cap.
+//
+// THE LEDGER'S SLICE OF THE SHARK'S MINUTE: the behavior plugin plans the
+// water realm's non-travel rungs (a hungry shark gathers the fish
+// underfoot — every water cell stocks them — and eats from its gullet-bag;
+// a spent one rests), and the busy gate below yields the swim to those
+// tasks. The SWIM ITSELF stays this plugin's: no ledger task ever moves a
+// shark (the travel rungs decline on impassable underfoot).
 //
 // Everything is deterministic from the plugin's own keyed random stream.
 
@@ -46,6 +53,18 @@ export type SharksPluginOptions = {
     };
     /** The entity profiles — required WITH needs for the stat-driven swim. */
     profiles?: EntityProfiles;
+    /**
+     * The task ledger's busy gate — a shark that carries queued ledger
+     * tasks (the behavior plugin plans grounded creatures through the
+     * ledger, water realm included: a hungry shark gathers the fish
+     * underfoot, a spent one rests) skips its random swim that minute, so
+     * the ledger's tasks and the plugin's own rolls never double-drive the
+     * same body. Absent: no ledger, the rolls drive the shoal alone.
+     */
+    tasks?: {
+        /** Whether the entity has at least one queued task. */
+        busy(entityId: string): boolean;
+    };
 };
 
 /** One shark's record — position is read live from the coordinate space. */
@@ -96,6 +115,9 @@ export const sharksPlugin = (options: SharksPluginOptions = {}): SharksPlugin =>
     const arriveChance = options.arriveChancePerMinute ?? 0.008;
     const leaveChance = options.leaveChancePerMinute ?? 0.01;
     const maxSharks = options.maxSharks ?? 2;
+
+    // The task ledger's busy gate — see the option docs
+    const tasks = options.tasks ?? null;
 
     // The stat-driven swim economics — active only when BOTH the needs
     // plugin and the entity profiles are mounted (see birdsPlugin for the
@@ -256,6 +278,17 @@ export const sharksPlugin = (options: SharksPluginOptions = {}): SharksPlugin =>
                         actorId: id,
                         message: `${shark.name} sweeps past the edge of the world and vanishes.`,
                     });
+                    return;
+                }
+                // THE TASK RESPECT — a shark with queued ledger tasks skips
+                // its random swim this minute: the ledger is already driving
+                // it (the behavior plugin plans the water realm's non-travel
+                // rungs — the fish hunt underfoot, the spent rest), and two
+                // drivers would double-step the same body. The leave roll
+                // ran before this gate: a hunting shark may still sweep back
+                // out to sea (its tasks go with it — the tasks plugin
+                // cancels them on the despawn event)
+                if (tasks?.busy(id)) {
                     return;
                 }
                 // Swim: a random in-bounds WATER neighbor — sharks never

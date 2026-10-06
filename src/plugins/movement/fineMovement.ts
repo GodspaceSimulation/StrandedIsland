@@ -144,6 +144,52 @@ export const fineStep = (
 };
 
 /**
+ * One STRICT fine step from the actor toward the target TILE (tx, ty): the
+ * preferred directions only, validated against the CURRENT occupancy — NO
+ * mill fallback. `null` when none of the direct steps is possible right now.
+ *
+ * Where `greedyFineStep` serves the ground walkers' treks (a blocked walker
+ * mills toward the tile edge until the block clears), the strict variant
+ * serves rungs whose target may be UNREACHABLE for the mover's realm: a
+ * water-locked body would mill inside its tile forever (a busy body every
+ * minute — the busy gate of its own movement plugin would never re-open).
+ * Declining instead leaves the body idle: its realm script (the birds
+ * plugin's hops, the sharks plugin's swim) moves it, and the next minute
+ * re-plans. Used by the roost behaviour (plugins/behavior — the bird's safe
+ * sleep trek toward the trees).
+ */
+export const strictFineStep = (
+    world: World,
+    mover: FineMover,
+    tx: number,
+    ty: number,
+): [number, number] | null => {
+    const dx = Math.sign(tx - mover.position.x);
+    const dy = Math.sign(ty - mover.position.y);
+
+    // Preferred step directions, most direct first (the greedy walker's
+    // ladder minus the any-direction fallback)
+    const preferred: Array<[number, number]> = [];
+    if (dx !== 0) {
+        preferred.push([dx, 0]);
+    }
+    if (dy !== 0) {
+        preferred.push([0, dy]);
+    }
+    if (dx !== 0 && dy !== 0) {
+        preferred.push([dx, dy]);
+    }
+
+    let step: [number, number] | null = null;
+    arrayEach(preferred, ({ value: candidate }) => {
+        if (!step && fineStep(world, mover, candidate[0], candidate[1])) {
+            step = candidate;
+        }
+    });
+    return step;
+};
+
+/**
  * One greedy fine step from the actor toward the target TILE (tx, ty):
  * preferred steps dx→0 then dy→0, diagonal fallback, then any valid fine
  * direction — chosen deterministically against the CURRENT occupancy.

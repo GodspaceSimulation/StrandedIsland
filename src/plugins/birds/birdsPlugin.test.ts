@@ -19,6 +19,10 @@ import { createWorld } from '../../engine/world';
 import { islandTerrainPlugin } from '../terrain/islandTerrain';
 import { needsPlugin } from '../needs/needsPlugin';
 import { entityPlugin } from '../entity/entityPlugin';
+import { inventoryPlugin } from '../inventory/inventoryPlugin';
+import { relationshipPlugin } from '../relationship/relationshipPlugin';
+import { tasksPlugin } from '../tasks/tasksPlugin';
+import { behaviorPlugin } from '../behavior/behaviorPlugin';
 import { birdsPlugin, ALTITUDE_CEILING, ALTITUDE_FADE_LIMIT, BIRD_ALTITUDE_STATES } from './birdsPlugin';
 
 const buildStack = (
@@ -434,5 +438,366 @@ describe('birdsPlugin — the entity profiles: the stat-driven flight', () => {
         expect(birds.birdOf('bird-1')?.state).toBe('flying');
         // The climb charged the fly row: (20.05 + 30) − decay − 2.5
         expect(needs.of('bird-1').energy).toBe(47.5);
+    });
+});
+
+describe('birdsPlugin — the off-space residence: the aloft stats live on', () => {
+    /** The stat stack the off-space tests share — needs + profiles + birds,
+     * the same construction the stat-driven flight tests (and the scenario)
+     * mount. The provider registration runs inside the birds plugin's
+     * setup. */
+    const buildStatStack = (options: Parameters<typeof birdsPlugin>[0] = {}, seed = 7) => {
+        const profiles = entityPlugin();
+        const needs = needsPlugin({ profiles });
+        const birds = birdsPlugin({ needs, profiles, ...options });
+        const world = createWorld({ seed, tickSize: 1, plugins: [islandTerrainPlugin(), needs, birds] });
+        return { world, birds, needs };
+    };
+
+    // The aloft fade (z ≥ ALTITUDE_FADE_LIMIT) removes the bird from the
+    // coordinate space while the flock record keeps it ALIVE — so the needs
+    // sweep needs the flock's own registry (the off-space residence
+    // provider the plugin registers in setup) to keep the bird decaying by
+    // its species profile while it flies unseen, to retain its stat record
+    // across the fade (a descent continues the same life — no fresh
+    // full-stat body), and to bury a health-zero death through the
+    // provider's remove (the flock record goes with the body — no
+    // resurrection on a later descent).
+
+    it('an aloft bird keeps decaying by its species profile — the stats survive the fade', () => {
+        // Seed 11 forced-altitude reference (the SAME walk the descent test
+        // pinned — the stats never consume plugin rolls): out at 24, back
+        // at 25, out 26, back 27, out 28, aloft drift 29-30, back at 31
+        // (z 7). Hunger/thirst/energy decay by the bird profile EVERY
+        // minute — visible or aloft — and the pre-fix reset (the prune
+        // wiping the record, the re-entry waking it at the starting values
+        // hunger 10 / energy 100) is gone.
+        const { world, birds, needs } = buildStatStack(
+            {
+                landChancePerMinute: 0,
+                altitudeChancePerMinute: 1,
+                arriveChancePerMinute: 0,
+            },
+            11,
+        );
+        birds.release();
+        // The bird profile's rates: hunger +0.02, thirst +0.03, energy
+        // −0.05 per world-minute. The altitude roll owns every minute
+        // (chance 1) — no glides fire, so energy runs on the flight
+        // metabolism alone (the per-tile fly-row charges stay on actual
+        // glides; aloft drift crosses no tiles).
+        for (let index = 0; index < 24; index++) {
+            world.step();
+        }
+        // Minute 24: the fade hit — the bird is aloft (out of the space),
+        // and the sweep decayed it this minute while it was still visible
+        expect(birds.birdOf('bird-1')?.state).toBe('aloft');
+        expect(world.coordinates.entryOf('bird-1')).toBeUndefined();
+        expect(needs.of('bird-1')).toEqual({
+            hunger: 10.47999999999999,
+            thirst: 10.719999999999985,
+            energy: 98.80000000000007,
+            health: 100,
+        });
+        world.step();
+        // Minute 25: the bird descended (z 7) — and the sweep decayed it
+        // THROUGH the aloft minute: one more profile step advanced
+        // off-space (the pre-fix prune would have wiped the record here
+        // and re-created it at the starting values on the next touch)
+        expect(birds.birdOf('bird-1')).toMatchObject({ state: 'flying', position: { x: 0, y: 0, z: 7 } });
+        expect(needs.of('bird-1')).toEqual({
+            hunger: 10.49999999999999,
+            thirst: 10.749999999999984,
+            energy: 98.75000000000007,
+            health: 100,
+        });
+        // The whole episode: three fade cycles later the bird is still the
+        // same continuously-decaying life — 31 minutes of profile decay,
+        // no reset anywhere
+        for (let index = 26; index <= 31; index++) {
+            world.step();
+        }
+        expect(birds.birdOf('bird-1')).toMatchObject({ state: 'flying', position: { x: 0, y: 0, z: 7 } });
+        expect(needs.of('bird-1')).toEqual({
+            hunger: 10.619999999999987,
+            thirst: 10.92999999999998,
+            energy: 98.45000000000009,
+            health: 100,
+        });
+    });
+
+    it('a health-zero death while aloft buries the flock record — no resurrection', () => {
+        // Seed 7 forced-altitude reference (the fade tests' walk): the
+        // climb reaches z 8 at minute 36 (aloft), would drift to z 9 at 37
+        // and hit the ceiling despawn at 38. With the reservoir drained
+        // while aloft, the death lands FIRST — the flock record goes with
+        // the body, so no drift, no ceiling despawn, and no descent can
+        // resurrect the bird.
+        const { world, birds, needs } = buildStatStack({
+            landChancePerMinute: 0,
+            altitudeChancePerMinute: 1,
+            arriveChancePerMinute: 0,
+        });
+        birds.release();
+        for (let index = 0; index < 36; index++) {
+            world.step();
+        }
+        // Minute 36: aloft — alive, out of the space, stats decaying on
+        expect(birds.birdOf('bird-1')?.state).toBe('aloft');
+        expect(world.coordinates.entryOf('bird-1')).toBeUndefined();
+        expect(needs.of('bird-1').health).toBe(100);
+        // The reservoir runs dry while the bird is out of the space
+        needs.satisfy('bird-1', { health: -100 });
+        world.step(); // minute 37: the sweep decays the aloft body, finds 0, kills
+        // THE DEATH — off-space and final: the line reads the provider's
+        // name, and the pre-fix ceiling despawn never fires (there is no
+        // body left to climb into the higher scale)
+        expect(world.events.log().at(-1)).toEqual({
+            id: 2,
+            tick: 37,
+            time: 37,
+            kind: 'death',
+            message: 'Kiki has died.',
+            actorId: 'bird-1',
+        });
+        expect(birds.birds()).toEqual([]);
+        expect(birds.birdOf('bird-1')).toBeUndefined();
+        expect(world.coordinates.all()).toEqual([]);
+        // NO RESURRECTION: forty more minutes of forced drift — a
+        // surviving aloft record would descend below the fade limit and
+        // re-place the body; the dead bird never comes back
+        for (let index = 38; index <= 77; index++) {
+            world.step();
+        }
+        expect(birds.birds()).toEqual([]);
+        expect(world.coordinates.all()).toEqual([]);
+        // The bird's whole chronicle: the spawn and the death — nothing else
+        expect(world.events.log().filter((event) => event.actorId === 'bird-1').map((event) => event.kind)).toEqual([
+            'spawn',
+            'death',
+        ]);
+    });
+
+    it('a perched bird\u2019s health-zero death cancels its ledger tasks and buries the flock record', () => {
+        // The FULL island mount slice (scenario/island.ts order): profiles,
+        // inventory, needs, relationship, tasks, behavior, birds — the bird
+        // plans through the ledger (a grounded creature) and its death must
+        // take the queued tasks AND the flock record with it (the pre-fix
+        // ghost: a perched body whose coordinate entry dies while its flock
+        // record lingers on, unplannable and unkillable).
+        const profiles = entityPlugin();
+        const inventory = inventoryPlugin({ rainChancePerMinute: 0, profiles });
+        const needs = needsPlugin({ profiles });
+        const relationship = relationshipPlugin();
+        const tasks = tasksPlugin();
+        const behavior = behaviorPlugin({ inventory, needs, relationship, tasks, profiles });
+        const birds = birdsPlugin({
+            needs,
+            profiles,
+            tasks,
+            landChancePerMinute: 1,
+            takeoffChancePerMinute: 0,
+            arriveChancePerMinute: 0,
+        });
+        const world = createWorld({
+            seed: 7,
+            tickSize: 1,
+            plugins: [islandTerrainPlugin(), inventory, needs, relationship, tasks, behavior, birds],
+        });
+        birds.release();
+        world.step(); // minute 1: lands onto the ground plane at (0, 0)
+        expect(birds.birdOf('bird-1')?.state).toBe('perched');
+        // A hungry gull plans through the ledger: no food in the beak, none
+        // underfoot (the highland stocks stone + flint) — the travel rung
+        // walks it toward the nearest food, a queued 1-minute move task
+        needs.satisfy('bird-1', { hunger: 55 }); // 65 ≥ 60
+        world.step(); // minute 2: the hunger rung queues the trek
+        expect(tasks.taskOf('bird-1')).toEqual({
+            id: 't-1',
+            actorId: 'bird-1',
+            behaviour: 'hunger',
+            kind: 'move',
+            label: 'travels to food',
+            minutes: 1,
+            payload: { dx: 1, dy: 0 },
+            total: 1,
+            remaining: 1,
+        });
+        // The reservoir runs dry: the sweep kills the body on the next
+        // minute
+        needs.satisfy('bird-1', { health: -100 });
+        world.step(); // minute 3: death
+        expect(world.events.log().at(-1)).toEqual({
+            id: 2,
+            tick: 3,
+            time: 3,
+            kind: 'death',
+            message: 'Kiki has died.',
+            actorId: 'bird-1',
+        });
+        // The queued trek cancelled with the body (the tasks plugin's
+        // despawn/death subscription) — no stale task outlives the gull
+        expect(tasks.taskOf('bird-1')).toBeUndefined();
+        expect(tasks.tasks()).toEqual([]);
+        // The flock record is buried with the bird — the ghost is gone
+        expect(birds.birds()).toEqual([]);
+        expect(world.coordinates.all()).toEqual([]);
+        // The dead gull is never re-planned and never comes back
+        for (let index = 4; index <= 8; index++) {
+            world.step();
+        }
+        expect(tasks.tasks()).toEqual([]);
+        expect(birds.birds()).toEqual([]);
+    });
+
+    it('disposing the birds plugin ends the aloft decay — the provider unsubscribes', () => {
+        const { world, birds, needs } = buildStatStack(
+            {
+                landChancePerMinute: 0,
+                altitudeChancePerMinute: 1,
+                arriveChancePerMinute: 0,
+            },
+            11,
+        );
+        birds.release();
+        for (let index = 0; index < 24; index++) {
+            world.step();
+        }
+        // Aloft with the retained, decaying record
+        expect(birds.birdOf('bird-1')?.state).toBe('aloft');
+        expect(needs.of('bird-1').hunger).toBe(10.47999999999999);
+        // The environment is gone: the provider unsubscribes (the dispose
+        // hook — the same listener-cleanup rule the tasks plugin's event
+        // subscription follows), the flock clears — the orphaned stat
+        // record prunes on the next sweep, exactly like any other vanished
+        // body
+        world.plugins.remove('birds');
+        world.step();
+        expect(birds.birds()).toEqual([]);
+        // Re-touching re-creates the legacy fallback — the bird's record
+        // did not survive its environment
+        expect(needs.of('bird-1')).toEqual({ hunger: 20, thirst: 20, energy: 100, health: 100 });
+    });
+});
+
+describe('birdsPlugin — bird identity: the departed and the newcomer', () => {
+    // The identity contract the product owner pinned: the SAME bird fading
+    // out and reappearing retains its stats (the off-space continuity tests
+    // above), while a GENUINELY NEW bird is a new identity — a fresh
+    // bird-profile stat record and a clean ledger, never the departed
+    // bird's drained values or queues. The mechanism: the birds plugin's
+    // identity counter is monotonic (birdsPlugin.ts nextIdentity — despawns
+    // and deaths never walk it back, ids are never re-issued within a
+    // plugin instance), so a newcomer's id cannot collide with the
+    // departed bird's needs record (keyed by id, needsPlugin states) or
+    // ledger queue (keyed by actorId, cancelled on the death event).
+
+    /** The full island mount slice — the same construction the perched
+     * death test runs (the bird plans through the ledger here). */
+    const buildIslandStack = () => {
+        const profiles = entityPlugin();
+        const inventory = inventoryPlugin({ rainChancePerMinute: 0, profiles });
+        const needs = needsPlugin({ profiles });
+        const relationship = relationshipPlugin();
+        const tasks = tasksPlugin();
+        const behavior = behaviorPlugin({ inventory, needs, relationship, tasks, profiles });
+        const birds = birdsPlugin({
+            needs,
+            profiles,
+            tasks,
+            landChancePerMinute: 1,
+            takeoffChancePerMinute: 0,
+            arriveChancePerMinute: 0,
+        });
+        const world = createWorld({
+            seed: 7,
+            tickSize: 1,
+            plugins: [islandTerrainPlugin(), inventory, needs, relationship, tasks, behavior, birds],
+        });
+        return { world, birds, needs, tasks };
+    };
+
+    it('a fresh arrival after a bird\u2019s death is a new identity — fresh profile stats, no inherited queue, no resurrection', () => {
+        const { world, birds, needs, tasks } = buildIslandStack();
+        // bird-1 lives, lands, drains and dies with a queued trek — the
+        // departed life the newcomer must NOT inherit anything from
+        birds.release();
+        world.step(); // minute 1: lands onto the ground plane at (0, 0)
+        // Drain the stats far off the fresh-start line (hunger 65 ≥ the
+        // hunger rung's 60; energy 40 well above the rest/roost line 22 —
+        // the trek, not a rest, is what queues)
+        needs.satisfy('bird-1', { hunger: 55, energy: -60 });
+        world.step(); // minute 2: the hunger rung queues the trek
+        expect(tasks.taskOf('bird-1')).toEqual({
+            id: 't-1',
+            actorId: 'bird-1',
+            behaviour: 'hunger',
+            kind: 'move',
+            label: 'travels to food',
+            minutes: 1,
+            payload: { dx: 1, dy: 0 },
+            total: 1,
+            remaining: 1,
+        });
+        // The drained record — the values a resurrection would inherit
+        expect(needs.of('bird-1')).toEqual({
+            hunger: 65.03999999999999,
+            thirst: 10.059999999999999,
+            energy: 39.900000000000006,
+            health: 100,
+        });
+        needs.satisfy('bird-1', { health: -100 });
+        world.step(); // minute 3: death
+        expect(world.events.log().at(-1)).toEqual({
+            id: 2,
+            tick: 3,
+            time: 3,
+            kind: 'death',
+            message: 'Kiki has died.',
+            actorId: 'bird-1',
+        });
+        // The departure is total: queue cancelled, flock record buried,
+        // stat record deleted with the body
+        expect(tasks.tasks()).toEqual([]);
+        expect(birds.birdOf('bird-1')).toBeUndefined();
+        expect(world.coordinates.entryOf('bird-1')).toBeUndefined();
+
+        // THE NEWCOMER — a genuinely new bird, not the old one returning
+        const newcomer = birds.release('Sula');
+        expect(newcomer).toEqual({
+            // The monotonic identity: bird-1 was never re-issued
+            id: 'bird-2',
+            name: 'Sula',
+            marker: 'S',
+            state: 'flying',
+            position: { x: 0, y: 0, z: 2 },
+        });
+        // FRESH STATS — the bird profile's starting values
+        // (entityPlugin STOCK_PROFILES.bird.start), not bird-1's drained
+        // record and not the legacy castaway fallback
+        expect(needs.of('bird-2')).toEqual({ hunger: 10, thirst: 10, energy: 100, health: 100 });
+        // NO INHERITED QUEUE — the ledger knows nothing of the newcomer
+        expect(tasks.taskOf('bird-2')).toBeUndefined();
+        expect(tasks.busy('bird-2')).toBe(false);
+        expect(tasks.tasks()).toEqual([]);
+
+        // THE OLD BIRD CANNOT RESURRECT: minutes of drift after the
+        // newcomer's release — bird-1 holds no flock record (the descent
+        // path re-places only ids the flock still holds) and no coordinate
+        // entry; nothing walks it back in
+        for (let index = 0; index < 5; index++) {
+            world.step();
+        }
+        expect(birds.birdOf('bird-1')).toBeUndefined();
+        expect(world.coordinates.entryOf('bird-1')).toBeUndefined();
+        expect(birds.birds().map((bird) => bird.id)).toEqual(['bird-2']);
+        // The two lives stay distinct in the chronicle: bird-1 spawned and
+        // died, bird-2 spawned after — no event ever re-uses the dead id
+        expect(
+            world.events
+                .log()
+                .filter((event) => event.kind === 'spawn' || event.kind === 'death')
+                .map((event) => `${event.actorId}:${event.kind}`),
+        ).toEqual(['bird-1:spawn', 'bird-1:death', 'bird-2:spawn']);
     });
 });

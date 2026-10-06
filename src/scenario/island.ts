@@ -410,7 +410,14 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         // creatures; two drivers would double-step the gull)
         tasks: toggles.tasks ? tasks : undefined,
     });
-    const sharks = sharksPlugin({ needs, profiles });
+    // The sharks take the same busy gate — the behavior plugin plans the
+    // water realm's non-travel rungs (the fish hunt underfoot, the spent
+    // rest), and a busy shark skips its random swim that minute
+    const sharks = sharksPlugin({
+        needs,
+        profiles,
+        tasks: toggles.tasks ? tasks : undefined,
+    });
     // The unicode sibling binds the SAME structural slice as the ascii canvas
     // (same surfaceOf/titleOf adapters) — an emoji-skinned twin of the god view.
     // The type palette extends with ITEM_TYPE_GLYPHS so ground-item entries

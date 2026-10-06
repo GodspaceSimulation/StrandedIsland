@@ -42,6 +42,18 @@
 // condition dot from its stat values (the exported conditionOf + the
 // roster's needsDisplay).
 //
+// ── OFF-SPACE RESIDENTS — the living bodies outside the coordinate space ────
+// An aloft seabird (plugins/birds) leaves the coordinate space at the fade
+// limit while its flock record keeps it ALIVE — the vanish is a render-level
+// fade, not a death. The sweep therefore decays provider-reported residents
+// exactly like every visible body: the species profile's rates (the flight
+// metabolism's energy drain rides the same rates — aloft drift crosses no
+// tiles, so the per-tile fly-row charges stay on the birds plugin's actual
+// glides), the stat record RETAINED across the fade (a descent continues the
+// same life — no fresh full-stat body), and a health-zero death buried
+// through the provider's remove (the flock record goes with the body — no
+// resurrection on a later descent).
+//
 // Threshold crossings are NOT logged — the log is a story teller (the
 // scenario system's encounters), and a need crossing is a solo state
 // change, not a story between entities. Death stays in the log: it is the
@@ -96,6 +108,39 @@ export type NeedsState = {
     health: number;
 };
 
+// ── Off-space residents ─────────────────────────────────────────────────────
+// The living bodies that live OUTSIDE the coordinate space — an aloft
+// seabird's fade-out (plugins/birds removes the coordinate entry at z ≥ the
+// fade limit while the flock record keeps the body alive). The needs sweep
+// reads them through this provider so their stats decay like every visible
+// body's, and buries them through it at health zero.
+
+/** One living off-space body — the identity the sweep decays by. */
+export type OffSpaceResident = {
+    /** The body's id (the stat record's key). */
+    id: string;
+    /** WHICH the body is — the species profile key ('bird', …). */
+    type: string;
+    /** The display name — the death line reads it ("Kiki has died."). */
+    name?: string;
+};
+
+/** A provider plugin's registry of its living off-space bodies. */
+export type OffSpaceResidents = {
+    /**
+     * The living off-space residents at this minute — the sweep builds its
+     * entity set from these (deduped against the registry and the space).
+     */
+    all(): OffSpaceResident[];
+    /**
+     * Removes a dead body's off-space residence — the flock record and any
+     * private state go with it, so nothing can resurrect the body later (a
+     * descent re-places only ids the provider still holds). Unknown ids are
+     * a silent no-op.
+     */
+    remove(entityId: string): void;
+};
+
 export type NeedsPlugin = WorldPlugin<World> & {
     /** An entity's needs — auto-created at starting values on first touch. */
     of(entityId: string): NeedsState;
@@ -114,6 +159,16 @@ export type NeedsPlugin = WorldPlugin<World> & {
      * is the legacy flat point (1 energy per crossing).
      */
     moved(entityId: string, moveKind?: MoveKind): void;
+    /**
+     * Registers a provider of living OFF-SPACE residents (see
+     * OffSpaceResidents) — an aloft seabird's fade-out lives outside the
+     * coordinate space, and the sweep decays those bodies like every living
+     * thing (their stat records retained across the fade) and buries them
+     * at health zero through the provider's remove. Returns the
+     * unsubscribe — the provider plugin's dispose hook tears the
+     * registration down with its environment.
+     */
+    residents(provider: OffSpaceResidents): () => void;
 };
 
 /** Starting values — a fresh arrival is a little hungry and thirsty, and unharmed. */
@@ -165,15 +220,37 @@ export const needsPlugin = (options: NeedsPluginOptions = {}): NeedsPlugin => {
     // Internal stat records — the health reservoir rides along
     const states = new Map<string, NeedsState>();
 
+    // The off-space resident providers — the living bodies outside the
+    // coordinate space (an aloft bird's fade-out, plugins/birds). Registered
+    // at the provider plugin's setup, torn down at its dispose.
+    const residents = new Set<OffSpaceResidents>();
+
     // The world arrives with setup — the per-type rate/start resolution
     // reads entity types through it (world.actors for castaways, the
     // coordinate space's facet for creatures)
     let world: World | null = null;
 
     /** WHICH an entity is — the profile key. Actors carry it in the
-     * registry, creatures in their coordinate facet. Unknown → undefined. */
-    const typeOf = (entityId: string): string | undefined =>
-        world?.actors.get(entityId)?.type ?? world?.coordinates.entryOf(entityId)?.type;
+     * registry, creatures in their coordinate facet, and the OFF-SPACE
+     * residents (an aloft bird) in their provider's registry. Unknown →
+     * undefined. */
+    const typeOf = (entityId: string): string | undefined => {
+        const registered = world?.actors.get(entityId)?.type;
+        if (registered !== undefined) {
+            return registered;
+        }
+        const entry = world?.coordinates.entryOf(entityId);
+        if (entry?.type !== undefined) {
+            return entry.type;
+        }
+        // Off-space residents: the provider plugins hold the living species
+        // identity (arrayEach returns the first non-undefined callback
+        // value — the first provider that knows the id wins)
+        return arrayEach(Array.from(residents), ({ value: provider }) => {
+            const found = provider.all().find((candidate) => candidate.id === entityId);
+            return found ? found.type : undefined;
+        });
+    };
 
     /** The decay rates of one entity — its species profile or the legacy flat rates. */
     const ratesOf = (entityId: string): EntityStats => {
@@ -233,14 +310,26 @@ export const needsPlugin = (options: NeedsPluginOptions = {}): NeedsPlugin => {
     /** Kills one entity: a registry actor despawns through the world (the
      * "is no more." line + registry + coordinate cleanup), a coordinate-only
      * creature leaves the space directly (world.despawn only reaches the
-     * registry). Either way the death lands in the log — it is the
-     * story's ending — and the stat record goes with the body. */
+     * registry) — and the OFF-SPACE residents (an aloft bird) lose their
+     * provider-held residence too: the flock record goes with the body, so
+     * a later descent cannot resurrect the dead (the birds plugin re-places
+     * only ids its flock still holds). Either way the death lands in the
+     * log — it is the story's ending — and the stat record goes with the
+     * body. */
     const kill = (active: World, entityId: string, name: string) => {
         const actor = active.actors.get(entityId);
         if (actor) {
             active.despawn(entityId);
         } else {
+            // The coordinate cleanup first (a visible creature's facet
+            // leaves the space; a no-op for an off-space resident — it
+            // holds no entry), then every provider drops its own living
+            // residence. Block body: all providers are consulted, none may
+            // short-circuit the walk.
             active.coordinates.remove(entityId);
+            arrayEach(Array.from(residents), ({ value: provider }) => {
+                provider.remove(entityId);
+            });
         }
         active.events.emit({
             kind: 'death',
@@ -291,8 +380,22 @@ export const needsPlugin = (options: NeedsPluginOptions = {}): NeedsPlugin => {
             state.energy = clamp01(state.energy - moveCostOf(entityId, moveKind));
         },
 
+        residents: (provider) => {
+            // The provider registry — one entry per resident plugin (the
+            // birds plugin registers in setup, unsubscribes in dispose)
+            residents.add(provider);
+            return () => {
+                residents.delete(provider);
+            };
+        },
+
         dispose: () => {
             states.clear();
+            // The provider registry goes with the environment — a swapped-out
+            // needs plugin must not keep decaying into its replacement (the
+            // provider plugins' own unsubscribes become no-ops, which is
+            // exactly what a dispose means)
+            residents.clear();
             world = null;
         },
 
@@ -303,9 +406,26 @@ export const needsPlugin = (options: NeedsPluginOptions = {}): NeedsPlugin => {
             // (profiles) or the flat legacy rates.
 
             // EVERY living entity: the castaway registry PLUS every creature
-            // in the coordinate space, deduped (castaways live in both).
+            // in the coordinate space, deduped (castaways live in both), PLUS
+            // the OFF-SPACE residents the provider plugins report — an aloft
+            // bird left the space at the fade limit while its flock record
+            // keeps it alive, so the sweep keeps decaying it here (by its
+            // species profile — the flight metabolism's drain rides the same
+            // rates; the per-tile fly-row charges stay on the birds plugin's
+            // actual glides, and aloft drift crosses no tiles).
             const entityIds = new Set<string>(active.actors.keys());
             active.coordinates.all().forEach((entry) => entityIds.add(entry.id));
+            const offSpace = new Map<string, OffSpaceResident>();
+            arrayEach(Array.from(residents), ({ value: provider }) => {
+                arrayEach(provider.all(), ({ value: resident }) => {
+                    // Dedup: a body the registry or the space already holds
+                    // is not off-space (a provider's view may lag a minute)
+                    if (!entityIds.has(resident.id) && !offSpace.has(resident.id)) {
+                        offSpace.set(resident.id, resident);
+                        entityIds.add(resident.id);
+                    }
+                });
+            });
             arrayEach(Array.from(entityIds), ({ value: entityId }) => {
                 const state = stateOf(entityId);
                 const rates = ratesOf(entityId);
@@ -342,7 +462,10 @@ export const needsPlugin = (options: NeedsPluginOptions = {}): NeedsPlugin => {
                 // its metabolism: the reservoir runs dry and the body goes.
                 if (state.health <= 0) {
                     const entry = active.coordinates.entryOf(entityId);
-                    kill(active, entityId, entry?.name ?? entityId);
+                    // The name: the coordinate facet's, the off-space
+                    // resident's, or the bare id
+                    const resident = offSpace.get(entityId);
+                    kill(active, entityId, entry?.name ?? resident?.name ?? entityId);
                     return;
                 }
 
@@ -361,11 +484,15 @@ export const needsPlugin = (options: NeedsPluginOptions = {}): NeedsPlugin => {
             // Prune states of entities no longer in the world — despawned
             // bodies delete their own state above; vanished creatures
             // (a glide past the world's edge, a sweep out with the tide)
-            // are cleaned up here
+            // are cleaned up here. The OFF-SPACE residents keep theirs: an
+            // aloft bird is alive and flying outside the space's reach —
+            // its record decays on, so a descent continues the same life
+            // instead of waking a fresh full-stat body.
             states.forEach((_, entityId) => {
                 if (
                     !active.actors.has(entityId) &&
-                    active.coordinates.entryOf(entityId) === undefined
+                    active.coordinates.entryOf(entityId) === undefined &&
+                    !offSpace.has(entityId)
                 ) {
                     states.delete(entityId);
                 }

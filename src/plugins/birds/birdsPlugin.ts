@@ -22,10 +22,17 @@
 // from @godspace/core) with kind 'creature' / type 'bird' — the canvas
 // plugins render them from there, altitude as a superscript glyph.
 //
-// Birds never enter world.actors (no needs, no behavior loop) — and since
-// the engine's ground occupancy checks scan actors only, a perched bird
-// never blocks a castaway's step. Everything is deterministic from the
-// plugin's own keyed random stream.
+// Birds never enter world.actors (the behavior loop plans only grounded
+// bodies — airborne minutes keep the plugin-owned flight) and the engine's
+// ground occupancy checks scan actors only, so a perched bird never blocks
+// a castaway's step. Their SURVIVAL STATS are still tracked by the needs
+// plugin (plugins/needs — every living thing decays): visible birds live in
+// the coordinate space the sweep reads, and an ALOFT bird (z ≥ the fade
+// limit — out of the space) is reported to the sweep through the off-space
+// residence provider registered in setup, so its stats keep decaying by the
+// species profile while it flies unseen and a health-zero death buries the
+// flock record (no resurrection on a later descent). Everything is
+// deterministic from the plugin's own keyed random stream.
 
 import { arrayEach } from '@presource/core';
 import {
@@ -38,7 +45,7 @@ import {
 } from '@godspace/core';
 import type { World } from '../../engine/world';
 import type { EntityProfiles } from '../entity/entityPlugin';
-import type { NeedsState } from '../needs/needsPlugin';
+import type { NeedsState, OffSpaceResidents } from '../needs/needsPlugin';
 
 export type BirdsPluginOptions = {
     /** Chance per world-minute a flying bird lands. Default 0.02. */
@@ -63,6 +70,16 @@ export type BirdsPluginOptions = {
         of(entityId: string): NeedsState;
         satisfy(entityId: string, deltas: Partial<NeedsState>): void;
         moved(entityId: string, moveKind?: string): void;
+        /**
+         * Registers this plugin's off-space residence provider with the
+         * needs sweep (needsPlugin's OffSpaceResidents) — the aloft birds
+         * (z ≥ the fade limit) live outside the coordinate space, so the
+         * sweep needs the flock's own registry to keep their stats decaying
+         * by the species profile and to bury a health-zero death (the flock
+         * record goes with the body — no resurrection on a later descent).
+         * Returns the unsubscribe (the dispose hook).
+         */
+        residents(provider: OffSpaceResidents): () => void;
     };
     /** The entity profiles — required WITH needs for the stat-driven flight. */
     profiles?: EntityProfiles;
@@ -198,6 +215,10 @@ export const birdsPlugin = (options: BirdsPluginOptions = {}): BirdsPlugin => {
     // The world reference arrives with setup (release/tick need canvas + events)
     let world: PluginContext<World>['world'] | null = null;
 
+    // The off-space residence provider's unsubscribe — wired in setup (the
+    // aloft birds join the needs sweep), torn down in dispose
+    let unregisterResidents: (() => void) | null = null;
+
     /** Next bird identity — the monotonic counter never walks back on a
      * despawn (despawned ids are never reused; only a full dispose resets). */
     const nextIdentity = (name?: string): { id: string; name: string; marker: string } => {
@@ -246,6 +267,28 @@ export const birdsPlugin = (options: BirdsPluginOptions = {}): BirdsPlugin => {
 
         setup: (context: PluginContext<World>) => {
             world = context.world;
+            // THE OFF-SPACE RESIDENCE — the aloft birds (z ≥ the fade limit)
+            // live OUTSIDE the coordinate space while their flock records
+            // keep them alive, so the needs sweep needs this provider to
+            // keep decaying them (the species profile's rates — the flight
+            // metabolism) and to bury a health-zero death (the flock record
+            // goes with the body — no resurrection on a later descent).
+            // Without the needs plugin there is no sweep to report to.
+            if (needs) {
+                unregisterResidents = needs.residents({
+                    all: () =>
+                        // The flock's aloft slice — id + species + name (the
+                        // death line reads the name)
+                        Array.from(flock.entries())
+                            .filter(([, bird]) => bird.state === 'aloft')
+                            .map(([id, bird]) => ({ id, type: 'bird', name: bird.name })),
+                    remove: (entityId) => {
+                        // The burial: the flock record (and with it any
+                        // aloft drift) goes with the dead body
+                        flock.delete(entityId);
+                    },
+                });
+            }
         },
 
         release: (name) => {
@@ -287,8 +330,14 @@ export const birdsPlugin = (options: BirdsPluginOptions = {}): BirdsPlugin => {
         birds: () => Array.from(flock.keys()).map((id) => recordOf(id) as BirdRecord),
 
         dispose: () => {
-            // The environment is gone entirely: bird records leave the
-            // coordinate space along with the plugin's own state
+            // The environment is gone entirely: the off-space residence
+            // provider unsubscribes first (the needs sweep must not keep
+            // decaying records the flock no longer holds — the same
+            // listener-cleanup rule the tasks plugin's event subscription
+            // follows), then the bird records leave the coordinate space
+            // along with the plugin's own state
+            unregisterResidents?.();
+            unregisterResidents = null;
             if (world) {
                 flock.forEach((_, id) => {
                     world?.coordinates.remove(id);

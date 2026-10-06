@@ -75,6 +75,7 @@ describe('survivalPlugin', () => {
             { id: 'survival', priority: 60 },
             { id: 'thirst', priority: 50 },
             { id: 'hunger', priority: 40 },
+            { id: 'roost', priority: 33 },
             { id: 'rest', priority: 25 },
             { id: 'social', priority: 20 },
             { id: 'wander', priority: 0 },
@@ -195,7 +196,7 @@ describe('survivalPlugin', () => {
         // flee tasks are cancelled. The wider ladder still runs — and it
         // plans the BOAR too (the behavior plugin plans every grounded
         // creature): the beast carries its own wander task
-        expect(tasks.ledger.behaviours().map((module) => module.id)).toEqual(['thirst', 'hunger', 'rest', 'social', 'wander']);
+        expect(tasks.ledger.behaviours().map((module) => module.id)).toEqual(['thirst', 'hunger', 'roost', 'rest', 'social', 'wander']);
         expect(tasks.tasks().map((task) => ({ actorId: task.actorId, behaviour: task.behaviour, kind: task.kind, label: task.label, minutes: task.minutes }))).toEqual([
             { actorId: 'boar-x', behaviour: 'wander', kind: 'move', label: 'wanders', minutes: 1 },
         ]);

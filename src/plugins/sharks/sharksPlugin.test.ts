@@ -12,6 +12,7 @@ import { createWorld } from '../../engine/world';
 import { islandTerrainPlugin } from '../terrain/islandTerrain';
 import { needsPlugin } from '../needs/needsPlugin';
 import { entityPlugin } from '../entity/entityPlugin';
+import { tasksPlugin } from '../tasks/tasksPlugin';
 import { sharksPlugin, SHARK_TYPE_GLYPH } from './sharksPlugin';
 
 const buildStack = (
@@ -183,5 +184,47 @@ describe('sharksPlugin — the entity profiles: the stat-driven swim', () => {
         world.step();
         expect(sharks.sharkOf('shark-1')?.position).not.toEqual(spentAt);
         expect(needs.of('shark-1').energy).toBe(19.25);
+    });
+});
+
+describe('sharksPlugin — the ledger busy gate', () => {
+    /** The stat stack with the tasks plugin wired — the behavior plugin
+     * plans the water realm's non-travel rungs, so a busy shark must not
+     * ALSO swim its own roll the same minute. */
+    const buildGateStack = () => {
+        const profiles = entityPlugin();
+        const needs = needsPlugin({ profiles });
+        const tasks = tasksPlugin();
+        const sharks = sharksPlugin({
+            needs,
+            profiles,
+            tasks,
+            arriveChancePerMinute: 0,
+            leaveChancePerMinute: 0,
+        });
+        const world = createWorld({ seed: 7, tickSize: 1, plugins: [islandTerrainPlugin(), needs, tasks, sharks] });
+        return { world, needs, tasks, sharks };
+    };
+
+    it('a shark carrying ledger tasks holds the swim until the ledger drains', () => {
+        const { world, tasks, sharks, needs } = buildGateStack();
+        sharks.release(); // the pinned rim pick: (12,−3)
+        expect(sharks.sharkOf('shark-1')?.position).toEqual({ x: 12, y: -3, z: 0 });
+        // A 30-minute hunt task queues on the shark — the busy gate yields
+        // the swim to the ledger while it runs
+        tasks.ledger.queue('shark-1', 'hunt', [{ kind: 'gather', label: 'hunts', minutes: 30 }]);
+        for (let index = 0; index < 5; index++) {
+            world.step();
+        }
+        // Held: five minutes of ledger time, not one tile of swimming
+        expect(sharks.sharkOf('shark-1')?.position).toEqual({ x: 12, y: -3, z: 0 });
+        expect(tasks.taskOf('shark-1')?.remaining).toBe(25);
+        // The ledger drains — the very next minute sweeps on (one swim
+        // step north, the walk row untouched, the swim row charged with
+        // the species decay alongside)
+        tasks.cancel('shark-1');
+        world.step();
+        expect(sharks.sharkOf('shark-1')?.position).toEqual({ x: 12, y: -2, z: 0 });
+        expect(needs.of('shark-1').energy).toBe(98.08999999999996);
     });
 });

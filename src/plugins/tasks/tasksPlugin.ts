@@ -30,10 +30,19 @@ export type TasksPlugin = WorldPlugin<World> & {
     behaviour(module: TaskBehaviour): void;
     /** Removes a behaviour and cancels its queued tasks — passthrough. */
     dropBehaviour(id: string): boolean;
+    /**
+     * Cancels every queued task of one actor — passthrough (the ledger's
+     * cancel, see taskLedger.ts). The world calls this when the body behind
+     * an id leaves it; the plugin also wires it automatically below.
+     */
+    cancel(actorId: string): ActiveTask[];
 };
 
 export const tasksPlugin = (): TasksPlugin => {
     const ledger = createTaskLedger();
+    // The despawn subscription (wired in setup) — the handle the dispose
+    // hook tears down again
+    let unsubscribe: (() => void) | null = null;
 
     return {
         id: 'tasks',
@@ -48,8 +57,32 @@ export const tasksPlugin = (): TasksPlugin => {
         tasks: () => ledger.tasks(),
         behaviour: (module) => ledger.behaviour(module),
         dropBehaviour: (id) => ledger.dropBehaviour(id),
+        cancel: (actorId) => ledger.cancel(actorId),
+
+        setup: (context) => {
+            // NO STALE TASKS — when the body behind a queue leaves the world
+            // (a health-zero death, a bird glided past the world's edge, a
+            // shark swept back out to sea — every removal lands in the log
+            // as 'despawn' or 'death'), its queued tasks are cancelled at
+            // once. Without this the dead body's queue would keep ticking
+            // down as stale tasks, their completion effects resolving to
+            // nothing (the behavior plugin's actorOf returns undefined for
+            // a despawned body). Both kinds carry the actorId.
+            unsubscribe = context.world.events.subscribe((event) => {
+                if (
+                    (event.kind === 'despawn' || event.kind === 'death') &&
+                    event.actorId !== undefined
+                ) {
+                    ledger.cancel(event.actorId);
+                }
+            });
+        },
 
         dispose: () => {
+            // The subscription goes with the environment — a swapped-out
+            // ledger must not keep cancelling into its replacement
+            unsubscribe?.();
+            unsubscribe = null;
             ledger.clear();
         },
 

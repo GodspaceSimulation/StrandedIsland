@@ -505,8 +505,7 @@ describe('createTaskLedger', () => {
         expect(ledger.busy('a')).toBe(true);
     });
 
-    it('clear() wipes queues, behaviours and listeners, resetting the id counter', () => {
-        const ledger = createTaskLedger();
+    it('clear() wipes queues, behaviours and listeners, resetting the id counter', () => {        const ledger = createTaskLedger();
         const ael = makeActor('a', 'Ael');
         const completions: ActiveTask[] = [];
         ledger.onComplete((task) => {
@@ -549,5 +548,28 @@ describe('createTaskLedger', () => {
                 remaining: 10,
             },
         ]);
+    });
+
+    it('cancel() wipes exactly one actor\u2019s queue and returns the cancelled tasks', () => {
+        const ledger = createTaskLedger();
+        // Ael: two walk tasks then one rest task; Bo: walk tasks only
+        ledger.behaviour({ id: 'walk' });
+        ledger.behaviour({ id: 'rest' });
+        ledger.queue('a', 'walk', [stepEast, stepEast]);
+        ledger.queue('a', 'rest', [sleep(480)]);
+        ledger.queue('b', 'walk', [stepEast]);
+        const cancelled = ledger.cancel('a');
+        // Exactly Ael's three tasks come back, in queue order, untouched
+        expect(cancelled.map((task) => task.id)).toEqual(['t-1', 't-2', 't-3']);
+        expect(cancelled.map((task) => task.behaviour)).toEqual(['walk', 'walk', 'rest']);
+        // The actor goes idle — the queue entry left the map entirely
+        expect(ledger.queueOf('a')).toEqual([]);
+        expect(ledger.busy('a')).toBe(false);
+        // Bo's queue is untouched
+        expect(ledger.tasks().map((task) => task.id)).toEqual(['t-4']);
+        // A second cancel of the drained actor reports nothing…
+        expect(ledger.cancel('a')).toEqual([]);
+        // …and an unknown actor likewise
+        expect(ledger.cancel('ghost')).toEqual([]);
     });
 });

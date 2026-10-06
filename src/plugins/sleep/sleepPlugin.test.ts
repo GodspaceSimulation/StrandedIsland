@@ -46,11 +46,13 @@ const buildStack = () => {
 describe('sleepPlugin', () => {
     it('registers the priority-30 behaviour that shadows the rest fallback', () => {
         const { tasks } = buildStack();
-        // Planning order: sleep (30) sits between hunger (40) and the
-        // behavior plugin's rest fallback (25)
+        // Planning order: the roost rung (33) routes the tired bird to the
+        // trees before the sleep rung (30) slumbers it — sleep sits between
+        // the roost and the behavior plugin's rest fallback (25)
         expect(tasks.ledger.behaviours().map((module) => ({ id: module.id, priority: module.priority }))).toEqual([
             { id: 'thirst', priority: 50 },
             { id: 'hunger', priority: 40 },
+            { id: 'roost', priority: 33 },
             { id: 'sleep', priority: 30 },
             { id: 'rest', priority: 25 },
             { id: 'social', priority: 20 },
@@ -122,7 +124,7 @@ describe('sleepPlugin', () => {
         world.plugins.remove('sleep');
         // The update-on-remove rule: the behaviour is gone AND its queued
         // tasks are cancelled — the actor is idle before any step ran
-        expect(tasks.ledger.behaviours().map((module) => module.id)).toEqual(['thirst', 'hunger', 'rest', 'social', 'wander']);
+        expect(tasks.ledger.behaviours().map((module) => module.id)).toEqual(['thirst', 'hunger', 'roost', 'rest', 'social', 'wander']);
         expect(tasks.tasks()).toEqual([]);
         for (let index = 0; index < 11; index++) {
             world.step();

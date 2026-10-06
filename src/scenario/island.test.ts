@@ -602,4 +602,61 @@ describe('createIslandWorld', () => {
         expect(handle.inventory.capacityOf('actor-1')).toBe(8);
         expect(handle.inventory.of('actor-1')).toEqual({ berry: 2, flint: 1 });
     });
+
+    it('every species plans through the ledger: a 3000-minute reference run stays stale-free', () => {
+        // The long march: every living thing plans every minute (the
+        // behavior plugin's whole-world sweep), the birds roost and sleep,
+        // the boars run the full survival ladder, the sharks rest — and no
+        // departed body ever leaves a stale queue behind (the tasks
+        // plugin's despawn/death cancellation). Captured from the seed-7
+        // reference run; the whole march stays deterministic.
+        const handle = createIslandWorld({ seed: 7 });
+        const alive = (id: string) =>
+            handle.world.actors.has(id) || handle.world.coordinates.entryOf(id) !== undefined;
+        const creatureTaskKinds = new Set<string>();
+        let stale = 0;
+        for (let minute = 1; minute <= 3000; minute++) {
+            handle.world.step();
+            handle.tasks.tasks().forEach((task) => {
+                // NO STALE TASKS — every queued task's body still lives
+                if (!alive(task.actorId)) {
+                    stale = stale + 1;
+                }
+                // The creature slice of the ledger: a coordinate-space
+                // resident (bird, shark, boar) carrying a task
+                const entry = handle.world.coordinates.entryOf(task.actorId);
+                if (entry && entry.kind === 'creature') {
+                    creatureTaskKinds.add(`${entry.type}:${task.kind}`);
+                }
+            });
+        }
+        // Not one stale task in 3000 world minutes — despawned birds and
+        // swept-out sharks take their queues with them
+        expect(stale).toBe(0);
+        // The species' task vocabulary over the march: birds seek roosts
+        // ('seeks a roost' move tasks) and sleep; the boars run the whole
+        // survival ladder (drink, eat, gather, wander, sleep); a spent
+        // shark slept its slumber
+        expect([...creatureTaskKinds].sort()).toEqual([
+            'bird:move',
+            'bird:sleep',
+            'boar:collect',
+            'boar:drink',
+            'boar:eat',
+            'boar:gather',
+            'boar:move',
+            'boar:sleep',
+            'shark:sleep',
+        ]);
+        // The cast survived the whole march (weak bellies, no deaths —
+        // health-zero never fired) and the wilds roam on
+        expect(handle.world.events.log().filter((event) => event.kind === 'death')).toEqual([]);
+        expect(Array.from(handle.world.actors.values()).map((actor) => actor.type)).toEqual([
+            'human',
+            'human',
+            'human',
+            'human',
+        ]);
+        expect(handle.predators.predators().map((boar) => boar.id)).toEqual(['boar-1', 'boar-2']);
+    });
 });

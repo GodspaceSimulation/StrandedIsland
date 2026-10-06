@@ -120,6 +120,16 @@ export type TaskLedger = {
      */
     dropBehaviour(id: string): boolean;
     /**
+     * Cancels EVERY queued task of one actor — the queue entry leaves the
+     * map entirely (the actor goes idle). The cleanup the world calls when
+     * the body behind an id LEAVES it: a dead castaway, a bird glided past
+     * the world's edge, a shark swept back out to sea. Without it the dead
+     * body's queue would keep ticking down as stale tasks (the head task's
+     * completion effect resolving to nothing — actorOf undefined). Returns
+     * the cancelled tasks in queue order (empty when the actor held none).
+     */
+    cancel(actorId: string): ActiveTask[];
+    /**
      * All registered behaviour modules, planning order: priority DESC, then
      * first-registration order as the tiebreak (deterministic).
      */
@@ -263,6 +273,19 @@ export const createTaskLedger = (): TaskLedger => {
                 });
             }
             return removed;
+        },
+
+        cancel: (actorId) => {
+            // The whole queue goes with the body — the map entry itself
+            // leaves (a drained queue's rule, same as dropBehaviour/tick),
+            // so tasks()/actor-insertion order stay clean. The detached
+            // array is safe to hand out: nothing references it anymore.
+            const queue = queues.get(actorId);
+            if (!queue) {
+                return [];
+            }
+            queues.delete(actorId);
+            return queue;
         },
 
         behaviours: () => planningOrder(),

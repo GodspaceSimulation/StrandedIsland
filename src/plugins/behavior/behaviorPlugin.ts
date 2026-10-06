@@ -15,13 +15,15 @@
 // too — the ledger pre-empts a busy queue only when a STRICTLY
 // higher-priority behaviour queues). The registry castaways plan through
 // their full Actor records; the COORDINATE-SPACE CREATURES (perched
-// seabirds, roaming boars — anything grounded on DRY land) plan through
-// their coordinate identity, so the survival rungs are the whole world's:
-// a hungry bird looks for food, a tired bird roosts, a boar drinks, and a
-// castaway runs the full castaway ladder. Flyers (z > ground) keep their
-// plugin-owned flight (the birds plugin drives every airborne minute), and
-// water creatures (sharks — impassable cells) keep their own swim scripts:
-// the ledger plans only what walks the ground. See taskLedger.ts TaskEntity
+// seabirds, roaming boars, sharks in the sea — anything grounded at z 0)
+// plan through their coordinate identity, so the survival rungs are the
+// whole world's: a hungry bird looks for food, a tired bird roosts in the
+// trees, a boar drinks, and a castaway runs the full castaway ladder. The
+// REALM decides which rungs serve a body: the travel rungs (and the idle
+// wander) need dry ground underfoot — the water realm's non-travel rungs
+// still apply (a floater gathers the fish underfoot, a spent swimmer
+// rests) — while flyers (z > ground) keep their plugin-owned flight (the
+// birds plugin drives every airborne minute). See taskLedger.ts TaskEntity
 // for the shared planning shape.
 //
 // Tasks are governed by behaviour plugins, and the
@@ -43,6 +45,19 @@
 //   hunger  40 — hunger ≥ 60       → eat from the bag (2 min), gather the
 //                                    cell's food (10 min), or travel toward
 //                                    the nearest food stock (1 min)
+//   roost   33 — a FLY-ABILITY creature (a seabird) with energy ≤ 22 not
+//                                    standing on a treed tile travels one
+//                                    strict fine step toward the nearest
+//                                    treed tile — the bird's SAFE SLEEP:
+//                                    roosting off the ground, in the trees.
+//                                    Trees beyond the ROOST_RANGE trek are
+//                                    out of reach for an exhausted gull: it
+//                                    sleeps where it stands. On a treed
+//                                    tile the gate declines and the sleep
+//                                    plugin's timed slumber (30) takes
+//                                    over — the bird sleeps IN the trees.
+//                                    No profiles → no ability system →
+//                                    no roost (the pre-entity behavior).
 //   rest    25 — energy ≤ 22       → rest 10 min, recovery applied on
 //                                    completion. FALLBACK — the sleep plugin
 //                                    (plugins/sleep/sleepPlugin.ts) registers
@@ -105,6 +120,7 @@ import { arrayEach } from '@presource/core';
 import {
     GROUND_LEVEL,
     NEIGHBOR_OFFSETS,
+    position3,
     type PluginContext,
     type WorldPlugin,
 } from '@godspace/core';
@@ -113,6 +129,7 @@ import {
     chebyshev,
     fineStep,
     nearestCell,
+    strictFineStep,
     travelSpec,
 } from '../movement/fineMovement';
 import type { World } from '../../engine/world';
@@ -164,10 +181,22 @@ const MATERIALS = ['shell', 'stone', 'wood', 'vine', 'flint'];
 /** Priority ladder constants */
 const THIRST_TRIGGER = 65;
 const HUNGER_TRIGGER = 60;
+const ROOST_TRIGGER = 22;
 const REST_TRIGGER = 22;
 const HUNGER_SYMPATHY = 50;
 const DRINK_RELIEF = 35;
 const REST_RECOVERY = 12;
+
+/**
+ * THE ROOST RANGE (Chebyshev tiles) — how far a tired bird will trek for a
+ * roost. Beyond it the woods are out of reach for an exhausted gull: it
+ * sleeps where it stands (the sleep rung takes the minute) instead of
+ * crawling the coastline forever — the strict roost step declines on any
+ * blocked coast, so an unbounded trek would mill a spent bird along the
+ * shore for dozens of minutes. Six tiles is a couple of minutes' hop: the
+ * woods are usually within reach of the island's interior.
+ */
+const ROOST_RANGE = 6;
 
 export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<World> => {
     const { inventory, needs, relationship, tasks } = options;
@@ -206,13 +235,33 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
     const worldOf = (): World | null => context?.world ?? null;
 
     /**
+     * THE WATER REALM — whether a body's ground-travel vocabulary applies. A
+     * body standing on an impassable cell (the sea a shark swims, the water a
+     * gull floats on) cannot fine-step ACROSS tiles (the wrap needs dry
+     * land), so the travel rungs decline for it — a task ladder that walks
+     * tiles is not the water realm's vocabulary. Without the guard a thirsty
+     * floater would mill inside its water tile forever (a busy body every
+     * minute, the birds plugin's busy gate never re-opening — pinned afloat
+     * to die of thirst). The non-travel rungs still serve the water realm: a
+     * floater gathers the fish underfoot (every water cell stocks them) and
+     * eats from the beak-bag, a spent swimmer rests — and the sleep rung lets
+     * a tired bird doze afloat while its drift carries it toward the shore.
+     */
+    const onDryGround = (actor: TaskEntity): boolean => {
+        const cell = worldOf()?.cellAt(actor.position.x, actor.position.y);
+        return cell !== undefined && cell.passable;
+    };
+
+    /**
      * The social opportunity an actor has RIGHT NOW — a PURE read (no side
-     * effects): the fed actor's hungry neighbour within Chebyshev 2 and the
+     * effects): the actor's hungry neighbour within Chebyshev 2 and the
      * interaction shape (a material trade, or a gift). The behaviour's gate
      * reads this, so the gate itself never mutates inventory or relationships;
-     * the PLAN applies the opportunity exactly once. Social life stays a
-     * castaway affair: the neighbour scan reads the ACTOR REGISTRY, so a
-     * creature planned through the ladder finds no neighbours and declines.
+     * the PLAN applies the opportunity exactly once. The NEIGHBOUR scan reads
+     * the ACTOR REGISTRY (the castaways), so an encounter needs a hungry
+     * castaway within range — a creature planned through the ladder that
+     * carries food (a foraging gull's berry, a hunting shark's fish) meets
+     * that neighbour the same way a castaway does.
      */
     const socialOpportunity = (
         actor: TaskEntity,
@@ -381,9 +430,13 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                         };
                     }
                     // 3) Go and find a pool — travel one fine step toward
-                    //    the nearest stocked cell
+                    //    the nearest stocked cell. WATER REALM: a body on
+                    //    an impassable cell has no ground travel (its wrap
+                    //    needs dry land) — decline and let the realm's own
+                    //    script (the birds plugin's drift, the sharks
+                    //    plugin's swim) carry it.
                     const pool = nearestCell(actor, inventory.cellsWithItem('water'));
-                    if (!pool) {
+                    if (!pool || !onDryGround(actor)) {
                         return undefined;
                     }
                     return travelSpec(world, actor, 'travels to water', pool, travel);
@@ -418,13 +471,91 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                     if (gatherable !== undefined) {
                         return { kind: 'gather', label: 'gathers', minutes: gatherMinutes };
                     }
-                    // Walk toward the nearest food-bearing cell
+                    // Walk toward the nearest food-bearing cell. WATER
+                    // REALM: a body on an impassable cell has no ground
+                    // travel — a floater with no food underfoot declines
+                    // (its realm's drift carries it toward the shore)
                     const targets = FOOD_PRIORITY.flatMap((item) => inventory.cellsWithItem(item));
                     const target = nearestCell(actor, targets);
-                    if (!target) {
+                    if (!target || !onDryGround(actor)) {
                         return undefined;
                     }
                     return travelSpec(world, actor, 'travels to food', target, travel);
+                },
+            });
+
+            // Roost 33 — THE BIRD'S SAFE SLEEP. A fly-ability creature at
+            // the tired line (the same ≤ 22 the sleep rung reads) that is
+            // NOT standing on a treed tile travels toward the nearest trees
+            // first: roosting off the ground, in the woods, is the safe
+            // place to sleep the gull's instincts ask for. On a treed tile
+            // the gate declines — the sleep plugin's priority-30 timed
+            // slumber takes the minute and the bird sleeps IN the trees
+            // (the sleep task kind carries the sleep plugin's per-minute
+            // restore whatever behaviour queued it). Priority above sleep
+            // so the roost routes the tired bird BEFORE the slumber fires;
+            // strictly below hunger (40) so a hungry tired bird eats first.
+            // No profiles → no ability system → no roost (the pre-entity
+            // behavior, the wander filler's exemption rule mirrored).
+            tasks.behaviour({
+                id: 'roost',
+                label: 'Roost',
+                priority: 33,
+                appliesTo: (subject) => {
+                    const actor = subject.actor;
+                    if (!profiles || actor.kind !== 'creature') {
+                        return false;
+                    }
+                    if (actor.type === undefined || !profiles.hasAbility(actor.type, 'fly')) {
+                        return false;
+                    }
+                    if (needs.of(actor.id).energy > ROOST_TRIGGER) {
+                        return false;
+                    }
+                    // Standing among trees already — the roost is HERE;
+                    // decline and let the sleep rung take the minute
+                    const cell = worldOf()?.cellAt(actor.position.x, actor.position.y);
+                    return (cell?.resources.tree ?? 0) === 0;
+                },
+                plan: (subject) => {
+                    const active = worldOf();
+                    const actor = subject.actor;
+                    if (!active) {
+                        return undefined;
+                    }
+                    // WATER REALM: a floating tired bird has no ground
+                    // travel — it dozes afloat (the sleep rung takes over)
+                    // while its perch drift carries it toward the shore
+                    if (!onDryGround(actor)) {
+                        return undefined;
+                    }
+                    const grove = nearestCell(actor, inventory.cellsWithItem('tree'));
+                    if (!grove) {
+                        // No trees on the island at all — sleep where it stands
+                        return undefined;
+                    }
+                    // THE ROOST RANGE — trees beyond a tired gull's trek are
+                    // out of reach: sleep where it stands (the sleep rung
+                    // takes the minute) rather than crawl the coast forever
+                    if (chebyshev(actor.position, position3(grove.x, grove.y)) > ROOST_RANGE) {
+                        return undefined;
+                    }
+                    // One STRICT fine step toward the grove — the mill
+                    // fallback of the greedy walker would pin a blocked or
+                    // water-locked body busy forever (its realm's movement
+                    // plugin never re-opens). A blocked roost walker
+                    // declines instead: idle this minute, its own hops may
+                    // unstick it, and the next minute re-plans.
+                    const step = strictFineStep(active, actor, grove.x, grove.y);
+                    if (!step) {
+                        return undefined;
+                    }
+                    return {
+                        kind: 'move',
+                        label: 'seeks a roost',
+                        minutes: travel,
+                        payload: { dx: step[0], dy: step[1] },
+                    };
                 },
             });
 
@@ -479,6 +610,15 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                         subject.actor.type !== undefined &&
                         profiles.hasAbility(subject.actor.type, 'fly')
                     ) {
+                        return undefined;
+                    }
+                    // WATER REALM — the idle filler walks the GROUND: a body
+                    // standing on an impassable cell (a shark in the sea, a
+                    // gull afloat) keeps its realm's own idle minute (the
+                    // swim script's sweep, the perch's drift). Queuing fine
+                    // moves for it would pin it busy every minute — the
+                    // birds plugin's takeoff gate would never re-open.
+                    if (!onDryGround(subject.actor)) {
                         return undefined;
                     }
                     // Idle bodies fine-wander: one random valid fine step per
@@ -610,6 +750,7 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
             // each also cancels its queued tasks (the ledger's update rule)
             tasks.dropBehaviour('thirst');
             tasks.dropBehaviour('hunger');
+            tasks.dropBehaviour('roost');
             tasks.dropBehaviour('rest');
             tasks.dropBehaviour('social');
             tasks.dropBehaviour('wander');
@@ -631,10 +772,14 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
             //
             // The registry castaways first (their full Actor records), then
             // the coordinate-space creatures: GROUNDED (z ≤ the ground
-            // plane — flyers keep their plugin-owned flight) and standing
-            // on DRY ground (water creatures — the sharks — keep their own
-            // swim scripts; a task ladder that walks tiles is not their
-            // vocabulary). Each creature plans through its coordinate
+            // plane — flyers keep their plugin-owned flight). The WATER
+            // realm plans too (a shark in the sea, a gull afloat): the
+            // travel rungs decline for impassable underfoot (onDryGround —
+            // a task ladder that walks tiles is not their vocabulary) while
+            // the non-travel rungs serve them (a floater gathers the fish
+            // underfoot, a spent swimmer rests, a tired gull dozes afloat),
+            // and the wander filler leaves their idle minute to the realm's
+            // own script. Each creature plans through its coordinate
             // identity (taskLedger.ts TaskEntity).
             const planned = new Set<string>(active.actors.keys());
             active.actors.forEach((actor) => {
@@ -647,8 +792,7 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                 if (entry.position.z > GROUND_LEVEL) {
                     return;
                 }
-                const cell = active.cellAt(entry.position.x, entry.position.y);
-                if (!cell || !cell.passable) {
+                if (!active.cellAt(entry.position.x, entry.position.y)) {
                     return;
                 }
                 planned.add(entry.id);
