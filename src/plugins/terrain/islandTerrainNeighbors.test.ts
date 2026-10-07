@@ -538,4 +538,55 @@ describe('the neighborhood fallout in the zoomed interior (sub-grids, stands, ca
             });
         });
     });
+
+    it('forestPlant refuses a carved spot — the boulder boundary holds for any caller', () => {
+        // The terrain plugin's plant API is the last guard: a fine spot ON
+        // the tile's recorded band (plugins/terrain islandTerrain.ts
+        // forestPlant — conservative lookup against the live canvas) never
+        // gains a tree, no matter who calls (the ecology's recruitment and
+        // spread already avoid the band; this closes the boundary for any
+        // future caller). This test plants records deliberately — it runs
+        // AFTER the whole-board consistency sweep above, whose
+        // stand-deposit invariant the raw plants (which the ecology owns
+        // the mirroring for) would otherwise desync.
+        const carved = cellAt(2, 0);
+        const band = carved.carving!.rock;
+        expect(band.length).toBe(9);
+        const stand = plugin.forestOf(2, 0)!;
+        const before = stand.trees.size;
+        // THE REFUSAL — planting onto the band's first spot returns the
+        // stand unchanged (same size, no record added)
+        const refused = plugin.forestPlant(2, 0, { x: -12, y: 0 }, {
+            born: 5,
+            base: 3,
+            baseMinute: 5,
+            carry: 0,
+        });
+        expect(refused.trees.size).toBe(before);
+        expect(refused.trees.has('-12,0')).toBe(false);
+        expect(plugin.forestOf(2, 0)?.trees.size).toBe(before);
+        // A non-carved spot still plants (the guard refuses ONLY the band)
+        const planted = plugin.forestPlant(2, 0, { x: 0, y: 0 }, {
+            born: 5,
+            base: 3,
+            baseMinute: 5,
+            carry: 0,
+        });
+        expect(planted.trees.size).toBe(before + 1);
+        expect(planted.trees.has('0,0')).toBe(true);
+        // A FULL clean stand (the 8-forest ring (3,−3), all 425 cells
+        // wooded, no carve) plants too — the record OVERWRITES the existing
+        // tree at its spot (one tree per fine cell holds, size unmoved)
+        const full = cellAt(3, -3);
+        expect(full.carving).toBeUndefined();
+        expect(full.resources.tree).toBe(425);
+        const overwritten = plugin.forestPlant(3, -3, { x: 0, y: 0 }, {
+            born: 5,
+            base: 3,
+            baseMinute: 5,
+            carry: 0,
+        });
+        expect(overwritten.trees.size).toBe(425);
+        expect(overwritten.trees.has('0,0')).toBe(true);
+    });
 });

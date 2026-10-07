@@ -335,6 +335,110 @@ describe('forestPlugin — recruitment (the seed bank)', () => {
         expect(world.cellAt(-7, 0)?.resources.tree).toBe(425);
         expect(ecology.standOf({ x: -7, y: 0 })).toEqual({ trees: 425, wood: 1303 });
     });
+
+    // ── THE BOULDER BOUNDARY (the T5 fix's regression pins) ────────────────
+    // A rock-spilled forest tile's band (plugins/terrain islandTerrain.ts
+    // rockSpillSpots, stamped into cell.carving.rock) holds boulders: the
+    // recruitment capacity prices the band out (w·h − rocks.size), the
+    // random probe AND the bounded fallback both exclude the band's keys,
+    // and the terrain plugin's forestPlant refuses a carved spot outright —
+    // so no tree EVER stands on a boulder, however long the world runs.
+    // The reference tile is the seed-7 island's (2,0): the west highland
+    // column carves a 9-spot checkerboard band ('−12,−8' … '−12,8'),
+    // capacity 425 − 9 = 416.
+
+    it('recruitment never stands a tree on a boulder: the band stays treeless to the neighborhood cap', () => {
+        const { world, terrain, ecology } = buildEcology(
+            { recruitMinutes: 10, spreadMinutes: 1000000000 },
+            25,
+            17,
+        );
+        const band = world.cellAt(2, 0)!.carving!.rock;
+        expect(band.length).toBe(9);
+        const stand = terrain.forestOf(2, 0)!;
+        expect(stand.trees.size).toBe(298);
+        // Clearcut the whole stand — the mirrors drop with it (the boulders
+        // stay; the forest voxel keeps its seed-bank recruitment alive)
+        while (stand.trees.size > 0) {
+            ecology.chop({ x: 2, y: 0 });
+        }
+        expect(stand.trees.size).toBe(0);
+        expect(world.cellAt(2, 0)?.resources.tree).toBeUndefined();
+        // One recruit cycle: ONE sapling stands, and it is OFF the band —
+        // the captured probe pick (deterministic stream, rock spots excluded
+        // from every roll)
+        ecology.fastForward(10);
+        expect(stand.trees.size).toBe(1);
+        expect(Array.from(stand.trees.keys())).toEqual(['9,2']);
+        // Full refill: 416 recruitment cycles (every 10 minutes) land the
+        // stand exactly at its neighborhood cap — every fine cell BUT the
+        // band — with not one tree on a boulder
+        ecology.fastForward(4150);
+        const onRock = band.filter((spot) => stand.trees.has(spot));
+        expect(onRock).toEqual([]);
+        expect(stand.trees.size).toBe(416);
+        // The mirror reads the capped stand (the rock penalty already priced
+        // the band out — the deposit IS the stand)
+        expect(world.cellAt(2, 0)?.resources.tree).toBe(416);
+        // The cap HOLDS: further cycles add nothing (416 = 425 − 9 — the
+        // capacity gate, not a probe miss)
+        ecology.fastForward(100);
+        expect(stand.trees.size).toBe(416);
+        expect(band.filter((spot) => stand.trees.has(spot))).toEqual([]);
+        // The zoomed interior agrees: 416 treed subtiles, the 9 boulders
+        // crowned and treeless — the invariant holds at every scale
+        const sub = terrain.canvasFor([{ x: 2, y: 0 }])!;
+        const treed = sub.cells.filter((cell) => (cell.resources.tree ?? 0) > 0);
+        expect(treed.length).toBe(416);
+        const bouldered = sub.cells.filter(
+            (cell) =>
+                cell.voxels.length === (world.cellAt(2, 0)?.voxels.length ?? 0) + 1 &&
+                cell.voxels[cell.voxels.length - 1] === 'stone',
+        );
+        expect(bouldered.length).toBe(9);
+        expect(bouldered.filter((cell) => (cell.resources.tree ?? 0) > 0)).toEqual([]);
+    });
+
+    it('the bounded fallback lands the last non-rock spot: a near-full stand fills to its cap off the band', () => {
+        const { world, terrain, ecology } = buildEcology(
+            { recruitMinutes: 10, spreadMinutes: 1000000000 },
+            25,
+            17,
+        );
+        const band = world.cellAt(2, 0)!.carving!.rock;
+        const stand = terrain.forestOf(2, 0)!;
+        // Clearcut, then plant every non-rock fine cell except the LAST one
+        // in row-major order ('12,8' — 415 plants, one bare spot among the
+        // 425-cell board): the near-full shape that can evade the random
+        // probe's per-cycle hit rate
+        while (stand.trees.size > 0) {
+            ecology.chop({ x: 2, y: 0 });
+        }
+        const nonRock: Array<{ x: number; y: number }> = [];
+        for (let row = 0; row < 17; row++) {
+            for (let col = 0; col < 25; col++) {
+                const spot = { x: col - 12, y: row - 8 };
+                if (!band.includes(`${spot.x},${spot.y}`)) {
+                    nonRock.push(spot);
+                }
+            }
+        }
+        expect(nonRock.length).toBe(416);
+        nonRock.slice(0, 415).forEach((spot) => {
+            terrain.forestPlant(2, 0, spot, { born: 1, base: 1, baseMinute: 1, carry: 0 });
+        });
+        expect(stand.trees.size).toBe(415);
+        // One recruit cycle: exactly ONE sapling lands at the only bare
+        // non-rock spot (the probe's 1/425 rolls OR the bounded row-major
+        // fallback — either path fills THE spot), and the band gains
+        // nothing
+        ecology.fastForward(10);
+        expect(stand.trees.size).toBe(416);
+        expect(stand.trees.has('12,8')).toBe(true);
+        expect(band.filter((spot) => stand.trees.has(spot))).toEqual([]);
+        // The mirrors read the capped stand
+        expect(world.cellAt(2, 0)?.resources.tree).toBe(416);
+    });
 });
 
 describe('forestPlugin — the spread (grass substrate only)', () => {

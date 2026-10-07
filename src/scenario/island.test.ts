@@ -681,7 +681,7 @@ describe('createIslandWorld', () => {
         expect(handle.predators.predators().map((boar) => boar.id)).toEqual(['boar-1', 'boar-2']);
     }, 30000);
 
-    it('the autonomous build loop: the cast completes shelter, raft, house and boat in 3000 minutes', () => {
+    it('the autonomous build loop: the cast completes the full plan in 6000 minutes', () => {
         // THE T4 MARCH — the construction governance (plugins/construction)
         // plans one stock structure at a time through the shared stack: the
         // crew fetches the raw materials demand-directed (never bagfuls of
@@ -692,18 +692,29 @@ describe('createIslandWorld', () => {
         // ladder always outranks the construction rungs (rest 25 … flee 60),
         // so nobody starves building. Captured from the seed-7 reference
         // run; the whole march stays deterministic.
+        //
+        // THE 6000-MINUTE HORIZON — the terrain's neighborhood redesign
+        // (the 8-neighbor density model + the meadows' localized tree
+        // ingress) intentionally reshaped the cast's travel/food geography:
+        // the food treks grew (10 → 31 trips, up to ~90 world minutes
+        // each), which slowed the wood-fetch cadence and moved the boat
+        // past the old 3000-minute pin. The construction governance itself
+        // is unchanged — the boat completes deterministically at minute
+        // 4470 (measured twice on the redesigned terrain), and the fort
+        // finishes by minute 6000, so the reference horizon is 6000
+        // (measured 4470 + ~34% margin, the orchestrator's bounded max).
         const handle = createIslandWorld({ seed: 7 });
         // THE FOREST IN THE MARCH — the ecology is mounted (the default):
         // the woods are static at the real-year pace (no recruitment, no
-        // spread, no visible wood growth over 3000 minutes), so the march's
+        // spread, no visible wood growth over 6000 minutes), so the march's
         // completion is a construction-pace result — the crew chops pool
-        // wood off the standing trees, the 383-tree stands never thinning
-        // enough to move the wood fetches' targets
+        // wood off the standing trees, the neighborhood-counted stands
+        // never thinning enough to move the wood fetches' targets
         const alive = (id: string) =>
             handle.world.actors.has(id) || handle.world.coordinates.entryOf(id) !== undefined;
         let stale = 0;
         let deaths = 0;
-        for (let minute = 1; minute <= 3000; minute++) {
+        for (let minute = 1; minute <= 6000; minute++) {
             handle.world.step();
             // NO STALE TASKS — every queued task's body still lives
             handle.tasks.tasks().forEach((task) => {
@@ -716,14 +727,15 @@ describe('createIslandWorld', () => {
         expect(stale).toBe(0);
         expect(deaths).toBe(0);
         expect(Array.from(handle.world.actors.keys())).toEqual(['actor-1', 'actor-2', 'actor-3', 'actor-4']);
-        // FOUR stock structures stand complete at the 3000-minute mark:
+        // FIVE stock structures stand complete at the 6000-minute mark:
         // the shelter (wood 2 + thatch 2, 10 work), the raft (wood 4 +
         // rope 2, 30), the house (wood 4 + plank 4 + thatch 4 — TWELVE
-        // staging units through eight-unit bags, 40 work) and the boat
-        // (plank 6 + rope 4 + cloth 2, 60). The fort project is live with
-        // its stone delivery under way (the mined highland stone).
-        expect(handle.construction.completedBlueprints()).toEqual(['shelter', 'raft', 'house', 'boat']);
-        expect(handle.construction.project()).toBe('fort');
+        // staging units through eight-unit bags, 40 work), the boat
+        // (plank 6 + rope 4 + cloth 2, 60 — built at minute 4470 of the
+        // captured run) and the fort (stone 8 + wood 4, 120 work — finished
+        // inside the horizon's tail).
+        expect(handle.construction.completedBlueprints()).toEqual(['shelter', 'raft', 'house', 'boat', 'fort']);
+        expect(handle.construction.project()).toBeUndefined();
         expect(
             handle.construction.sites.sites().map((site) => ({
                 id: site.id,
@@ -741,7 +753,7 @@ describe('createIslandWorld', () => {
             { id: 's-2', blueprintId: 'raft', state: 'built', parent: [{ x: -7, y: 5 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 30, delivered: { wood: 4, rope: 2 } },
             { id: 's-3', blueprintId: 'house', state: 'built', parent: [{ x: -1, y: 0 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 40, delivered: { wood: 4, thatch: 4, plank: 4 } },
             { id: 's-4', blueprintId: 'boat', state: 'built', parent: [{ x: 7, y: 5 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 60, delivered: { plank: 6, rope: 4, cloth: 2 } },
-            { id: 's-5', blueprintId: 'fort', state: 'staged', parent: [{ x: 1, y: 0 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 0, delivered: { stone: 8, wood: 1 } },
+            { id: 's-5', blueprintId: 'fort', state: 'built', parent: [{ x: 1, y: 0 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 120, delivered: { stone: 8, wood: 4 } },
         ]);
         // The staged materials cap exactly at the requirements — the shared
         // registry refuses over-staging, so the delivered ledgers never hold
@@ -768,7 +780,7 @@ describe('createIslandWorld', () => {
             label: 'Raft',
             x: -7,
             y: 5,
-            launchedAt: 3000,
+            launchedAt: 6000,
         });
         const boatVessel = handle.construction.launch('s-4');
         expect(boatVessel).toEqual({
@@ -778,12 +790,12 @@ describe('createIslandWorld', () => {
             label: 'Boat',
             x: 7,
             y: 5,
-            launchedAt: 3000,
+            launchedAt: 6000,
         });
         // The launch log lines (world-scale happenings)
         expect(handle.world.events.log().filter((event) => event.kind === 'launch').map((event) => event.message)).toEqual([
             'The raft is launched into the water at (-7, 5).',
             'The boat is launched into the water at (7, 5).',
         ]);
-    }, 30000);
+    }, 60000);
 });
