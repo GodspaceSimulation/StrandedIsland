@@ -43,6 +43,10 @@ describe('constructionPlugin — the shared registries', () => {
             'plank',
             'thatch',
             'cloth',
+            // R4: the early tools — the axe (wood + stone) and the hammer
+            // (wood), each crafted ONCE per castaway crew
+            'axe',
+            'hammer',
         ]);
         // The atomic craft over island materials: two vines twist into one rope
         expect(handle.construction.crafting.craft('rope', { vine: 2 })).toEqual({
@@ -93,6 +97,12 @@ describe('constructionPlugin — the shared registries', () => {
             { id: 'craft-plank', priority: 23 },
             { id: 'craft-thatch', priority: 23 },
             { id: 'craft-cloth', priority: 23 },
+            // R4: the tool recipes + the once-crafted tool rungs (each at
+            // CRAFT_PRIORITY, gated to craft once per crew)
+            { id: 'craft-axe', priority: 23 },
+            { id: 'craft-hammer', priority: 23 },
+            { id: 'tool-axe', priority: 23 },
+            { id: 'tool-hammer', priority: 23 },
             { id: 'fetch-vine', priority: 22 },
             { id: 'fetch-frond', priority: 22 },
             { id: 'fetch-stone', priority: 22 },
@@ -106,6 +116,123 @@ describe('constructionPlugin — the shared registries', () => {
             { id: 'lumber', priority: 10 },
             { id: 'wander', priority: 0 },
         ]);
+        // The tool rungs (23) sit BELOW the survival needs (survival 60,
+        // thirst 50, hunger 40, rest 25) — an early tool-craft never
+        // pre-empts a survival rung; the ledger's priority walk consults the
+        // survival rungs first, so a castaway in need is never diverted
+        // into tooling.
+    });
+
+    it('R4: the early tool-craft rung owes each tool ONCE per crew — one axe in any bag closes the gate', () => {
+        const handle = island();
+        // The roster's tool-axe module (the once-crafted axe's craft rung)
+        const ael = handle.world.actors.get('actor-1')!;
+        const subject = { id: ael.id, actor: ael };
+        const toolAxe = handle.tasks.ledger.behaviours().find((module) => module.id === 'tool-axe');
+        expect(toolAxe).toBeDefined();
+        // actor-1 carries the axe's raw inputs (a log + a stone) and NO crew
+        // member carries an axe yet — the rung owes the craft to this actor
+        handle.inventory.spawnKit('actor-1', { wood: 1, stone: 1 });
+        expect(toolAxe?.appliesTo?.(subject as never)).toBe(true);
+        // THE ONCE-GATE: a DUREABLE concept — the moment any crew member
+        // carries the axe the crew "has an axe" and the tool-craft rung stops
+        // owing it (the build projects consume no tools, so this shared
+        // gate is what ends the owed craft)
+        handle.inventory.spawnKit('actor-2', { axe: 1 });
+        expect(toolAxe?.appliesTo?.(subject as never)).toBe(false);
+    });
+
+    it('R4: both early tools land in a crew bag in a NORMAL world — once each, inputs consumed', () => {
+        // A FRESH registry handle proves the tools are CRAFTED (their raw
+        // inputs are consumed, never spawned for free): the axe's log + stone
+        // and the hammer's two logs come off the hand.
+        const ledger = island();
+        expect(ledger.construction.crafting.craft('axe', { wood: 1, stone: 1 })).toEqual({
+            ok: true,
+            recipe: {
+                id: 'axe',
+                label: 'Axe',
+                kind: 'tool',
+                inputs: [{ item: 'wood', count: 1 }, { item: 'stone', count: 1 }],
+                outputs: [{ item: 'axe', count: 1 }],
+                minutes: 5,
+            },
+            consumed: [{ item: 'wood', count: 1 }, { item: 'stone', count: 1 }],
+            produced: [{ item: 'axe', count: 1 }],
+            stock: { axe: 1 },
+        });
+        expect(
+            ledger.construction.crafting.craft('hammer', { wood: 2 }).consumed,
+        ).toEqual([{ item: 'wood', count: 2 }]);
+
+        // THE NORMAL-WORLD CAMPAIGN — the seed-7 handle carries only the
+        // STARTING_KIT (berry + flint), no injected tool inputs. The crew
+        // must gather the axe's STONE itself (the demand the R4 fix folds
+        // into the early fetches) and craft BOTH tools, each ONCE, well
+        // inside 400 minutes. Pinned from the run: axe@147, hammer@310, and
+        // each tool's crew total peaks at EXACTLY one (the once-gate plus the
+        // deterministic lead gate end the craft after a single output).
+        const handle = island();
+        const crewTotal = (tool: string): number =>
+            [...handle.world.actors.values()].reduce(
+                (sum, actor) => sum + (handle.inventory.of(actor.id)[tool] ?? 0),
+                0,
+            );
+        let axeAt = -1;
+        let hammerAt = -1;
+        let axeMax = 0;
+        let hammerMax = 0;
+        for (let minute = 0; minute < 400; minute++) {
+            handle.world.step();
+            const a = crewTotal('axe');
+            const h = crewTotal('hammer');
+            axeMax = Math.max(axeMax, a);
+            hammerMax = Math.max(hammerMax, h);
+            if (axeAt < 0 && a > 0) {
+                axeAt = minute;
+            }
+            if (hammerAt < 0 && h > 0) {
+                hammerAt = minute;
+            }
+        }
+        expect(axeAt).toBe(147);
+        expect(hammerAt).toBe(310);
+        expect(axeMax).toBe(1);
+        expect(hammerMax).toBe(1);
+    });
+
+    it('the craft rung\'s bag-room gate is the NET (post-craft) fit: a full hand holding the recipe\'s raws still crafts', () => {
+        const handle = island();
+        // The shelter opens on the first tick and still owes its thatch
+        // (the craft-thatch rung's siteNeeds reads the active site live)
+        handle.world.step();
+        const ael = handle.world.actors.get('actor-1')!;
+        const bram = handle.world.actors.get('actor-2')!;
+        const subjectOf = (actor: (typeof ael & typeof bram)) => ({ id: actor.id, actor }) as never;
+        const craftThatch = handle.tasks.ledger.behaviours().find((module) => module.id === 'craft-thatch');
+        expect(craftThatch).toBeDefined();
+        // THE WEDGED BAG — actor-1 starts with the STARTING_KIT (berry 2 +
+        // flint 1 = three units) and is filled to EXACTLY the eight-unit
+        // capacity with the thatch's raws plus surplus: three fronds (the
+        // craft's two-input recipe has room in the hand) and two logs.
+        handle.inventory.spawnKit('actor-1', { frond: 3, wood: 2 });
+        expect(handle.inventory.of('actor-1')).toEqual({ berry: 2, flint: 1, frond: 3, wood: 2 });
+        // The old gate was `total + output > capacity` — eight + one = nine
+        // refuses the craft that is the ONLY rung able to free a slot (it
+        // converts a raw the site lacks into the part it owes), clogging
+        // the hand and starving the carrier past the food (the 6000-minute
+        // seed-7 march deaths: Bram @4,5 minute 3231, Dune @3,5 minute 3237,
+        // each holding exactly three fronds while the boat owed its cloth).
+        // The net gate mirrors the craft EFFECT's revalidation (stock =
+        // bag − inputs + outputs): eight − two + one = seven fits the bag,
+        // so the craft stays owed on a FULL hand.
+        expect(craftThatch?.appliesTo?.(subjectOf(ael))).toBe(true);
+        // The ingredient gate is UNTOUCHED: actor-2 carries the same full
+        // hand WITHOUT the recipe's raws (three logs + two vines fill it) —
+        // the craft still refuses, the gate is the net fit AND the inputs.
+        handle.inventory.spawnKit('actor-2', { wood: 3, vine: 2 });
+        expect(handle.inventory.of('actor-2')).toEqual({ berry: 2, flint: 1, wood: 3, vine: 2 });
+        expect(craftThatch?.appliesTo?.(subjectOf(bram))).toBe(false);
     });
 });
 
@@ -278,8 +405,10 @@ describe('constructionPlugin — the autonomous staging and work', () => {
         }
         // The sleep restore (1.2/min) + the shelter bonus (0.5/min) − the
         // decay (0.06/min): 1.64 per sleeping minute — the sheltered night
-        // is the safe night. Pinned from the run.
-        expect(handle.needs.of(sleeper.id).energy).toBe(16.459999999999994);
+        // is the safe night. Pinned from the run (the R4 tool-craft demand
+        // plus the deterministic lead gate shifted the 400-min campaign
+        // minutes, so the pin moved).
+        expect(handle.needs.of(sleeper.id).energy).toBe(6.62);
         expect(handle.tasks.taskOf(sleeper.id)?.kind).toBe('sleep');
     });
 });

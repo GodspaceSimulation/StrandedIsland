@@ -45,14 +45,17 @@
 //                         100% stand — 425 trees on the default island,
 //                         not the old uniform 90% cap; a forest with only
 //                         4 forest neighbors lands well below it.
-//     meadow neighbor   — no coverage gain on the forest side; instead the
-//                         MEADOW tiles beside woods gain their own
-//                         LOCALIZED TREE INGRESS (meadowIngressSpots
-//                         below): a thin stand of trees along the shared
-//                         edge — the grassland complementing the woods'
-//                         border. The meadow keeps its biome; its trees
-//                         are a real persistent stand the ecology's chop
-//                         harvests and the spread conversion joins.
+//     meadow neighbor   — THE GRASSLAND'S COMPLEMENT (R1): a meadow edge
+//                         feeds its forest neighbors on the GAIN side at
+//                         the very same FOREST_NEIGHBOR_* weights (a
+//                         meadow edge prices a forest tile's coverage
+//                         exactly like a forest edge). IN ADDITION, the
+//                         MEADOW tile itself gains its own LOCALIZED TREE
+//                         INGRESS (meadowIngressSpots below): a thin stand
+//                         of trees along the shared edge. The meadow keeps
+//                         its biome; its trees are a real persistent stand
+//                         the ecology's chop harvests and the spread
+//                         conversion joins.
 //     highland neighbor — the rock crowds the woods: the tile's coverage
 //                         DROPS (ROCK_NEIGHBOR_* weights) AND a
 //                         rock-spillover band is carved along the shared
@@ -130,8 +133,10 @@ export type IslandStats = {
  * sample exceeds it carries an iron deposit. Calibrated so lodes stay rare
  * landmarks — on the 37×25 seed-7 reference board 3 of the 9 highland cells
  * lode (vein samples 0.0756 … 0.5158), while the smaller 25×17 default
- * island keeps all 9 samples below it (0.1552 … 0.4076 — its iron census
- * reads 0; the tests pin both boards).
+ * island keeps all 9 samples below it (0.1552 … 0.4076). The vein noise
+ * alone would leave the default island lode-less, so generateIsland's
+ * iron guarantee (the row-major first highland cell) stamps it a single
+ * lode (its iron census reads 1; the tests pin both boards).
  */
 export const IRON_LODE_THRESHOLD = 0.5;
 
@@ -217,7 +222,8 @@ export type Neighborhood = {
     forest: Offset[];
     /** Neighbors carrying rock (biome 'highland') — penalty + spillover. */
     rock: Offset[];
-    /** Neighbors carrying open grass (biome 'meadow') — the ingress side. */
+    /** Neighbors carrying open grass (biome 'meadow') — feed the forest
+     * coverage (R1 grassland complement) AND earn the tile's own ingress. */
     meadow: Offset[];
 };
 
@@ -265,16 +271,22 @@ const directionalSum = (offsets: Offset[], cardinal: number, diagonal: number): 
 
 /**
  * The tree coverage fraction of a forest tile from its neighbor classes:
- * the base (FOREST_COVERAGE) plus every forest neighbor's gain, minus every
- * highland neighbor's penalty, clamped to [0, 1]. Meadow/beach/water
- * neighbors contribute nothing (the meadow's complement is its own ingress;
- * sand and sea feed no trees). Pure — the exact number the tile's tree
- * deposit rounds to.
+ * the base (FOREST_COVERAGE) plus the FOREST-ADJACENCY GAIN — every forest
+ * neighbor AND every MEADOW (grassland) neighbor feeding the woods at the
+ * identical cardinal/diagonal weights (R1: the grassland is the woods'
+ * complement, so a meadow edge prices the coverage exactly like a forest
+ * edge; the meadow's own localized tree ingress is a separate, additive
+ * fringe — meadowIngressSpots). Minus every highland neighbor's penalty,
+ * clamped to [0, 1]. Beach/water neighbors contribute nothing (sand and sea
+ * feed no trees). Pure — the exact number the tile's tree deposit rounds to.
  */
-export const forestCoverageOf = (forest: Offset[], rock: Offset[]): number => {
+export const forestCoverageOf = (forest: Offset[], rock: Offset[], meadow: Offset[] = []): number => {
+    // The gain side sums the forest AND meadow edges alike (forest-adjacency
+    // equivalence); the penalty side (the rock crowd-out) is unchanged
     const coverage =
         FOREST_COVERAGE +
-        directionalSum(forest, FOREST_NEIGHBOR_CARDINAL, FOREST_NEIGHBOR_DIAGONAL) -
+        directionalSum(forest, FOREST_NEIGHBOR_CARDINAL, FOREST_NEIGHBOR_DIAGONAL) +
+        directionalSum(meadow, FOREST_NEIGHBOR_CARDINAL, FOREST_NEIGHBOR_DIAGONAL) -
         directionalSum(rock, ROCK_NEIGHBOR_CARDINAL, ROCK_NEIGHBOR_DIAGONAL);
     return Math.max(0, Math.min(1, coverage));
 };
@@ -567,9 +579,14 @@ export const generateIsland = (
     // Ore-vein map — where iron lodes hide inside the stone highlands
     const veins = latticeNoise(random, width, height, 2);
 
-    const cells: TerrainCell[] = [];
-    const stats: IslandStats = { land: 0, water: 0, forest: 0, iron: 0 };
-
+    // ── Pass 1 — the height field (per-cell geometry, no surface yet) ──────
+    // THE COASTAL SAND RULE (R3) needs the island's whole SEA MASK before any
+    // surface is assigned: a dry cell's sand-ness is measured by its distance
+    // to the nearest sea cell (not its elevation), so every cell's submerged
+    // state must be known first. This pass computes each column's ground
+    // height + submerged state; the BFS below measures the coastal distance;
+    // the cell-building loop that follows finalizes the surfaces.
+    const coast: Array<{ groundHeight: number; submerged: boolean }> = new Array(height * width);
     for (let row = 0; row < height; row++) {
         for (let col = 0; col < width; col++) {
             // Centered world coordinates: 0,0 is the island center
@@ -598,18 +615,82 @@ export const generateIsland = (
             const groundHeight = onEdge
                 ? seaLevel - 1 - Math.round(coarse(col, row))
                 : Math.round(blended * maxHeight);
-
-            // Classify the surface. A column exactly at the water line is a
-            // dry sandbar (walkable); only columns strictly below it are
-            // submerged with water stacked up to the sea level.
+            // A column exactly at the water line is a dry sandbar (walkable);
+            // only columns strictly below it are submerged.
             const submerged = groundHeight < seaLevel;
-            // Surface ladder: seabed sand → sandbar/beach sand (sea level and
-            // one above) → grass meadow → stone highland at the peaks
+            coast[row * width + col] = { groundHeight, submerged };
+        }
+    }
+
+    // ── THE COASTAL DISTANCE (R3) ───────────────────────────────────────────
+    // Multi-source BFS from every SEA (submerged) cell over the 8-neighborhood
+    // (`seaDistance[i]` = the fewest 8-neighbour steps from cell i to open
+    // water; 0 on the sea itself). A dry cell within COASTAL_SAND_DISTANCE of
+    // the sea is the BEACH/SAND ring; beyond it the ground reads as grass
+    // meadow (or stone highland). Sand now hugs the coastline — it no longer
+    // follows the old elevation band (groundHeight <= seaLevel + 1), so an
+    // inland lowland more than a couple of tiles from water is meadow, not
+    // beach. The band is the LITERAL 2-tile rule on any board at least 7
+    // tiles across (a real island keeps its 1–2-tile coastal ring); on the
+    // compact reference boards (7×5, 5×5 — where every cell is within 2 of
+    // the sea's rim) it gracefully degenerates to a 1-tile ring so the island
+    // keeps a non-coastal interior (a fully coastal board would erase the
+    // fixture woods these boards stand on).
+    const COASTAL_SAND_DISTANCE = Math.max(
+        1,
+        Math.min(2, Math.floor(Math.min(width, height) / 3)),
+    );
+    const seaDistance: number[] = new Array<number>(height * width).fill(-1);
+    const queue: number[] = [];
+    for (let index = 0; index < height * width; index++) {
+        if (coast[index].submerged) {
+            seaDistance[index] = 0;
+            queue.push(index);
+        }
+    }
+    // The 8-neighborhood (the directions the neighborhood model also reads)
+    const BFS_OFFSETS: Array<[number, number]> = [
+        [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1],
+    ];
+    for (let head = 0; head < queue.length; head++) {
+        const index = queue[head];
+        const r = Math.floor(index / width);
+        const c = index % width;
+        for (const [dx, dy] of BFS_OFFSETS) {
+            const ny = r + dy;
+            const nx = c + dx;
+            if (ny < 0 || ny >= height || nx < 0 || nx >= width) {
+                continue;
+            }
+            const nindex = ny * width + nx;
+            if (seaDistance[nindex] !== -1) {
+                continue;
+            }
+            seaDistance[nindex] = seaDistance[index] + 1;
+            queue.push(nindex);
+        }
+    }
+
+    const cells: TerrainCell[] = [];
+    const stats: IslandStats = { land: 0, water: 0, forest: 0, iron: 0 };
+
+    for (let row = 0; row < height; row++) {
+        for (let col = 0; col < width; col++) {
+            const index = row * width + col;
+            // Centered world coordinates: 0,0 is the island center
+            const x = col - halfX;
+            const y = row - halfY;
+            // The pass-1 geometry + the coastal distance for this cell
+            const { groundHeight, submerged } = coast[index];
+            // THE COASTAL SURFACE LADDER (R3): seabed sand → stone highland
+            // at the peaks → the distance-based beach ring (a dry cell within
+            // COASTAL_SAND_DISTANCE of the sea) → grass meadow inland
+            const beach = !submerged && seaDistance[index] <= COASTAL_SAND_DISTANCE;
             const surface: VoxelKind = submerged
                 ? 'sand'
                 : groundHeight >= seaLevel + 4
                   ? 'stone'
-                  : groundHeight <= seaLevel + 1
+                  : beach
                     ? 'sand'
                     : 'grass';
             // Forests only grow on grass wet enough — the moisture map
@@ -622,7 +703,7 @@ export const generateIsland = (
             //   then a forest voxel when wooded
             const stack: VoxelKind[] = [];
             if (groundHeight >= 3) {
-                for (let index = 0; index < groundHeight - 2; index++) {
+                for (let bedrock = 0; bedrock < groundHeight - 2; bedrock++) {
                     stack.push('stone');
                 }
             }
@@ -631,7 +712,7 @@ export const generateIsland = (
             }
             stack.push(surface);
             const depth = submerged ? seaLevel - groundHeight : 0;
-            for (let index = 0; index < depth; index++) {
+            for (let water = 0; water < depth; water++) {
                 stack.push('water');
             }
             if (forested) {
@@ -727,8 +808,14 @@ export const generateIsland = (
         const neighborhood = neighborhoodOf(canvas, cell.x, cell.y);
         if (cell.biome === 'forest') {
             // The neighborhood coverage — the count the tile's tree deposit
-            // carries (the stand seeds from the mirror in seedStands)
-            const coverage = forestCoverageOf(neighborhood.forest, neighborhood.rock);
+            // carries (the stand seeds from the mirror in seedStands). R1:
+            // the meadow (grassland) edges feed the woods on the gain side,
+            // so the coverage prices forest + meadow neighbors alike.
+            const coverage = forestCoverageOf(
+                neighborhood.forest,
+                neighborhood.rock,
+                neighborhood.meadow,
+            );
             cell.resources.tree = Math.round(coverage * width * height);
             // The rock-spillover carve — only rocky neighborhoods carve
             const rock = rockSpillSpots(width, height, neighborhood.rock);
@@ -747,6 +834,101 @@ export const generateIsland = (
             }
         }
     });
+
+    // ── THE INTERIOR FRESH-WATER BASINS (R2) — lakes and ponds ──────────────
+    // The island's single global water line sits at the coast, so an
+    // impassable inland basin (ground below the sea) cannot exist without
+    // surgery on the heightmap. R2's fresh water is therefore a PASSABLE
+    // interior wetland: an inset lowland (the low dry tier the coastal-sand
+    // rule R3 just pulled inland) whose grass surface reads as open fresh
+    // water. A land actor gathers the water by standing on the wetland (or
+    // its dry shore ring) — never by crossing the open sea. Component
+    // sizing splits the two names: a connected wetland of LAKE_MIN_CELLS
+    // (8-neighborhood, row-major components) is a 'lake', a smaller pocket a
+    // 'pond'. Deterministic: the candidate read reuses the existing moisture
+    // map (no new random draws — the noise stream above is untouched) and the
+    // components are a pure flood of the finished candidate mask.
+    // A basin pockets where the LOCAL BUMP map (`fine` — already sampled, so
+    // the coarse/moisture streams above are untouched) runs high on an inset
+    // lowland: high local moisture = a wet hollow. The 0.8 fine-threshold
+    // keeps the basins RARE (a handful of pockets, not the meadow) — the
+    // lakes and ponds are landmarks, not the ground.
+    const LAKE_FINE_THRESHOLD = 0.8;
+    const LAKE_MAX_GROUND = seaLevel + 2;
+    const LAKE_MIN_CELLS = 4;
+    const candidate = new Array<boolean>(height * width).fill(false);
+    for (let row = 0; row < height; row++) {
+        for (let col = 0; col < width; col++) {
+            const index = row * width + col;
+            const ground = coast[index];
+            const inset = !ground.submerged
+                && ground.groundHeight <= LAKE_MAX_GROUND
+                && seaDistance[index] > COASTAL_SAND_DISTANCE
+                && fine(col, row) > LAKE_FINE_THRESHOLD;
+            candidate[index] = inset;
+        }
+    }
+    // Connected-component sizing (8-neighborhood, row-major flood) — the
+    // wetland's extent decides the lake vs pond name
+    const component = new Array<number>(height * width).fill(-1);
+    const sizes: number[] = [];
+    for (let index = 0; index < height * width; index++) {
+        if (!candidate[index] || component[index] !== -1) {
+            continue;
+        }
+        const id = sizes.length;
+        sizes.push(0);
+        const flood: number[] = [index];
+        component[index] = id;
+        for (let head = 0; head < flood.length; head++) {
+            const cur = flood[head];
+            sizes[id] = sizes[id] + 1;
+            const r = Math.floor(cur / width);
+            const c = cur % width;
+            for (const [dx, dy] of BFS_OFFSETS) {
+                const ny = r + dy;
+                const nx = c + dx;
+                if (ny < 0 || ny >= height || nx < 0 || nx >= width) {
+                    continue;
+                }
+                const nindex = ny * width + nx;
+                if (candidate[nindex] && component[nindex] === -1) {
+                    component[nindex] = id;
+                    flood.push(nindex);
+                }
+            }
+        }
+    }
+    cells.forEach((cell, index) => {
+        if (!candidate[index]) {
+            return;
+        }
+        const isLake = (sizes[component[index]] ?? 0) >= LAKE_MIN_CELLS;
+        cell.biome = isLake ? 'lake' : 'pond';
+        // The wetland is walkable ground (the low meadow tier) — it stays
+        // passable; only the OPEN SEA is impassable. Its fresh-water stock
+        // is the inventory plugin's job (plugins/inventory).
+    });
+
+    // ── THE IRON GUARANTEE (R5) ─────────────────────────────────────────────
+    // The vein noise keeps lodes a rare landmark, which leaves the DEFAULT
+    // 25×17 seed-7 island with ZERO lodes (every vein sample lands under
+    // IRON_LODE_THRESHOLD) — an island with no mineable iron at all. The
+    // guarantee stamps the FIRST (row-major) dry HIGHLAND cell with a single
+    // lode whenever the vein noise left the island lode-less, so every
+    // playable island carries at least one finite, visible (the tile's
+    // surface key reads it as 'iron'), mineable (the mine gate) deposit.
+    // The stamp is deterministic (the cells array is row-major) and only
+    // fires when `stats.iron` is 0 — boards the vein noise already lode'd
+    // (the 37×25 reference keeps its 3) and boards with no highland at all
+    // (tiny/degenerate) are left exactly as generated.
+    if (stats.iron === 0) {
+        const highland = cells.find((cell) => cell.biome === 'highland');
+        if (highland) {
+            highland.resources.iron = 1;
+            stats.iron = stats.iron + 1;
+        }
+    }
 
     return { width, height, cells, stats };
 };
@@ -780,6 +962,16 @@ export type TileSurfaceCell = {
  */
 export const tileSurfaceKey = (cell: TileSurfaceCell): string | undefined => {
     const resources = cell.resources ?? {};
+    // R2 — an interior fresh-water basin reads as its WATER, and water wins
+    // over EVERY decoration (the standing tree the meadow-ingress seeded
+    // beneath the carved basin, and the highland iron that never co-locates
+    // with a lowland wetland): most basins still carry a tree deposit from
+    // the pre-basin meadow stand, so water must outrank the tree landmark or
+    // the canopy obscures the fresh-water body (only the treeless basins
+    // would paint water). A basin is its wetland surface, never its trees.
+    if (cell.biome === 'lake' || cell.biome === 'pond') {
+        return cell.biome;
+    }
     if ((resources.iron ?? 0) > 0) {
         return 'iron';
     }

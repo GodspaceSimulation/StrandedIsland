@@ -115,7 +115,7 @@ describe('survivalPlugin', () => {
 
     it('the flee pre-empts a busy queue: the interrupted task is abandoned mid-work', () => {
         const { world, inventory, needs, tasks } = buildStack();
-        spawn(world, 'a', 'Ael', 6, 2); // the forest cell stocks berries
+        spawn(world, 'a', 'Ael', 3, -4); // the berry+mushroom meadow stocks food
         needs.satisfy('a', { hunger: 40 }); // hunger 60 → the 10-minute gather
         world.step();
         expect(tasks.taskOf('a')).toMatchObject({ kind: 'gather', remaining: 10 });
@@ -123,9 +123,9 @@ describe('survivalPlugin', () => {
             world.step();
         }
         // Three minutes into the gather (remaining 7), THEN the boar
-        // closes in
+        // closes in (from the east)
         expect(tasks.taskOf('a')).toMatchObject({ kind: 'gather', remaining: 7 });
-        placeThreat(world, 'boar-x', 'Tusk', 7, 2);
+        placeThreat(world, 'boar-x', 'Tusk', 4, -4);
         world.step();
         // The flee took the head — the half-done gather is abandoned (the
         // bag stays empty; not every task completes)
@@ -148,10 +148,10 @@ describe('survivalPlugin', () => {
 
     it('the tick the threat clears, the interrupted queue resumes', () => {
         const { world, inventory, needs, tasks } = buildStack();
-        spawn(world, 'a', 'Ael', 6, 2); // the forest cell stocks berries
+        spawn(world, 'a', 'Ael', 3, -4); // the berry+mushroom meadow stocks food
         needs.satisfy('a', { hunger: 40 });
         world.step();
-        placeThreat(world, 'boar-x', 'Tusk', 7, 2);
+        placeThreat(world, 'boar-x', 'Tusk', 4, -4);
         // Minute 2: the gather is pre-empted by the flee…
         world.step();
         expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'flees', remaining: 1 });

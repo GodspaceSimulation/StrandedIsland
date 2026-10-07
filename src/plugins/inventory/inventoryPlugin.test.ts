@@ -26,7 +26,8 @@ import { islandTerrainPlugin } from '../terrain/islandTerrain';
 import { entityPlugin } from '../entity/entityPlugin';
 import type { Actor } from '../../engine/types';
 import { inventoryPlugin } from './inventoryPlugin';
-import { inventoryTotal } from './inventory';
+import { inventoryTotal, inventoryEntries } from './inventory';
+import { ITEM_TYPE_GLYPHS } from './items';
 
 // A standard actor fixture placed on a specific cell (ground plane, z = 0)
 const actor = (id: string, name: string, x: number, y: number): Actor => ({
@@ -43,9 +44,11 @@ const actor = (id: string, name: string, x: number, y: number): Actor => ({
 // Default island (25×17, seed 7) — has meadow, forest, beach and sea.
 // Reference cells (captured, row-major order from the survey; deposits
 // seed first, then the biome's living stocks, then the chance draws):
-//   (1,−4)    meadow  stock {tree:10, stone:1, dirt:1, grass:1, berry:2}
-//             (the meadow's localized edge ingress beside the woods)
-//   (−7,0)    forest  stock {stone:1, dirt:1, grass:1, tree:298, berry:1, mushroom:1}
+//   (1,−2)    meadow  stock {tree:10, stone:1, dirt:1, grass:1, berry:2}
+//             (the meadow's localized edge ingress beside the woods; the
+//             0.8 wetland pass turned the old (1,−4) meadow into a lake, so
+//             the meadow pins moved to (1,−2))
+//   (−7,0)    forest  stock {stone:1, dirt:1, grass:1, tree:425, berry:1, mushroom:1, water:1}
 //   (−4,−7)   beach   stock {stone:1, dirt:1, sand:1, coconut:1} (shell draw missed)
 //   (−5,−7)   beach   stock {stone:1, dirt:1, sand:1, coconut:1} (shell draw missed)
 //   (−12,−8)  shallows stock {fish:1}                     (seaweed draw missed)
@@ -78,13 +81,13 @@ const buildLegacyWorld = () => {
 describe('inventoryPlugin', () => {
     it('seeds resources from tile deposits and biome living stocks on setup', () => {
         const { island } = buildWorld();
-        // Meadow (1,−4) → the voxel ground supply (stone/dirt/grass ×∞) +
+        // Meadow (1,−2) → the voxel ground supply (stone/dirt/grass ×∞) +
         // its 10-tree ingress fringe beside the woods + 2 berries
-        expect(island.cellStock(1, -4)).toEqual({ tree: 10, stone: 1, dirt: 1, grass: 1, berry: 2 });
+        expect(island.cellStock(1, -2)).toEqual({ tree: 10, stone: 1, dirt: 1, grass: 1, berry: 2 });
         // Forest (−7,0) → the ground supply + its neighborhood-counted
-        // 298-tree mirror (the persistent fine-scale stand) + 1 berry + the
-        // woods' mushroom
-        expect(island.cellStock(-7, 0)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 298, berry: 1, mushroom: 1 });
+        // full 425-tree mirror (the persistent fine-scale stand) + 1 berry
+        // + the woods' mushroom + the freshwater pass's pooled water
+        expect(island.cellStock(-7, 0)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 425, berry: 1, mushroom: 1, water: 1 });
         // Beach (−4,−7) → the ground supply (stone/dirt/sand ×∞), coconut 1
         expect(island.cellStock(-4, -7)).toEqual({ stone: 1, dirt: 1, sand: 1, coconut: 1 });
         // Sea (−12,−8) → fish (the shallows seaweed draw missed; no tile
@@ -95,22 +98,25 @@ describe('inventoryPlugin', () => {
     it('seeds stone (every dry column), iron lodes (and sometimes flint) on highlands', () => {
         const island = inventoryPlugin();
         createWorld({ seed: 7, plugins: [islandTerrainPlugin(), island] });
-        // Reference highlands on the default island: (0,0) and (−1,−1) hid
-        // a flint each (30% draw hit); (0,−1) missed
+        // Reference highlands on the default island: (0,0) hid a flint
+        // (30% draw hit); (−1,−1) holds the R5 iron lode (the 0.8 board
+        // guarantees a single lode where the vein noise missed); (0,−1)
+        // missed both
         expect(island.cellStock(0, 0)).toEqual({ stone: 1, dirt: 1, flint: 1 });
-        expect(island.cellStock(-1, -1)).toEqual({ stone: 1, dirt: 1, flint: 1 });
+        expect(island.cellStock(-1, -1)).toEqual({ stone: 1, iron: 1, dirt: 1 });
         expect(island.cellStock(0, -1)).toEqual({ stone: 1, dirt: 1 });
         // THE GROUND SUPPLY IS EVERYWHERE its voxels are: all 282 dry land
         // cells carry stone (the bedrock under every column) and dirt (the
         // ground layer under every surface); grass covers meadows AND woods
         expect(island.cellsWithItem('stone').length).toBe(282);
         expect(island.cellsWithItem('dirt').length).toBe(282);
-        expect(island.cellsWithItem('grass').length).toBe(113);
-        // The unlimited sand stays beach-only (160 beaches)
-        expect(island.cellsWithItem('sand').length).toBe(160);
-        // The default island holds NO iron lodes: all 9 vein samples sit
-        // under IRON_LODE_THRESHOLD
-        expect(island.cellsWithItem('iron')).toEqual([]);
+        expect(island.cellsWithItem('grass').length).toBe(135);
+        // The unlimited sand stays beach-only (the R3 2-tile coastal band
+        // shrank the sands from 160 to 138)
+        expect(island.cellsWithItem('sand').length).toBe(138);
+        // THE R5 GATE: the 0.8 board holds exactly ONE iron lode (at
+        // (−1,−1)) — the finite mineable deposit the early tools need
+        expect(island.cellsWithItem('iron').map((cell) => `${cell.x},${cell.y}`)).toEqual(['-1,-1']);
         // The 37×25 reference board lodes 3 highlands — the lodes carry
         // stone too (deposits seed in TILE_RESOURCES order: stone before
         // iron); (−5,2) hid a flint this run (30% draw hit)
@@ -136,7 +142,7 @@ describe('inventoryPlugin', () => {
         // picked by the food gather
         expect(island.gather(ael)).toBe('berry');
         expect(island.of('a')).toEqual({ berry: 1 });
-        expect(island.cellStock(-7, 0)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 298, mushroom: 1 });
+        expect(island.cellStock(-7, 0)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 425, mushroom: 1, water: 1 });
         // Gathering stays out of the log — foraging is a solo beat, not a
         // story between entities (the log is a story teller)
         expect(world.events.logFor('a').map((event) => event.kind)).toEqual(['spawn']);
@@ -171,16 +177,16 @@ describe('inventoryPlugin', () => {
     it('harvest refuses whole-tree cuts on stand-bearing terrain without the ecology mounted', () => {
         const { world, island } = buildWorld();
         const ael = world.spawn(actor('a', 'Ael', -7, 0));
-        // Forest (−7,0) mirrors its neighborhood-counted 298-tree stand
-        expect(world.cellAt(-7, 0)?.resources).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 298 });
+        // Forest (−7,0) mirrors its neighborhood-counted full 425-tree stand
+        expect(world.cellAt(-7, 0)?.resources).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 425 });
         // THE BIOLOGICAL BOUNDARY — the tile carries a persistent stand,
         // no forest ecology is mounted (the legacy inventory-only fixture):
         // the whole-tree harvest is refused BEFORE any mutation — a living
         // tree harvests only through its owner (the remount-farm fix)
         expect(island.harvest(ael, 'tree', 'wood')).toBe(false);
         expect(island.of('a')).toEqual({});
-        expect(island.cellStock(-7, 0)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 298, berry: 1, mushroom: 1 });
-        expect(world.cellAt(-7, 0)?.resources).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 298 });
+        expect(island.cellStock(-7, 0)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 425, berry: 1, mushroom: 1, water: 1 });
+        expect(world.cellAt(-7, 0)?.resources).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 425 });
         // Unlimited deposits are raw ground — they are never converted
         const bram = world.spawn(actor('b', 'Bram', -4, -7));
         expect(island.harvest(bram, 'sand', 'glass')).toBe(false);
@@ -235,11 +241,11 @@ describe('inventoryPlugin', () => {
         expect(island.cellStock(-4, -7)).toEqual({ stone: 1, dirt: 1, sand: 1, coconut: 1 });
         expect(world.cellAt(-4, -7)?.resources).toEqual({ stone: 1, dirt: 1, sand: 1 });
         // Dirt works the same on meadows
-        const bram = world.spawn(actor('b', 'Bram', 1, -4));
+        const bram = world.spawn(actor('b', 'Bram', 1, -2));
         expect(island.takeFromCell(bram, 'dirt')).toBe(true);
         expect(island.of('b')).toEqual({ dirt: 1 });
-        expect(island.cellStock(1, -4)).toEqual({ tree: 10, stone: 1, dirt: 1, grass: 1, berry: 2 });
-        expect(world.cellAt(1, -4)?.resources).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 10 });
+        expect(island.cellStock(1, -2)).toEqual({ tree: 10, stone: 1, dirt: 1, grass: 1, berry: 2 });
+        expect(world.cellAt(1, -2)?.resources).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 10 });
         // The new grass identity: pulled off the meadow's grass cover,
         // never depleting
         expect(island.takeFromCell(bram, 'grass')).toBe(true);
@@ -250,20 +256,20 @@ describe('inventoryPlugin', () => {
             expect(island.takeFromCell(bram, 'stone')).toBe(true);
         }
         expect(island.of('b')).toEqual({ dirt: 1, grass: 1, stone: 3 });
-        expect(world.cellAt(1, -4)?.resources).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 10 });
+        expect(world.cellAt(1, -2)?.resources).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 10 });
     });
 
     it('taking from an empty stock fails without side effects', () => {
         const { world, island } = buildWorld();
-        const ael = world.spawn(actor('a', 'Ael', 1, -4));
+        const ael = world.spawn(actor('a', 'Ael', 1, -2));
         // No water on the cell yet
         expect(island.takeFromCell(ael, 'water')).toBe(false);
         expect(island.of('a')).toEqual({});
         // Inject rain water manually (rain chance is disabled in the fixture)
-        island.cellStock(1, -4).water = 1;
+        island.cellStock(1, -2).water = 1;
         expect(island.takeFromCell(ael, 'water')).toBe(true);
         expect(island.of('a')).toEqual({ water: 1 });
-        expect(island.cellStock(1, -4).water).toBeUndefined();
+        expect(island.cellStock(1, -2).water).toBeUndefined();
     });
 
     it('exchange trades between actor bags atomically', () => {
@@ -313,21 +319,22 @@ describe('inventoryPlugin', () => {
         const fishCells = island.cellsWithItem('fish');
         expect(fishCells.length).toBe(143);
         expect(fishCells.every((cell) => !cell.passable)).toBe(true);
-        // The richer map's foods: every forest cell stocks a mushroom, and
-        // 29 of the woods hang a vine (the 35% draw); the sea's seaweed
-        // covers the deep ocean plus half the shallows — 95 cells
-        expect(island.cellsWithItem('mushroom').length).toBe(75);
-        expect(island.cellsWithItem('vine').length).toBe(29);
-        expect(island.cellsWithItem('seaweed').length).toBe(95);
-        // The tree mirror stands on the 75 woods AND the 30 ingressed
-        // meadows (105 treed tiles — the neighborhood model's counts move
-        // per tile)
-        expect(island.cellsWithItem('tree').length).toBe(105);
+        // The richer map's foods: every forest cell stocks a mushroom (the
+        // 59 woods at the 0.8 wetland cutoff), and 21 of the woods hang a
+        // vine (the 35% draw); the sea's seaweed covers the deep ocean plus
+        // half the shallows — 94 cells
+        expect(island.cellsWithItem('mushroom').length).toBe(59);
+        expect(island.cellsWithItem('vine').length).toBe(21);
+        expect(island.cellsWithItem('seaweed').length).toBe(94);
+        // The tree mirror stands on the 59 woods AND the ingressed meadows
+        // (104 treed tiles — the 0.8 wetlands lose treed grass; the
+        // neighborhood model's counts move per tile)
+        expect(island.cellsWithItem('tree').length).toBe(104);
         // The ground supply blankets the dry land (see the census pins)
         expect(island.cellsWithItem('stone').length).toBe(282);
         expect(island.cellsWithItem('dirt').length).toBe(282);
-        expect(island.cellsWithItem('grass').length).toBe(113);
-        expect(island.cellsWithItem('sand').length).toBe(160);
+        expect(island.cellsWithItem('grass').length).toBe(135);
+        expect(island.cellsWithItem('sand').length).toBe(138);
     });
 
     it('the standing tree is never bagged — trees are living things', () => {
@@ -338,27 +345,51 @@ describe('inventoryPlugin', () => {
         // goes through the harvest (the chop) instead
         expect(island.takeFromCell(ael, 'tree')).toBe(false);
         expect(island.of('a')).toEqual({});
-        expect(island.cellStock(-7, 0)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 298, berry: 1, mushroom: 1 });
+        expect(island.cellStock(-7, 0)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 425, berry: 1, mushroom: 1, water: 1 });
     });
 
     it('regrowth restores stocks on the staggered rhythm', () => {
         const { world, island } = buildWorld();
-        const ael = world.spawn(actor('a', 'Ael', 1, -4));
+        const ael = world.spawn(actor('a', 'Ael', 1, -2));
         void ael;
         // Meadow cell (1,−4): cap 3, rhythm every 30 minutes at offset 20 —
         // the first 19 one-minute steps stay silent, minute 20 regrows
-        island.cellStock(1, -4).berry = 0;
+        island.cellStock(1, -2).berry = 0;
         for (let index = 0; index < 19; index++) {
             world.step(); // minutes 1-19 → no minute hits the offset
         }
-        expect(island.cellStock(1, -4).berry ?? 0).toBe(0);
+        expect(island.cellStock(1, -2).berry ?? 0).toBe(0);
         world.step(); // minute 20 regrows one berry
-        expect(island.cellStock(1, -4).berry).toBe(1);
+        expect(island.cellStock(1, -2).berry).toBe(1);
         // Cap respected: parked at cap, regrowth does not exceed 3
-        island.cellStock(1, -4).berry = 3;
+        island.cellStock(1, -2).berry = 3;
         world.step();
         world.step();
-        expect(island.cellStock(1, -4).berry).toBe(3);
+        expect(island.cellStock(1, -2).berry).toBe(3);
+    });
+
+    it('R2: a lake and a pond both stock fresh water, and the basin refills on the rhythm', () => {
+        const { world, island } = buildWorld();
+        // The 0.8 interior basins — 5 lakes + 8 ponds (13 wetland cells). A
+        // LAKE cell (1,−5) and a POND cell (−4,−3) EACH stock drinking water
+        // on the survey (both read as fresh water, seeded like the dry shore
+        // ring that stands beside a basin — a land cast collects from either)
+        expect(island.cellStock(1, -5).water).toBe(1);
+        expect(island.cellStock(-4, -3).water).toBe(1);
+        // THE 13 BASINS + THEIR DRY SHORE RING = 64 FRESH-WATER CELLS (the
+        // thirst ladder's collect can reach all of them)
+        expect(island.cellsWithItem('water').length).toBe(64);
+        // THE REPLENISHMENT: drain the lake's pool to dry and the
+        // FRESH_WATER_RHYTHM (every 30 minutes at offset 15) tops it back up
+        // toward the cap of 2 — the basin's standing fresh water, refilled
+        // independent of the scattered rain-pool pulse
+        island.cellStock(1, -5).water = 0;
+        for (let index = 0; index < 15; index++) { world.step(); } // minute 15 → +1
+        expect(island.cellStock(1, -5).water).toBe(1);
+        for (let index = 0; index < 30; index++) { world.step(); } // minute 45 → +1, at the cap
+        expect(island.cellStock(1, -5).water).toBe(2);
+        for (let index = 0; index < 30; index++) { world.step(); } // minute 75 → clamped at the cap
+        expect(island.cellStock(1, -5).water).toBe(2);
     });
 
     it('the tree mirror never regrows on a stock rhythm — the ecology owns the trees', () => {
@@ -398,11 +429,10 @@ describe('inventoryPlugin', () => {
         island.resurvey();
         // Reference cells on the 21×13 island (row-major survey order):
         // first beach (−3,−5) hit the shell draw this run; first forest
-        // (−2,−4) mirrors its neighborhood-counted 205-tree stand
-        // (1 cardinal + 2 diagonal forest edges price 75% of the 273 fine
-        // cells)
+        // (−1,−3) mirrors its neighborhood-counted 205-tree stand
+        // (the R3 coastal band shifted the first wood one row east)
         expect(island.cellStock(-3, -5)).toEqual({ stone: 1, dirt: 1, sand: 1, coconut: 1, shell: 1 });
-        expect(island.cellStock(-2, -4)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 205, berry: 1, mushroom: 1 });
+        expect(island.cellStock(-1, -3)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 205, berry: 1, mushroom: 1 });
         // Stocks from the OLD canvas are gone: a cell that only existed on
         // the 25×17 island (0,−7) now has no stock (out of bounds)
         expect(island.cellStock(0, -7)).toEqual({});
@@ -424,20 +454,21 @@ describe('inventoryPlugin', () => {
         }
         unsubscribe();
         // Reference run: the per-minute rain roll (0.0127/min) fired on
-        // minutes 293, 323, 331, 508, 529 — the roll stream is untouched by
-        // the pool sweep (each cell's pool roll comes from its own keyed
-        // stream)
-        expect(rains).toEqual([293, 323, 331, 508, 529]);
+        // minutes 8, 38, 331, 361, 369, 546, 567 — the roll stream is
+        // untouched by the pool sweep (each cell's pool roll comes from its
+        // own keyed stream; the 0.8 wetland pass changed the land-cell set
+        // the rains wets, so the capture moved)
+        expect(rains).toEqual([8, 38, 331, 361, 369, 546, 567]);
         // Beach (−5,−7): coconut regrew to cap 2; TWO rains pooled water
         // here (the patchwork — pools gather on a scattered subset of the
         // land, not under every foot; the pile clamps at the cap of 2);
         // the unlimited ground supply never moved
         expect(island.cellStock(-5, -7)).toEqual({ stone: 1, dirt: 1, sand: 1, coconut: 2, water: 2 });
-        // The patchwork census: five rains × 25% pool chance per cell —
-        // 217 of the 282 land cells ever pooled (a fresh rain still only
-        // wets a quarter of the island; the cast must travel to a pool and
-        // COLLECT before anything drinks)
-        expect(island.cellsWithItem('water').length).toBe(217);
+        // The patchwork census: seven rains × 25% pool chance per cell —
+        // 264 cells ever pooled (the 0.8 wetlands' shore cells pool too;
+        // a fresh rain still only wets a fraction of the island; the cast
+        // must travel to a pool and COLLECT before anything drinks)
+        expect(island.cellsWithItem('water').length).toBe(264);
     });
 });
 
@@ -514,23 +545,23 @@ describe('inventoryPlugin — the entity profiles: bag sizes and the mine gate',
         const ael = world.spawn(actor('a', 'Ael', -7, 0));
         // Fill the eight-unit bag
         island.spawnKit('a', { sand: 8 });
-        // The forest stands (298 trees) — but the bag cannot hold the wood
+        // The forest stands (425 trees) — but the bag cannot hold the wood
         expect(island.harvest(ael, 'tree', 'wood')).toBe(false);
         // The tree never came down: stock, deposit and bag all untouched
-        expect(island.cellStock(-7, 0)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 298, berry: 1, mushroom: 1 });
-        expect(world.cellAt(-7, 0)?.resources).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 298 });
+        expect(island.cellStock(-7, 0)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 425, berry: 1, mushroom: 1, water: 1 });
+        expect(world.cellAt(-7, 0)?.resources).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 425 });
         expect(island.of('a')).toEqual({ sand: 8 });
     });
 
     it('gather respects the capacity — a full bag gathers nothing', () => {
         const { world, island } = buildProfiled();
-        const ael = world.spawn(actor('a', 'Ael', 1, -4));
+        const ael = world.spawn(actor('a', 'Ael', 1, -2));
         for (let index = 0; index < 8; index++) {
             island.takeFromCell(ael, 'dirt');
         }
         // The meadow's two berries cannot fit — the gather is a no-op
         expect(island.gather(ael)).toBe(null);
-        expect(island.cellStock(1, -4)).toEqual({ tree: 10, stone: 1, dirt: 1, grass: 1, berry: 2 });
+        expect(island.cellStock(1, -2)).toEqual({ tree: 10, stone: 1, dirt: 1, grass: 1, berry: 2 });
         expect(island.of('a')).toEqual({ dirt: 8 });
     });
 
@@ -589,5 +620,64 @@ describe('inventoryPlugin — the entity profiles: bag sizes and the mine gate',
         // No entity plugin → no ability system → the bird takes stone too
         expect(island.takeFromCell(birdActor, 'stone')).toBe(true);
         expect(island.of('bird-1')).toEqual({ stone: 1 });
+    });
+});
+
+describe('R2 — the berry bush', () => {
+    // R2 — the BERRY BUSH: a concrete, standing berry plant in the meadow and
+    // forest undergrowth, seeded on a fully deterministic per-coordinate hash
+    // (no random-stream draw, so the placement is stable for a given island).
+    // Its stock count is the berries it BEARS: foraging plucks a berry off it
+    // (the stand draws down) and a dedicated tick pass refills the plucked
+    // stand (the bush regrows). It is a visible, inspectable feature — never
+    // an abstract bag item.
+    it('stands deterministically on a meadow cell — a visible, inspectable feature', () => {
+        const { island } = buildWorld();
+        // The survey's first berry bush (the row-major scan hits (−1,−5) — a
+        // meadow cell): its two loose berries, the standing bush, and the
+        // column's unlimited ground supply
+        expect(island.cellStock(-1, -5)).toEqual({
+            berry: 2,
+            bush: 1,
+            dirt: 1,
+            grass: 1,
+            stone: 1,
+        });
+        // A ground-item (not a tile deposit) — the ground listing carries it
+        // AND the canvas type palette resolves its glyph, so the bush stands
+        // as its own visible plant beside the berries it bears
+        expect(
+            inventoryEntries(island.cellStock(-1, -5)).map((stack) => stack.item),
+        ).toContain('bush');
+        expect(ITEM_TYPE_GLYPHS.bush).toBe('🪴');
+    });
+
+    it('furnishes berries foraging plucks off it — and the stand regrows', () => {
+        const { world, island } = buildWorld();
+        const ael = world.spawn(actor('a', 'Ael', -1, -5));
+        // Clear the loose berries so the BUSH path (not the loose-food path)
+        // is the one exercised
+        const stock = island.cellStock(-1, -5);
+        stock.berry = 0;
+        expect(stock.bush).toBe(1);
+        // Forage off the bush: it yields a berry (the bush's stock IS the
+        // berries it bears), the stand draws down, and the berry lands in
+        // the bag
+        expect(island.gather(ael)).toBe('berry');
+        // The stand is drawn to zero (the `bush` key falls out of the stock
+        // at zero — the regrowth pass keys the plant off the registry, not
+        // the stock key, so the depleted stand still regrows)
+        expect(island.cellStock(-1, -5).bush ?? 0).toBe(0);
+        expect(island.of('a')).toEqual({ berry: 1 });
+        // THE REGROW: step the world to the bush rhythm (the 40-minute
+        // cadence hits its offset at minute 25) — the plucked stand refills
+        // its berry. The dedicated pass keeps the standing plant in the
+        // regrowth sweep even at zero (no depletion-vanishing).
+        let bush = 0;
+        for (let minute = 0; minute < 40; minute++) {
+            world.step();
+            bush = island.cellStock(-1, -5).bush ?? 0;
+        }
+        expect(bush).toBe(1);
     });
 });

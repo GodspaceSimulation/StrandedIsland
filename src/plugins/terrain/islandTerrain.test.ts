@@ -36,6 +36,54 @@ import {
 } from './islandTerrain';
 import { createWorld } from '../../engine/world';
 
+// The R3 coastal-band geometry, verified against the generator's own rules
+// WITHOUT reaching into its internals: the band formula (boards ≤5 across run
+// a 1-tile ring, ≥7 a 2-tile ring) and the multi-source BFS distance from
+// every dry cell to the nearest sea cell (8-neighbourhood). A dry cell is a
+// BEACH/sand when its distance is within the band — so the invariants below
+// re-derive the coast independently of the generator.
+const coastalBand = (width: number, height: number): number =>
+    Math.max(1, Math.min(2, Math.floor(Math.min(width, height) / 3)));
+
+const seaDistanceOf = (island: { width: number; height: number; cells: Array<{ passable: boolean }> }): number[] => {
+    const { width, height, cells } = island;
+    const dist = new Array<number>(cells.length).fill(-1);
+    const queue: number[] = [];
+    for (let index = 0; index < cells.length; index++) {
+        if (!cells[index].passable) {
+            dist[index] = 0;
+            queue.push(index);
+        }
+    }
+    const offsets: Array<[number, number]> = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+    for (let head = 0; head < queue.length; head++) {
+        const index = queue[head];
+        const row = Math.floor(index / width);
+        const col = index % width;
+        for (const [dx, dy] of offsets) {
+            const ny = row + dy;
+            const nx = col + dx;
+            if (ny < 0 || ny >= height || nx < 0 || nx >= width) {
+                continue;
+            }
+            const nindex = ny * width + nx;
+            if (dist[nindex] !== -1) {
+                continue;
+            }
+            dist[nindex] = dist[index] + 1;
+            queue.push(nindex);
+        }
+    }
+    return dist;
+};
+
+/** A board keeps a non-coastal interior: some dry cell is beyond the band AND not sand. */
+const interiorSurvives = (island: ReturnType<typeof generateIsland>): boolean => {
+    const dist = seaDistanceOf(island);
+    const b = coastalBand(island.width, island.height);
+    return island.cells.some((cell, i) => cell.passable && dist[i] > b && !cell.resources.sand);
+};
+
 describe('oddSize', () => {
     it('nudges even sizes up to the next odd size, odd sizes pass through', () => {
         // (0, 0) must be the exact canvas center — even widths have no middle
@@ -58,11 +106,13 @@ describe('generateIsland', () => {
         expect(map).toEqual([
             'shallows shallows shallows shallows shallows shallows ocean',
             'shallows shallows beach beach beach shallows ocean',
-            'shallows beach forest forest beach beach shallows',
-            'ocean beach beach forest beach beach shallows',
+            'shallows beach beach forest beach beach shallows',
+            'ocean beach beach beach beach beach shallows',
             'ocean ocean ocean ocean ocean ocean shallows',
         ]);
-        expect(island.stats).toEqual({ land: 13, water: 22, forest: 3, iron: 0 });
+        // R1/R3 shifted the 7×5: the lone forest now sits on the center
+        // (0,0) and the coastal sand band trimmed the beaches
+        expect(island.stats).toEqual({ land: 13, water: 22, forest: 1, iron: 0 });
     });
 
     it('produces the exact biome map for seed 7 at default size (25×17)', () => {
@@ -76,26 +126,33 @@ describe('generateIsland', () => {
         const map = Array.from({ length: island.height }, (_, row) =>
             Array.from({ length: island.width }, (_, col) => island.cells[row * island.width + col].biome.slice(0, 2)).join(''),
         );
+        // R1 meadow-feed re-grew the woods, R3 shrank the coastal sand to a
+        // 2-tile band (138 sand), and R2 seeded the interior fresh-water
+        // basins at the 0.8 fine cutoff: 5 LAKES ('la' — the connected
+        // wetlands ≥ LAKE_MIN_CELLS) + 8 PONDS ('po' — smaller pockets), a
+        // connected wetland on the north coast and scattered on the lowlands
         expect(map).toEqual([
             "shshshshshshococococococococococococshshshshshshsh",
             "shocshococshshbebebebebebebebebebebebeshshshshshsh",
-            "shshshshshbebebebebebebebebebefobebebebeshshbeshsh",
-            "shshshbebebebebebebebebebebefofofofobebebeshshshsh",
-            "ocshshbebebebebebebebebebemefofofofofobebebeshshsh",
-            "ocshbebebebebebememememememefofofofofofobebebeshsh",
-            "shshbebebebebebemefofomememefofofofofofofobebeshsh",
-            "shshbebebebemememefomehihimefofofofofofofofobeshsh",
-            "shbebebebefofofobemehihihihifofobebefofofofobebesh",
+            "shshshshshbebebebebebebebebebebebebebebeshshbeshsh",
+            "shshshbebebebebebememememelalalafobebebebeshshshsh",
+            "ocshshbebebebememememememelalafofofobebebebeshshsh",
+            "ocshbebebemememepomememememefofofofofobebebebeshsh",
+            "shshbebebemememepopofomememefofofofofofobebebeshsh",
+            "shshbebefofomememefomehihimefofofofofofofobebeshsh",
+            "shbebebefofopofofomehihihihifofofofofofofobebebesh",
             "shbebebebefofofofomemehihihifofofofomemefobebebesh",
-            "shshbebebebefofomemememememefofofofofofofobebeshsh",
-            "shocshbebebebememememememememebebebefofofobebeshsh",
-            "shococshbebebebebebebemefomebebebebefofofobeshshoc",
-            "shocshshshbebebebebemefofofobebebebebebebebeshshsh",
-            "shshbebeshbebebebebefofofofobebebebebeshshshshshsh",
+            "shshbebebebefopomemememememefofofopopofobebebeshsh",
+            "shocshbebebebemememememememememefofopofobebebeshsh",
+            "shococshbebebemememememefomememefobebebebebeshshoc",
+            "shocshshshbebememememefofofomemebebebebebebeshshsh",
+            "shshbebeshbebebebebebebebebebebebebebeshshshshshsh",
             "ocshbebebebebebebebebebebebebebebebeshocococococsh",
             "ococococococococococococococococococshshshshshshsh",
         ]);
-        expect(island.stats).toEqual({ land: 282, water: 143, forest: 75, iron: 0 });
+        // R5's finite mineable guarantee: the default island carries exactly
+        // 1 iron lode (stamped on the first highland) — census iron 1
+        expect(island.stats).toEqual({ land: 282, water: 143, forest: 68, iron: 1 });
     });
 
     it('carries resource deposits: the voxel ground supply, the neighborhood tree stands, bare sea', () => {
@@ -107,34 +164,36 @@ describe('generateIsland', () => {
         expect(FOREST_COVERAGE).toBe(0.45);
         expect(forestTreeCount(25, 17)).toBe(191);
         expect(forestTreeCount(7, 5)).toBe(16);
-        // Forest (3,−6): the tile mirrors its neighborhood-counted 276-tree
-        // stand, PLUS the voxel ground supply its column is built from
-        // (stone bedrock, the dirt under it, the grass the woods stand on)
+        // (3,−6) is now a BEACH (R1/R3 re-grew the woods into the meadows):
+        // the column is stone/dirt/sand — all three unlimited ground supply
         expect(island.cells.find((cell) => cell.x === 3 && cell.y === -6)?.resources).toEqual({
             stone: 1,
             dirt: 1,
-            grass: 1,
-            tree: 276,
+            sand: 1,
         });
-        // THE NEIGHBORHOOD MODEL — every one of the island's 75 forests
-        // carries the coverage its 8 neighbors price (captured per tile:
-        // woods ringed by forests clamp to the FULL 425, edge woods land
-        // well below, rocky edges lose their spillover band's worth)
+        // THE NEIGHBORHOOD MODEL — every one of the island's 59 forest-biome
+        // tiles carries the coverage its 8 neighbors price (the 0.8 basin
+        // cutoff turned 4 more border woods into lakes), NOW INCLUDING every
+        // meadow neighbor at the full forest-adjacency weights (R1's
+        // grassland≡forest equivalence, forestCoverageOf's 3rd argument).
+        // Woods ringed by woods+meadows clamp to the FULL 425, edge woods land
+        // well below, rocky edges lose their spillover band's worth
         const forestCounts = island.cells
             .filter((cell) => cell.biome === 'forest')
             .map((cell) => `${cell.x},${cell.y}:${cell.resources.tree}`)
             .join(' ');
+        // R1 meadow-feed re-grew the woods (68 census); the 59 forest-biome
+        // tiles (0.8 cutoff) read the meadow neighbors at full weight (many
+        // clamp 425)
         expect(forestCounts).toBe(
-            '3,-6:276 2,-5:319 3,-5:404 4,-5:383 5,-5:319 2,-4:361 3,-4:425 4,-4:425 ' +
-            '5,-4:425 6,-4:340 2,-3:361 3,-3:425 4,-3:425 5,-3:425 6,-3:425 7,-3:340 ' +
-            '-3,-2:276 -2,-2:234 2,-2:361 3,-2:425 4,-2:425 5,-2:425 6,-2:425 7,-2:425 ' +
-            '8,-2:340 -3,-1:234 2,-1:340 3,-1:425 4,-1:383 5,-1:383 6,-1:425 7,-1:425 ' +
-            '8,-1:425 9,-1:319 -7,0:298 -6,0:361 -5,0:319 2,0:298 3,0:404 6,0:340 ' +
-            '7,0:383 8,0:404 9,0:319 -7,1:319 -6,1:425 -5,1:404 -4,1:276 2,1:298 ' +
-            '3,1:425 4,1:383 5,1:340 8,1:340 -6,2:319 -5,2:319 2,2:276 3,2:361 ' +
-            '4,2:361 5,2:361 6,2:361 7,2:383 8,2:340 6,3:383 7,3:425 8,3:361 ' +
-            '0,4:276 6,4:298 7,4:361 8,4:298 -1,5:340 0,5:404 1,5:319 -2,6:255 ' +
-            '-1,6:340 0,6:361 1,6:298',
+            '4,-5:319 3,-4:425 4,-4:425 5,-4:340 2,-3:425 3,-3:425 4,-3:425 ' +
+            '5,-3:425 6,-3:340 -2,-2:404 2,-2:425 3,-2:425 4,-2:425 5,-2:425 6,-2:425 ' +
+            '7,-2:340 -8,-1:319 -7,-1:425 -3,-1:404 2,-1:404 3,-1:425 4,-1:425 ' +
+            '5,-1:425 6,-1:425 7,-1:425 8,-1:319 -8,0:319 -7,0:425 -5,0:425 -4,0:425 ' +
+            '2,0:319 3,0:425 4,0:425 5,0:425 6,0:425 7,0:425 8,0:361 ' +
+            '-7,1:340 -6,1:425 -5,1:425 -4,1:425 2,1:319 3,1:425 4,1:425 5,1:425 ' +
+            '8,1:319 -6,2:340 2,2:404 3,2:425 4,2:425 7,2:383 4,3:425 5,3:383 ' +
+            '7,3:298 0,4:425 4,4:340 -1,5:361 0,5:361 1,5:361',
         );
         // THE MEADOW INGRESS — every meadow beside woods carries its
         // localized edge fringe (6 spots per cardinal forest edge, 2 per
@@ -143,14 +202,21 @@ describe('generateIsland', () => {
             .filter((cell) => cell.biome === 'meadow')
             .map((cell) => `${cell.x},${cell.y}:${cell.resources.tree ?? 0}`)
             .join(' ');
+        // R1 re-grew the meadow fringes (the meadows are now forest-adjacent
+        // feeders); the 0.8 cutoff turned (1,−4)/(1,−5) into lakes, so 2 fewer
+        // meadow tiles (63) carry ingress — 44 meadows carry trees
         expect(meadowCounts).toBe(
-            '1,-4:10 -4,-3:2 -3,-3:8 -2,-3:8 -1,-3:2 0,-3:0 1,-3:10 -4,-2:8 -1,-2:6 ' +
-            '0,-2:0 1,-2:10 -6,-1:10 -5,-1:8 -4,-1:10 -2,-1:14 1,-1:10 -3,0:8 -3,1:6 ' +
-            '-2,1:0 6,1:24 7,1:26 -4,2:14 -3,2:2 -2,2:0 -1,2:0 0,2:0 1,2:8 -5,3:8 ' +
-            '-4,3:2 -3,3:0 -2,3:0 -1,3:2 0,3:6 1,3:4 2,3:8 -1,4:14 1,4:14 -2,5:14',
+            '-3,-5:0 -2,-5:0 -1,-5:0 0,-5:0 -5,-4:0 -4,-4:0 -3,-4:0 -2,-4:0 ' +
+            '-1,-4:0 0,-4:0 -7,-3:0 -6,-3:0 -5,-3:0 -3,-3:8 -2,-3:8 -1,-3:2 0,-3:0 ' +
+            '1,-3:10 -7,-2:8 -6,-2:2 -5,-2:0 -1,-2:6 0,-2:0 1,-2:10 ' +
+            '-6,-1:16 -5,-1:10 -4,-1:16 -2,-1:14 1,-1:10 -3,0:14 -3,1:8 -2,1:0 ' +
+            '6,1:26 7,1:24 -4,2:14 -3,2:2 -2,2:0 -1,2:0 0,2:0 1,2:8 -5,3:8 -4,3:2 ' +
+            '-3,3:0 -2,3:0 -1,3:2 0,3:6 1,3:4 2,3:8 3,3:18 -5,4:0 -4,4:0 -3,4:0 ' +
+            '-2,4:2 -1,4:14 1,4:14 2,4:2 3,4:8 -5,5:0 -4,5:0 -3,5:0 -2,5:6 2,5:6 3,5:2',
         );
-        // The treed-tile census: 75 woods + the 30 ingressed meadows
-        expect(island.cells.filter((cell) => (cell.resources.tree ?? 0) > 0).length).toBe(105);
+        // The treed-tile census: 59 woods + the 35 ingressed meadows + the 13
+        // wetland tiles that kept their pre-basin fringe deposits — 107
+        expect(island.cells.filter((cell) => (cell.resources.tree ?? 0) > 0).length).toBe(107);
         // Beach (−4,−7): the column is stone/dirt/sand — all three supply
         expect(island.cells.find((cell) => cell.x === -4 && cell.y === -7)?.resources).toEqual({
             stone: 1,
@@ -167,11 +233,14 @@ describe('generateIsland', () => {
         });
         // The ground-supply censuses: every dry land cell carries stone
         // (the bedrock under everything) and dirt; grass covers meadows
-        // AND woods (113 = 75 forests + 38 meadows); sand only the beaches
+        // AND woods (135 = 59 forests + the grass-tiled meadows; R2's 13
+        // lake/pond wetlands lose their grass — the wetland reads as water,
+        // not meadow); sand only the beaches — R3's 2-tile coastal band
+        // shrank the sands from 160 to 138
         expect(island.cells.filter((cell) => (cell.resources.stone ?? 0) > 0).length).toBe(282);
         expect(island.cells.filter((cell) => (cell.resources.dirt ?? 0) > 0).length).toBe(282);
-        expect(island.cells.filter((cell) => (cell.resources.grass ?? 0) > 0).length).toBe(113);
-        expect(island.cells.filter((cell) => (cell.resources.sand ?? 0) > 0).length).toBe(160);
+        expect(island.cells.filter((cell) => (cell.resources.grass ?? 0) > 0).length).toBe(135);
+        expect(island.cells.filter((cell) => (cell.resources.sand ?? 0) > 0).length).toBe(138);
         // Sea (−12,−8): no deposits — submerged columns supply nothing
         expect(island.cells.find((cell) => cell.x === -12 && cell.y === -8)?.resources).toEqual({});
     });
@@ -198,20 +267,87 @@ describe('generateIsland', () => {
             stone: 1,
             dirt: 1,
         });
-        // The smaller 25×17 default island keeps every vein sample below the
-        // threshold (0.1552 … 0.4076) — its iron census reads 0
-        expect(generateIsland({ seed: 7 }).stats.iron).toBe(0);
+        // R5's FINITE MINEABLE GUARANTEE: the smaller 25×17 default island
+        // samples every vein below threshold, so the guarantee stamps exactly
+        // one lode on its first highland (row-major) — census iron 1 at (−1,−1)
+        const def = generateIsland({ seed: 7 });
+        expect(def.stats.iron).toBe(1);
+        expect(def.cells.find((cell) => (cell.resources.iron ?? 0) > 0)).not.toBeUndefined();
+    });
+
+    it('R3: the coastal sand hugs every coast in a 1–2 tile band with a surviving interior (multi-seed)', () => {
+        // THE COASTAL BAND FORMULA: boards ≤5 across run a 1-tile ring,
+        // boards ≥7 a 2-tile ring (the distance-to-sea rule — a real island
+        // keeps a thin coastal ring, never an elevation band). The formula
+        // is max(1, min(2, floor(min(w,h)/3)))
+        expect(coastalBand(5, 5)).toBe(1);
+        expect(coastalBand(7, 5)).toBe(1);
+        expect(coastalBand(7, 7)).toBe(2);
+        expect(coastalBand(25, 17)).toBe(2);
+        // Across 8 seeds on the default 25×17 island TWO invariants hold:
+        // (1) every dry SAND cell sits within the 2-tile band of the sea
+        // (sand hugs the coast); (2) a non-coastal interior survives (a dry
+        // non-sand cell farther than the band from the sea).
+        for (let seed = 1; seed <= 8; seed++) {
+            const island = generateIsland({ seed, width: 25, height: 17 });
+            const dist = seaDistanceOf(island);
+            const band = coastalBand(25, 17);
+            island.cells.forEach((cell, i) => {
+                if (cell.passable && cell.resources.sand) {
+                    expect(dist[i]).toBeLessThanOrEqual(band);
+                }
+            });
+            expect(interiorSurvives(island)).toBe(true);
+        }
+    });
+
+    it('R3: a fully-coastal tiny board degrades gracefully — the band never forces an interior', () => {
+        // On the compact 7×7 (band 2) some seeds are FULLY coastal — every
+        // dry cell sits within 2 of the sea rim, so the coastal ring erases
+        // the interior (a graceful degeneration: tiny boards keep a
+        // non-coastal center only where there is room). The 5×5 / 7×5
+        // (band 1) boards, by contrast, always keep a dry interior.
+        expect(interiorSurvives(generateIsland({ seed: 7, width: 5, height: 5 }))).toBe(true);
+        expect(interiorSurvives(generateIsland({ seed: 7, width: 7, height: 5 }))).toBe(true);
+        expect(interiorSurvives(generateIsland({ seed: 1, width: 7, height: 7 }))).toBe(false);
+        expect(interiorSurvives(generateIsland({ seed: 8, width: 7, height: 7 }))).toBe(false);
+    });
+
+    it('R5: every island that carries a highland guarantees a mineable lode (multi-seed)', () => {
+        // THE FINITE MINEABLE GUARANTEE: after the vein-noise pass (which
+        // keeps lodes a rare landmark), any board whose vein samples all
+        // landed below the threshold carries ZERO lodes; the guarantee then
+        // stamps one on its FIRST (row-major) highland. The net invariant
+        // across seeds: a board holds a mineable iron lode (stats.iron ≥ 1)
+        // EXACTLY when it has a highland to host it — a board with no
+        // highland is left lode-less.
+        for (let seed = 1; seed <= 8; seed++) {
+            const island = generateIsland({ seed, width: 25, height: 17 });
+            const hasHighland = island.cells.some((cell) => cell.biome === 'highland');
+            expect(island.stats.iron >= 1).toBe(hasHighland);
+        }
+        // The exact stamp: the guarantee fires at the first (row-major)
+        // highland when the vein noise left the board lode-less
+        const lodeOf = (seed: number) => {
+            const island = generateIsland({ seed, width: 25, height: 17 });
+            const cell = island.cells.find((c) => (c.resources.iron ?? 0) > 0);
+            return cell ? [cell.x, cell.y] : null;
+        };
+        expect(generateIsland({ seed: 7, width: 25, height: 17 }).stats.iron).toBe(1);
+        expect(lodeOf(7)).toEqual([-1, -1]);
+        expect(lodeOf(1)).toEqual([-2, 0]);
     });
 
     it('derives the canvas surface from the tile deposits and its ground (tileSurfaceKey)', () => {
         const island = generateIsland({ seed: 7, width: 7, height: 5 });
         // Landmarks win: the 7×5 island surfaces as tree / sand (the
         // treed woods, the beaches) — the seabed keeps its biome
+        // R1/R3 reshaped the 7×5: the single center tree + the trimmed sands
         expect(island.cells.map((cell) => tileSurfaceKey(cell))).toEqual([
             'shallows', 'shallows', 'shallows', 'shallows', 'shallows', 'shallows', 'ocean',
             'shallows', 'shallows', 'sand', 'sand', 'sand', 'shallows', 'ocean',
-            'shallows', 'sand', 'tree', 'tree', 'sand', 'sand', 'shallows',
-            'ocean', 'sand', 'sand', 'tree', 'sand', 'sand', 'shallows',
+            'shallows', 'sand', 'sand', 'tree', 'sand', 'sand', 'shallows',
+            'ocean', 'sand', 'sand', 'sand', 'sand', 'sand', 'shallows',
             'ocean', 'ocean', 'ocean', 'ocean', 'ocean', 'ocean', 'shallows',
         ]);
         // Deposit priority puts the rarest resource first: a stone tile with
@@ -223,8 +359,11 @@ describe('generateIsland', () => {
         // fringe the meadow gained — the landmark outranks the ground), a
         // BARE meadow as its grass cover, a highland as its stone
         const current = generateIsland({ seed: 7 });
-        // (1,−4): 1 cardinal + 2 diagonal forest edges → the 10-spot fringe
-        expect(tileSurfaceKey(current.cells.find((cell) => cell.x === 1 && cell.y === -4)!)).toBe('tree');
+        // (1,−4): the R2 lake basin (its meadow-ingress tree stand stands
+        // BENEATH the carved wetland) — the water surface now ranks above the
+        // tree deposit, so the lake paints its water, not the canopy that
+        // seeded under it (the canopy-on-water the R2 fix resolves)
+        expect(tileSurfaceKey(current.cells.find((cell) => cell.x === 1 && cell.y === -4)!)).toBe('lake');
         // (0,−3): every neighbor is meadow/beach/water — no woods, no fringe
         expect(tileSurfaceKey(current.cells.find((cell) => cell.x === 0 && cell.y === -3)!)).toBe('grass');
         expect(tileSurfaceKey(current.cells.find((cell) => cell.x === 0 && cell.y === 0)!)).toBe('stone');
@@ -276,10 +415,10 @@ describe('generateIsland', () => {
 
     it('builds voxel columns bottom → top with dirt under the surface', () => {
         const island = generateIsland({ seed: 7, width: 7, height: 5 });
-        // Forest cell (0,0) — the canvas middle: stone bedrock, dirt, grass
-        // surface, forest on top, the neighborhood-counted 23-tree stand
-        // mirrored (2 cardinal forest neighbors price 65% of the 35 fine
-        // cells — the 7×5 island's woods are (−1,0), (0,0), (0,1))
+        // Forest cell (0,0) — the canvas middle (R1's lone 7×5 wood): stone
+        // bedrock, dirt, grass surface, forest on top, the 16-tree neighbor-
+        // priced stand mirrored (the 7×5 island's woods are now just (0,0)
+        // — its meadow neighbors feed it at full R1 weight)
         expect(island.cells[2 * 7 + 3]).toEqual({
             x: 0,
             y: 0,
@@ -288,7 +427,7 @@ describe('generateIsland', () => {
             waterLevel: 3,
             biome: 'forest',
             passable: true,
-            resources: { stone: 1, dirt: 1, grass: 1, tree: 23 },
+            resources: { stone: 1, dirt: 1, grass: 1, tree: 16 },
         });
         // Top-left corner (−3,−2): shallow seabed sand + water stacked to
         // the sea level — no deposits on a sea column
@@ -347,7 +486,7 @@ describe('islandTerrainPlugin', () => {
     it('exposes generation stats', () => {
         const plugin = islandTerrainPlugin({ width: 7, height: 5 });
         createWorld({ seed: 7, plugins: [plugin] });
-        expect(plugin.stats()).toEqual({ land: 13, water: 22, forest: 3, iron: 0 });
+        expect(plugin.stats()).toEqual({ land: 13, water: 22, forest: 1, iron: 0 });
     });
 
     it('respects a seed override independent of the world seed', () => {
@@ -375,7 +514,8 @@ describe('islandTerrainPlugin', () => {
         expect(world.canvas.height).toBe(13);
         expect(world.canvas.cells.length).toBe(273);
         expect(plugin.size()).toEqual({ width: 21, height: 13 });
-        expect(plugin.stats()).toEqual({ land: 162, water: 111, forest: 44, iron: 0 });
+        // R1's meadow-feed re-grew the 21×13 woods slightly (40 vs 44)
+        expect(plugin.stats()).toEqual({ land: 162, water: 111, forest: 40, iron: 0 });
         // The redraw is announced on the story feed (a world-scale
         // happening — the god reshaped the world)
         expect(world.events.log()[events]).toEqual({
@@ -468,21 +608,21 @@ describe('islandTerrainPlugin', () => {
     it('distributes the parent deposits onto the subtiles (the zoomed view)', () => {
         const plugin = islandTerrainPlugin({ width: 7, height: 5 });
         const world = createWorld({ seed: 7, plugins: [plugin] });
-        // The forest center seeds 23 trees (the neighborhood model's 65%
-        // of 35 fine cells — 2 cardinal forest neighbors) — their
-        // PERSISTENT fine positions carry one tree unit each, and every
-        // subtile mirrors the ground supply (stone/dirt/grass ×∞)
+        // The forest center (R1's lone 7×5 wood) mirrors its 16-tree
+        // neighbor-priced stand — those PERSISTENT fine positions carry one
+        // tree unit each, and every subtile mirrors the ground supply
+        // (stone/dirt/grass ×∞)
         const forest = plugin.canvasFor([{ x: 0, y: 0 }]);
         const treeTiles = forest?.cells.filter((cell) => (cell.resources.tree ?? 1) === 1 && cell.resources.tree === 1);
         expect(treeTiles?.map((cell) => [cell.x, cell.y])).toEqual([
             [-3, -2], [-1, -2], [0, -2], [1, -2], [2, -2],
-            [-3, -1], [-2, -1], [-1, -1], [1, -1], [3, -1],
-            [1, 0], [2, 0], [3, 0],
+            [-3, -1], [-2, -1], [-1, -1], [1, -1],
+            [3, 0],
             [-3, 1], [0, 1], [3, 1],
-            [-3, 2], [-2, 2], [-1, 2], [0, 2], [1, 2], [2, 2], [3, 2],
+            [-2, 2], [-1, 2], [1, 2],
         ]);
-        // Exactly twelve bare fine cells remain (35 − 23) — the seeded gaps
-        expect(forest?.cells.filter((cell) => cell.resources.tree === undefined).length).toBe(12);
+        // Exactly nineteen bare fine cells remain (35 − 16) — the seeded gaps
+        expect(forest?.cells.filter((cell) => cell.resources.tree === undefined).length).toBe(19);
         // A treed subtile carries its tree + the ground supply; a bare one
         // only the supply
         expect(plugin.cellFor([{ x: 0, y: 0 }, { x: 2, y: -2 }])?.resources).toEqual({
@@ -513,7 +653,7 @@ describe('islandTerrainPlugin', () => {
         // A length-1 path resolves the root canvas cell
         expect(plugin.cellFor([{ x: 0, y: 0 }])).toEqual(world.cellAt(0, 0));
         // A length-2 path resolves a subtile of the forest's sub-grid — one
-        // of the 23 stand-authored tree subtiles
+        // of the 16 stand-authored tree subtiles (R1's lone 7×5 wood)
         const subtile = plugin.cellFor([{ x: 0, y: 0 }, { x: 2, y: -2 }]);
         expect(subtile?.biome).toBe('forest');
         expect(subtile?.resources).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 1 });
@@ -535,12 +675,12 @@ describe('islandTerrainPlugin', () => {
         // drops with the stand, plugins/forest syncMirror) leaves every
         // OTHER position byte-identical — the trees never reshuffle
         const before = plugin.canvasFor([{ x: 0, y: 0 }])!.cells.map((cell) => cell.resources.tree ?? 0);
-        expect(before.filter((count) => count === 1).length).toBe(23);
+        expect(before.filter((count) => count === 1).length).toBe(16);
         plugin.forestOf(0, 0)!.trees.delete('-3,-2');
         plugin.forestOf(0, 0)!.trees.delete('-1,-2');
-        world.cellAt(0, 0)!.resources.tree = 21;
+        world.cellAt(0, 0)!.resources.tree = 14;
         const after = plugin.canvasFor([{ x: 0, y: 0 }])!.cells.map((cell) => cell.resources.tree ?? 0);
-        expect(after.filter((count) => count === 1).length).toBe(21);
+        expect(after.filter((count) => count === 1).length).toBe(14);
         // The surviving positions are byte-identical to the seeded layout
         after.forEach((count, index) => {
             if (before[index] === 0) {
@@ -557,20 +697,20 @@ describe('islandTerrainPlugin', () => {
     it('regenerates sub-grids when the parent deposits change (fingerprint)', () => {
         const plugin = islandTerrainPlugin({ width: 7, height: 5 });
         const world = createWorld({ seed: 7, plugins: [plugin] });
-        // The forest mirrors its 23-tree stand; the fingerprint (deposits +
+        // The forest mirrors its 16-tree stand; the fingerprint (deposits +
         // voxels + biome) changes when a tree is felled off the record —
         // the cached sub-grid invalidates and the mirror re-reads the stand
         const sub = plugin.canvasFor([{ x: 0, y: 0 }]);
-        expect(sub?.cells.filter((cell) => (cell.resources.tree ?? 0) === 1).length).toBe(23);
+        expect(sub?.cells.filter((cell) => (cell.resources.tree ?? 0) === 1).length).toBe(16);
         const firstPass = sub!.cells.map((cell) => cell.resources.tree ?? 0);
         // A regeneration with an UNCHANGED parent serves the cached grid
         expect(plugin.canvasFor([{ x: 0, y: 0 }])).toBe(sub);
         // Drop the standing-tree mirror by one (what a full fell does) —
         // the sub-grid invalidates and re-mirrors
-        world.cellAt(0, 0)!.resources.tree = 22;
+        world.cellAt(0, 0)!.resources.tree = 15;
         plugin.forestOf(0, 0)!.trees.delete('-3,-2');
         const second = plugin.canvasFor([{ x: 0, y: 0 }]);
-        expect(second?.cells.filter((cell) => (cell.resources.tree ?? 0) === 1).length).toBe(22);
+        expect(second?.cells.filter((cell) => (cell.resources.tree ?? 0) === 1).length).toBe(15);
         // The reshape is exact: only the felled position went bare
         second!.cells.forEach((cell, index) => {
             const before = firstPass[index];

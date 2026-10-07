@@ -446,8 +446,18 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     // entries instead — tile-level at the island view, fine-cell level in
     // the interior views — drawn through the same STRUCTURE_TYPE_GLYPHS
     // type palette the entity glyphs resolve; see features/tileDetails.ts.)
-    const decorationOfCell = (cell: unknown): string | undefined =>
-        ((cell as { resources?: TileResources }).resources?.tree ?? 0) > 0 ? 'tree' : undefined;
+    // R2 — a basin (lake/pond wetland) paints its WATER surface, so the tree
+    // decoration is suppressed on it: the meadow-ingress stand that seeded
+    // beneath the carved basin must not obscure the fresh-water body (the
+    // canopy-on-water the reviewer flags). Non-basin treed tiles keep their
+    // tree decoration (the R1 grass-land fringe stands unaffected).
+    const decorationOfCell = (cell: unknown): string | undefined => {
+        const slice = cell as { biome?: string; resources?: TileResources };
+        if (slice.biome === 'lake' || slice.biome === 'pond') {
+            return undefined;
+        }
+        return (slice.resources?.tree ?? 0) > 0 ? 'tree' : undefined;
+    };
 
     // ── Profile glyphs — the gendered human emoji ───────────────────────────
     // The cast's PROFILE (engine/types ActorProfile) rides the coordinate
@@ -470,8 +480,17 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     // palettes don't list the key — the island extends them here (meadow
     // kin — the grass ground reads as meadow green) without touching the
     // shared package.
+    // R2 — the interior fresh-water basins (the lake/pond wetland biomes the
+    // terrain generator carves) get their own water-blue tile colors beside
+    // the grass ground identity
     const GRASS_TILE_COLOR = '#5f9450';
-    const GRASS_TILE_PALETTE = { grass: GRASS_TILE_COLOR };
+    const LAKE_TILE_COLOR = '#3f7fbf';
+    const POND_TILE_COLOR = '#5aa0cf';
+    const GRASS_TILE_PALETTE = {
+        grass: GRASS_TILE_COLOR,
+        lake: LAKE_TILE_COLOR,
+        pond: POND_TILE_COLOR,
+    };
 
     // The representation plugin from @godspace/canvas — binds itself through
     // the engine's plugin context (world.canvas + world.coordinates)

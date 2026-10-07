@@ -12,6 +12,10 @@ export const BIOME_COLORS: Record<Biome, string> = {
     meadow: '#5f9450',
     forest: '#2e6b37',
     highland: '#8d939e',
+    // R2 — the interior fresh-water basins (open water blue, distinct from
+    // the ocean/shallows sea)
+    lake: '#2f6f9f',
+    pond: '#4a90c2',
 };
 
 /** Actor condition dot / badge colors. */

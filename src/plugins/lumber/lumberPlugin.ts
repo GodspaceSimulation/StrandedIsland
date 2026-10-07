@@ -77,13 +77,20 @@ export const lumberPlugin = (options: LumberPluginOptions): LumberPlugin => {
                     (inventory.of(subject.actor.id).wood ?? 0) === 0,
                 plan: (subject) => {
                     const actor = subject.actor;
-                    // A tree standing underfoot — the felling is the task
-                    // (the wood lands in the bag on completion, one tree
-                    // per chop)
-                    const stock = inventory.cellStock(actor.position.x, actor.position.y);
-                    if ((stock.tree ?? 0) > 0) {
-                        return { kind: 'chop', label: 'chops a tree', minutes: chopMinutes };
-                    }
+                // A tree standing underfoot — the felling is the task
+                // (the wood lands in the bag on completion, one tree
+                // per chop)
+                const stock = inventory.cellStock(actor.position.x, actor.position.y);
+                if ((stock.tree ?? 0) > 0) {
+                    // R4 — THE AXE'S EFFECT: a castaway carrying the crafted
+                    // axe (construction's tool-craft rung) works the woods
+                    // FASTER — the chop's world-minute cost halves (the tool
+                    // is not cosmetic; it earns its inputs). Without the
+                    // axe the base chopMinutes applies.
+                    const carriesAxe = (inventory.of(actor.id).axe ?? 0) > 0;
+                    const minutes = carriesAxe ? Math.max(1, Math.ceil(chopMinutes / 2)) : chopMinutes;
+                    return { kind: 'chop', label: 'chops a tree', minutes };
+                }
                     // Walk toward the nearest treed tile
                     const grove = nearestCell(actor, inventory.cellsWithItem('tree'));
                     if (!grove) {

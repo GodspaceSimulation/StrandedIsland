@@ -53,7 +53,7 @@ describe('tasksPlugin — no stale tasks for departed bodies', () => {
 
     it('a health-zero death cancels the in-progress task mid-count', () => {
         const { world, inventory, needs, tasks } = buildStack();
-        spawn(world, 'a', 'Ael', 6, 2);
+        spawn(world, 'a', 'Ael', 3, -4); // the berry+mushroom meadow stocks food
         needs.satisfy('a', { hunger: 45 }); // hunger 65 ≥ 60 — the gather queues
         world.step();
         expect(tasks.taskOf('a')).toMatchObject({ kind: 'gather', remaining: 10 });

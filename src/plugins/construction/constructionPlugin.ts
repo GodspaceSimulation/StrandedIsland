@@ -96,6 +96,7 @@ import {
     type RecipeLine,
 } from '@godspace/material';
 import type { World } from '../../engine/world';
+import type { Actor } from '../../engine/types';
 import type { InventoryPlugin } from '../inventory/inventoryPlugin';
 import type { NeedsPlugin } from '../needs/needsPlugin';
 import type { EntityProfiles } from '../entity/entityPlugin';
@@ -145,7 +146,25 @@ export const ISLAND_RECIPES: readonly Recipe[] = [
     { id: 'thatch', label: 'Thatch', kind: 'part', inputs: [{ item: 'frond', count: 2 }], outputs: [{ item: 'thatch', count: 1 }], minutes: 3 },
     // Cloth: three fronds beaten and woven (the boat's sail canvas).
     { id: 'cloth', label: 'Cloth', kind: 'part', inputs: [{ item: 'frond', count: 3 }], outputs: [{ item: 'cloth', count: 1 }], minutes: 6 },
+    // R4 — the early hand tools, crafted from the raw island materials the
+    // crew gathers from the first minutes (one log + a flint-knapped stone
+    // edge for the axe; a couple of hafted boards for the hammer). They are
+    // DULABLE (the catalog's 'tool' kind, never stacked) and the construction
+    // plugin's tool-craft rung (below) builds them ONCE per tool before the
+    // long build projects, so the crew works with real equipment early.
+    { id: 'axe', label: 'Axe', kind: 'tool', inputs: [{ item: 'wood', count: 1 }, { item: 'stone', count: 1 }], outputs: [{ item: 'axe', count: 1 }], minutes: 5 },
+    { id: 'hammer', label: 'Hammer', kind: 'tool', inputs: [{ item: 'wood', count: 2 }], outputs: [{ item: 'hammer', count: 1 }], minutes: 5 },
 ];
+
+/**
+ * R4 — the EARLY TOOLS the crew crafts before the long build projects: the
+ * axe (a wood chop) and the hammer (the build work). Each is crafted ONCE —
+ * the tool-craft rung below gates on "no crew carries this tool yet." The
+ * axe speeds the lumber chop (plugins/lumber reads the bag); the hammer is
+ * the build work's durable equipment (a minimal, low-pacing effect so the
+ * plan cursor's site placement pins stay stable).
+ */
+export const TOOL_RECIPE_IDS: readonly string[] = ['axe', 'hammer'];
 
 /** Canvas type-glyphs for the structures — the scale-0 footprint entries
  * (features/tileDetails scaleView) and the unicode/svg type palettes
@@ -380,6 +399,63 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
         return demand;
     };
 
+    /**
+     * R4 — the RAW demand the EARLY TOOLS still owe the crew: for each tool
+     * the crew does NOT already carry (crewHasTool), the tool recipe's
+     * inputs summed. The axe (wood 1 + stone 1) and the hammer (wood 2) are
+     * crafted ONCE, so once a tool lands in any bag its raw demand
+     * disappears — the crew is done owing its ingredients. This is what the
+     * fetch/materials rungs consult so the crew gathers a tool's STONE (the
+     * axe's edge) early: before this, the stone demand only surfaced at the
+     * fort (late in PLAN_ORDER) and the axe starved, so no early tool ever
+     * appeared in a normal (non-injected) world.
+     */
+    const toolRawOf = (): Array<{ item: string; count: number }> => {
+        const demand: Array<{ item: string; count: number }> = [];
+        arrayEach([...TOOL_RECIPE_IDS], ({ value: toolId }) => {
+            // The once gate — a tool the crew already carries owes nothing.
+            if (crewHasTool(toolId)) {
+                return;
+            }
+            const recipe = crafting.recipes().find((candidate) => candidate.id === toolId);
+            if (!recipe) {
+                return;
+            }
+            arrayEach(recipe.inputs, ({ value: input }) => {
+                const held = demand.find((line) => line.item === input.item);
+                if (held) {
+                    held.count = held.count + input.count;
+                } else {
+                    demand.push({ item: input.item, count: input.count });
+                }
+            });
+        });
+        return demand;
+    };
+
+    /**
+     * R4 — the site's EFFECTIVE raw demand: the site's own `raw` merged with
+     * the tools' raw demand, the per-item MAX (a single bag must be able to
+     * hold BOTH the site's staging AND the tool's inputs, so the bigger of
+     * the two is the demand the crew must satisfy — the site's, not the
+     * tool's, is the longer-lived obligation and the max never over-fetches
+     * the shorter one). The fetch/materials rungs read THIS, not the bare
+     * site demand, so the crew gathers a tool's stone/wood before the early
+     * craft rung can fire.
+     */
+    const effectiveRawOf = (site: Site): Array<{ item: string; count: number }> => {
+        const lines = demandOf(site).raw.map((line) => ({ item: line.item, count: line.count }));
+        arrayEach(toolRawOf(), ({ value: line }) => {
+            const held = lines.find((candidate) => candidate.item === line.item);
+            if (held) {
+                held.count = Math.max(held.count, line.count);
+            } else {
+                lines.push({ item: line.item, count: line.count });
+            }
+        });
+        return lines;
+    };
+
     /** The site's GATE — the resolved first definition cell, the walkable one. */
     const siteGate = (site: Site): GateSpot | undefined => {
         const cells = sites.cellsOf(site.id);
@@ -479,6 +555,73 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
             max = Math.max(max, inventory.of(actor.id)[item] ?? 0);
         });
         return max;
+    };
+
+    /**
+     * R4 — whether ANY sentient crew member already carries `tool` (the
+     * once-per-craft gate): the crew builds each tool a single time and
+     * shares the result conceptually, so once one castaway's bag holds the
+     * axe the crew considers it "has an axe" and the tool-craft rung stops
+     * owing it. Reads every actor bag (castaways only — the creatures never
+     * craft).
+     */
+    const crewHasTool = (tool: string): boolean => {
+        let held = false;
+        world?.actors.forEach((actor) => {
+            if ((inventory.of(actor.id)[tool] ?? 0) > 0) {
+                held = true;
+            }
+        });
+        return held;
+    };
+
+    /**
+     * R4 — the DETERMINISTIC LEAD who may craft `toolId`: the first eligible
+     * crew actor in actor-iteration order who can build it (not a creature,
+     * the species' craft ability, the finished tool fits the bag, and the bag
+     * ALREADY holds the full input set). Exactly one actor — the lead — may
+     * craft the tool; every other actor with the same inputs DEFERS to the
+     * lead. This makes the once-gate ATOMIC within a minute: the old check
+     * (appliesTo read `crewHasTool` per actor at plan time) let two actors
+     * who BOTH held the inputs see "the crew has no tool yet" before
+     * either's craft landed, so one minute flooded the crew with a duplicate
+     * axe (and the same for the hammer). Gating on the single lead removes
+     * that same-minute race — the crew crafts each tool exactly once.
+     */
+    const toolLeadOf = (toolId: string, recipe: Recipe): Actor | undefined => {
+        let lead: Actor | undefined;
+        world?.actors.forEach((actor) => {
+            if (lead) {
+                return;
+            }
+            if (actor.kind === 'creature') {
+                return;
+            }
+            if (!mayCraft(actor.type)) {
+                return;
+            }
+            const bag = inventory.of(actor.id);
+            // The bag must already hold the FULL input set (the craft
+            // consumes from a single bag)
+            const ready = recipe.inputs.every((input) => (bag[input.item] ?? 0) >= input.count);
+            if (!ready) {
+                return;
+            }
+            // The finished tool's NET change fits the bag — the same rule as
+            // the site-craft gate (see the craft rungs below): the
+            // conversion consumes the inputs, so the POST-CRAFT total is
+            // what must fit, never `total + 1`. Both tool recipes take two
+            // raw for one tool (the net change is −1), so a full-handed lead
+            // that holds the inputs crafts the tool and FREES a slot —
+            // exactly the full-hand release the starvation ladder depends
+            // on; the old capacity check refused it and wedged the hand.
+            const inputUnits = recipe.inputs.reduce((sum, input) => sum + input.count, 0);
+            if (inventoryTotal(bag) - inputUnits + 1 > inventory.capacityOf(actor.id)) {
+                return;
+            }
+            lead = actor;
+        });
+        return lead;
     };
 
     /** The site of a blueprint that may be worked on: fully staged ('staged'
@@ -897,20 +1040,108 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                         if (!siteNeeds(output.item)) {
                             return false;
                         }
-                        // …the finished goods fit the bag (the atomic craft
-                        // would refuse a wedged bag at completion — the gate
-                        // refuses it before the minutes are spent)…
-                        if (
-                            inventoryTotal(inventory.of(subject.actor.id)) + output.count >
-                            inventory.capacityOf(subject.actor.id)
-                        ) {
-                            return false;
+                        // …and the finished BAG fits the bag. The gate
+                        // mirrors the craft EFFECT's revalidation
+                        // (outcome.stock = bag − inputs + outputs, see the
+                        // 'craft' effect below): the conversion consumes the
+                        // recipe's inputs FROM THE SAME HAND, so the
+                        // post-craft total — not the current total plus the
+                        // output — is what must fit. A bag full of EXACTLY
+                        // the raw a recipe converts (the cloth's three
+                        // fronds: eight − three + one = six) SHAVES the
+                        // total and must stay craftable. The old
+                        // `total + output` check wedged that bag for good:
+                        // the craft is the ONLY rung that turns a raw the
+                        // site lacks into the part it still owes (the
+                        // deliver rung stages finished parts, the fetches
+                        // take raw), so the refusal left a full hand with no
+                        // path to free a slot for food — the needs rungs
+                        // decline a full hand by design, the starvation
+                        // drains the health and the carrier dies with
+                        // berries one tile away (the long-march 6000-min
+                        // deaths, seed 7: Bram @4,5 minute 3231 and Dune
+                        // @3,5 — standing ON a bush cell — minute 3237, the
+                        // boat owing its last cloth and rope).
+                        {
+                            const bag = inventory.of(subject.actor.id);
+                            // The recipe's total input units (the net
+                            // change the conversion makes to the bag size —
+                            // negative for every converging island recipe)
+                            const inputUnits = recipe.inputs.reduce((sum, line) => sum + line.count, 0);
+                            if (
+                                inventoryTotal(bag) - inputUnits + output.count >
+                                inventory.capacityOf(subject.actor.id)
+                            ) {
+                                return false;
+                            }
                         }
                         // …and the factory's own ingredient gate passes
                         return factory.appliesTo ? factory.appliesTo(subject) : true;
                     },
                 };
                 registered.push(`craft-${recipe.id}`);
+                tasks.behaviour(composed);
+            });
+
+            // R4 — THE EARLY TOOL-CRAFT RUNG — one module per early tool
+            // (TOOL_RECIPE_IDS: the axe, the hammer), each composed FROM the
+            // core's stock craft factory exactly like the site recipes above,
+            // with ONE island difference in the gate: the tools are built
+            // ONCE PER TOOL — the gate is "no crew carries this tool yet"
+            // (crewHasTool) instead of "the site still lacks it" (the build
+            // projects do not consume tools, so the siteNeeds gate would
+            // never fire for them). The plan returns the factory's kind
+            // 'craft' task (payload.recipe), which the existing craft effect
+            // below applies atomically (the registry revalidates the bag).
+            // This is what makes the crew work with real equipment EARLY:
+            // the axe appears in a castaway's bag before the long shelter /
+            // house projects, speeding the lumber chop it feeds.
+            arrayEach([...TOOL_RECIPE_IDS], ({ value: toolId }) => {
+                const recipe = crafting.recipes().find((candidate) => candidate.id === toolId);
+                if (!recipe) {
+                    return;
+                }
+                const output = recipe.outputs[0];
+                const factory = craftTaskBehaviour<TaskSubject>({
+                    id: `tool-${toolId}`,
+                    label: `crafts ${output.item}`,
+                    priority: CRAFT_PRIORITY,
+                    recipe: recipe.id,
+                    inputs: recipe.inputs.map((line) => ({ item: line.item, count: line.count })),
+                    minutes: Math.max(1, recipe.minutes),
+                    // The factory's ingredient gate reads the LIVE bag — once
+                    // the castaway has the axe's log + stone it may craft it
+                    stockOf: (subject) => inventory.of(subject.actor.id),
+                });
+                const composed: TaskBehaviour = {
+                    ...factory,
+                    appliesTo: (subject) => {
+                        if (subject.actor.kind === 'creature') {
+                            return false;
+                        }
+                        // The craft ABILITY unlock (the same gate as site crafts)
+                        if (!mayCraft(subject.actor.type)) {
+                            return false;
+                        }
+                        // THE ONCE GATE — the crew already carries this tool →
+                        // nothing to craft (the tool is a durable, shared
+                        // concept: one axe in any bag ends the owed craft)
+                        if (crewHasTool(output.item)) {
+                            return false;
+                        }
+                        // THE DETERMINISTIC LEAD GATE — only the actor
+                        // toolLeadOf computes may craft this tool (that check
+                        // already folds in the creature/craft/bag-capacity AND
+                        // full-input tests, in actor order, first match wins).
+                        // Every other actor holding the same inputs DEFERS to
+                        // the lead, so the once-gate is atomic within a minute
+                        // (the old per-actor ingredient gate let two actors
+                        // plan in the same minute and flood a duplicate tool).
+                        const lead = toolLeadOf(toolId, recipe);
+                        return lead?.id === subject.actor.id;
+                    },
+                };
+                registered.push(`tool-${toolId}`);
                 tasks.behaviour(composed);
             });
 
@@ -940,9 +1171,11 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                         if (!site) {
                             return false;
                         }
-                        // The demand gate: the site still lacks the item AND
-                        // no single bag can already use what the site needs
-                        const demand = demandOf(site).raw.find((line) => line.item === item);
+                        // The demand gate: the site (OR an owed early tool)
+                        // still lacks the item AND no single bag can already
+                        // use what is needed — the EFFECTIVE demand folds in
+                        // the tool's stone/wood so the crew gathers it early.
+                        const demand = effectiveRawOf(site).find((line) => line.item === item);
                         if (!demand || crewMaxOf(item) >= demand.count) {
                             return false;
                         }
@@ -991,8 +1224,9 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                         return false;
                     }
                     // A raw fetch no single bag can already use (the
-                    // strongest bag still lacks the full demand)
-                    return demandOf(site).raw.some(
+                    // strongest bag still lacks the full EFFECTIVE demand —
+                    // the site's raw plus the owed tools', per-item max)
+                    return effectiveRawOf(site).some(
                         (line) => crewMaxOf(line.item) < line.count,
                     );
                 },
@@ -1003,7 +1237,10 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                     if (!active || !site) {
                         return undefined;
                     }
-                    const line = demandOf(site).raw.find(
+                    // The EFFECTIVE demand (the site's raw plus the owed
+                    // tools') drives the trek — a tool's stone/wood is
+                    // sought just as hard as the site's.
+                    const line = effectiveRawOf(site).find(
                         (candidate) => crewMaxOf(candidate.item) < candidate.count,
                     );
                     if (!line) {

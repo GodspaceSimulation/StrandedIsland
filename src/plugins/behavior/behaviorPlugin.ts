@@ -125,6 +125,7 @@ import {
     type WorldPlugin,
 } from '@godspace/core';
 import { itemDef } from '../inventory/items';
+import { inventoryTotal } from '../inventory/inventory';
 import {
     chebyshev,
     fineStep,
@@ -186,6 +187,42 @@ const REST_TRIGGER = 22;
 const HUNGER_SYMPATHY = 50;
 const DRINK_RELIEF = 35;
 const REST_RECOVERY = 12;
+/**
+ * THE DESPERATION LINE — a need at or past this value is a body at the edge
+ * of the starvation doom (the needs plugin's critical line): past it the
+ * full-hand decline of the thirst/hunger rungs must release its cargo.
+ */
+const DESPERATION_LINE = 90;
+
+/**
+ * THE ABANDON ORDER — the deterministic descent the hungry/thirsty
+ * full-hand release walks when it drops a bag unit: the LEAST essential
+ * goods first. Inert ground goods and the knapping flint (the axe is
+ * already crafted by the time a hand clogs) head the list, then the
+ * construction parts (thatch/cloth/rope/plank — surplus once the site's
+ * lines are staged), then the raw materials, and only last the tools
+ * (the axe's halved chop and the hammer's work are lost when they go).
+ * Food-and-water ids are ABSENT — a body never drops its own relief (a
+ * foodless hand reaches this descent with nothing edible to lose).
+ */
+const ABANDON_ORDER = [
+    'shell',
+    'flint',
+    'sand',
+    'dirt',
+    'grass',
+    'thatch',
+    'cloth',
+    'rope',
+    'plank',
+    'frond',
+    'vine',
+    'wood',
+    'stone',
+    'iron',
+    'axe',
+    'hammer',
+];
 
 /**
  * THE ROOST RANGE (Chebyshev tiles) — how far a tired bird will trek for a
@@ -229,6 +266,39 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
             (bag[item] ?? 0) > 0 ? item : undefined,
         );
         return held ?? null;
+    };
+
+    /**
+     * THE FULL-HAND SURVIVAL RELEASE — abandons ONE unit of the body's cargo
+     * (least essential first, ABANDON_ORDER) so a food/water unit can enter
+     * the hand. The thirst/hunger rungs decline a full hand by design (the
+     * construction DELIVER/CRAFT rungs below are meant to free the bag), but
+     * that premise is unsound when the hand holds SURPLUS the crew no longer
+     * owes — over-fetched planks and thatch a finished site line never takes
+     * again, a starter flint the axe craft spent its use on. No rung can
+     * stage or convert surplus that the site no longer lacks, so the bag
+     * stays clogged, the needs rungs decline forever, and the body starves
+     * with food underfoot (the long-march seed-7 stall: Ael @7,3 — a forest
+     * cell stocking mushroom×2 AND water×2 — died at minute 3197 on a
+     * full-handed bag of {flint, axe, thatch, plank×2, vine, frond×2} while
+     * the boat lacked only its last rope). At the DESPERATION LINE a
+     * starvation outranks cargo: the unit is dropped (consume — the bag
+     * write — removes exactly one) and the rung falls through to its
+     * collect/gather below. Applied AT PLAN TIME like the social rung's
+     * exchange (the plan is the minute that owns the decision; the queued
+     * gather/collect costs the minutes). A hand holding only essentials (or
+     * nothing the order lists) declines: there is nothing expendable, and
+     * the normal ladder re-plans next minute.
+     */
+    const abandonOneUnit = (actor: TaskEntity): string | null => {
+        const bag = inventory.of(actor.id);
+        const item = arrayEach(ABANDON_ORDER, ({ value: candidate }) =>
+            (bag[candidate] ?? 0) > 0 ? candidate : undefined,
+        );
+        if (item === undefined) {
+            return null;
+        }
+        return inventory.consume(actor, item) ? item : null;
     };
 
     /** The world while set up — every plan/effect guard reads through this. */
@@ -412,12 +482,50 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                 appliesTo: (subject) => needs.of(subject.actor.id).thirst >= THIRST_TRIGGER,
                 plan: (subject) => {
                     const actor = subject.actor;
+                    const bag = inventory.of(actor.id);
                     // 1) Water in the bag — the drink is the task (the
-                    //    relief lands on completion, from the inventory)
-                    if ((inventory.of(actor.id).water ?? 0) > 0) {
+                    //    relief lands on completion, from the inventory);
+                    //    drinking CONSUMES, so it works even on a full hand.
+                    if ((bag.water ?? 0) > 0) {
                         return { kind: 'drink', label: 'drinks', minutes: drinkMinutes };
                     }
-                    // 2) A pool underfoot — the COLLECTION is the task: the
+                    // 2) A FULL hand with no water — every relief below (the
+                    //    collect, the gather, the trek to water) REFUSES a
+                    //    unit that has no room in the bag, so the task
+                    //    re-plants every minute and the body stalls re
+                    //    -planning (the long-march water stall: two actors
+                    //    stood at (3,5) with a full material bag, thirst
+                    //    50 pre-empted the 24-priority DELIVER that would
+                    //    free the bag). Decline: the construction's DELIVER
+                    //    rung is lower in the ladder, so a `undefined`
+                    //    here falls through to it, hoarding the material
+                    //    to a site and freeing a slot so water / food can
+                    //    enter the hand next minute. EXCEPT the DELIVER /
+                    //    CRAFT rungs only free a hand that holds UNITS THE
+                    //    SITE STILL OWES — a hand full of SURPLUS (a
+                    //    material a finished site line no longer takes) no
+                    //    rung can stage or convert, so it stays clogged
+                    //    and the body starves with a pool underfoot (the
+                    //    seed-7 6000-minute stall: Ael @7,3, water×2 and
+                    //    mushroom×2 underfoot, dead of thirst at minute
+                    //    3197 on a full-handed surplus crew). Past the
+                    //    DESPERATION LINE the survival outranks the cargo:
+                    //    abandon ONE expendable unit (abandonOneUnit) and
+                    //    FALL THROUGH to the collect / trek below — the
+                    //    pool underfoot is reachable again.
+                    if (inventoryTotal(bag) >= inventory.capacityOf(actor.id)) {
+                        const desperate = needs.of(actor.id).thirst >= DESPERATION_LINE;
+                        if (
+                            !desperate ||
+                            abandonOneUnit(actor) === null ||
+                            inventoryTotal(bag) >= inventory.capacityOf(actor.id)
+                        ) {
+                            return undefined;
+                        }
+                        // The hand holds room now — the collect / trek below
+                        // take it
+                    }
+                    // 3) A pool underfoot — the COLLECTION is the task: the
                     //    water goes into the bag first (nothing recovers
                     //    straight from the ground)
                     const stock = inventory.cellStock(actor.position.x, actor.position.y);
@@ -429,7 +537,7 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                             payload: { itemId: 'water' },
                         };
                     }
-                    // 3) Go and find a pool — travel one fine step toward
+                    // 4) Go and find a pool — travel one fine step toward
                     //    the nearest stocked cell. WATER REALM: a body on
                     //    an impassable cell has no ground travel (its wrap
                     //    needs dry land) — decline and let the realm's own
@@ -452,7 +560,8 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                 appliesTo: (subject) => needs.of(subject.actor.id).hunger >= HUNGER_TRIGGER,
                 plan: (subject) => {
                     const actor = subject.actor;
-                    const food = firstFood(inventory.of(actor.id));
+                    const bag = inventory.of(actor.id);
+                    const food = firstFood(bag);
                     if (food) {
                         return {
                             kind: 'eat',
@@ -463,19 +572,65 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                             payload: { itemId: food },
                         };
                     }
-                    // The current cell's stock: any FOOD-kind item is gatherable
+                    // A FULL hand with no food — every hunger relief below
+                    // (the gather, the trek) REFUSES a unit that has no room
+                    // in the bag (the gather is a no-op on a full hand), so
+                    // the task re-plants every minute and the body stalls
+                    // re-planning. Decline: the construction's DELIVER rung is
+                    // lower in the ladder, so a `undefined` here falls through
+                    // to it, hauling the hoarded material to a site and freeing
+                    // a slot so a berry / fruit can enter the hand next minute.
+                    // (Drinking/eating CONSUME, so step 1 already handled a
+                    // food that IS in the bag; only a full material hand reaches
+                    // here.) EXCEPT a hand full of SURPLUS no site line owes
+                    // (the thirst rung's note — Ael @7,3, minute 3197) no
+                    // construction rung can free: past the DESPERATION LINE
+                    // abandon ONE expendable unit and FALL THROUGH to the
+                    // underfoot forage / trek below — the bush the body
+                    // stands on feeds it again.
+                    if (inventoryTotal(bag) >= inventory.capacityOf(actor.id)) {
+                        const desperate = needs.of(subject.actor.id).hunger >= DESPERATION_LINE;
+                        if (
+                            !desperate ||
+                            abandonOneUnit(actor) === null ||
+                            inventoryTotal(bag) >= inventory.capacityOf(actor.id)
+                        ) {
+                            return undefined;
+                        }
+                        // The hand holds room now — the gather / trek below
+                        // take it
+                    }
+                    // The current cell's stock: any FOOD-kind item is gatherable,
+                    // AND a berry bush is — a bush stands as a MATERIAL but it
+                    // BEARS berries (the gather effect plucks a berry off it,
+                    // inventoryPlugin's bush path), so a hungry body underfoot a
+                    // bush may forage it even with no loose food beside it.
+                    // Without this the hunger rung's underfoot check (FOOD-kind
+                    // only) misses the bush and the body mills / travels away
+                    // from the very plant that feeds it (the local stall the
+                    // long march exposed).
                     const stock = inventory.cellStock(actor.position.x, actor.position.y);
                     const gatherable = Object.keys(stock).find(
-                        (item) => (stock[item] ?? 0) > 0 && itemDef(item).kind === 'food',
+                        (item) => (stock[item] ?? 0) > 0 && (itemDef(item).kind === 'food' || item === 'bush'),
                     );
                     if (gatherable !== undefined) {
                         return { kind: 'gather', label: 'gathers', minutes: gatherMinutes };
                     }
-                    // Walk toward the nearest food-bearing cell. WATER
-                    // REALM: a body on an impassable cell has no ground
-                    // travel — a floater with no food underfoot declines
-                    // (its realm's drift carries it toward the shore)
-                    const targets = FOOD_PRIORITY.flatMap((item) => inventory.cellsWithItem(item));
+                    // Walk toward the nearest REACHABLE food-bearing cell. The
+                    // targets are the loose food items PLUS the berry bushes
+                    // (a bush is a food source at a distance too), filtered to
+                    // PASSABLE cells: a land body can never stand in the open
+                    // sea, so the sea's foods (fish in the shallows, seaweed in
+                    // the deep) are unreachable for it — a hungry beachgoer must
+                    // trek to a land food (a meadow bush, a forest berry), never
+                    // mill at the waterline aiming at the fish it can't reach.
+                    // The filter is LOCAL to the hunger rung: the thirst rung
+                    // legitimately targets the water cells (drinking pools sit in
+                    // the wetlands/sea), so the shared nearestCell stays
+                    // passability-blind and only hunger prunes the unreachable.
+                    const targets = [...FOOD_PRIORITY, 'bush']
+                        .flatMap((item) => inventory.cellsWithItem(item))
+                        .filter((cell) => cell.passable);
                     const target = nearestCell(actor, targets);
                     if (!target || !onDryGround(actor)) {
                         return undefined;

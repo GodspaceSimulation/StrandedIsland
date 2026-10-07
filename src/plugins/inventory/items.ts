@@ -83,8 +83,22 @@ export const ITEM_CATALOG: Record<string, ItemDef> = {
     // rhythm) — the raw stock the construction chains weave thatch and
     // cloth from (plugins/construction)
     frond: { name: 'Frond', kind: 'material' },
+    // R2 — the BERRY BUSH: a concrete, standing berry plant that grows in the
+    // meadow and forest undergrowth (the survey seeds it on a deterministic
+    // coordinate hash). Its stock count is the berries it BEARS; foraging
+    // plucks a berry off it (plugins/inventory gather) and the bush regrows
+    // its berries on its own rhythm (REGROW_CAPS/RHYTHM). A visible,
+    // inspectable feature — never an abstract bag item.
+    bush: { name: 'Berry Bush', kind: 'material' },
     shell: { name: 'Shell', kind: 'material' },
     flint: { name: 'Flint', kind: 'tool' },
+    // R4 — the early craftable hand tools (the axe's chop, the hammer's
+    // build work). Both are listed in the shared @godspace/material catalog
+    // (kind 'tool') so their display identity flows from there; the island
+    // coins the game-specific tool kind here. The construction plugin
+    // crafts them (ISLAND_RECIPES) before the long build projects.
+    axe: { name: 'Axe', kind: 'tool' },
+    hammer: { name: 'Hammer', kind: 'tool' },
 };
 
 /**
@@ -206,4 +220,12 @@ export const ITEM_TYPE_GLYPHS: Record<string, string> = {
     mushroom: '🍄',
     seaweed: '🌱',
     frond: '🍃',
+    // R2 — the berry bush's canvas glyph (the ground-item entries resolve a
+    // bush unit's type through this, so a bush stands as its own visible
+    // plant beside the 🍒 berries it bears)
+    bush: '🪴',
+    // R4 — the hand tools' canvas glyphs (the unicode/svg type palettes
+    // resolve a tool entry's type through these)
+    axe: '🪓',
+    hammer: '🔨',
 };

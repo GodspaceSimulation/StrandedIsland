@@ -33,13 +33,20 @@ export type VoxelKind = 'air' | 'water' | 'sand' | 'dirt' | 'grass' | 'forest' |
 
 /**
  * Biomes are derived from the surface voxel of a column.
- * ocean/shallows — column top is below the water line
+ * ocean/shallows — column top is below the water line (the open sea)
  * beach          — surface is sand
  * meadow         — surface is grass
  * forest         — surface is grass with forest voxels on top
  * highland       — surface is stone
+ * lake/pond      — PASSABLE INTERIOR FRESH-WATER BASINS (R2): inset lowland
+ *                  wetlands the generator carves below the meadow tier,
+ *                  distinct from the open-ocean sea (the only impassable
+ *                  water, which rims the canvas). The wetland is walkable
+ *                  ground (only the open sea is impassable) — a land actor
+ *                  gathers fresh water by standing ON the basin or its DRY
+ *                  SHORE ring, never by crossing the open sea.
  */
-export type Biome = 'ocean' | 'shallows' | 'beach' | 'meadow' | 'forest' | 'highland';
+export type Biome = 'ocean' | 'shallows' | 'beach' | 'meadow' | 'forest' | 'highland' | 'lake' | 'pond';
 
 // ── Tile resources ───────────────────────────────────────────────────────────
 // Every tile carries RESOURCE DEPOSITS — the natural features standing on it

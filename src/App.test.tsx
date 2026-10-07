@@ -245,39 +245,39 @@ describe('App', () => {
 
         // 60 seeded steps (seed 7, one world minute each). The construction
         // governance is mounted (the stock world), so the cast's wander
-        // pattern differs from the pre-construction reference — three
-        // scenarios play: Spear Lessons +12 (Ael–Cove, minute 1), Quiet
-        // Distrust −8 (Bram–Dune, minute 35) and Night Watch +12 (Ael–Cove,
-        // minute 46); the drift nets Ael's bonds to 0 / 25 / 0 — the
-        // DISPLAYED values round to 0 / 25 / 0.
+        // pattern differs from the pre-construction reference. At the 0.8
+        // water threshold the terrain/roll stream shifted and only TWO
+        // scenarios play, both binding Ael to Cove: Spear Lessons +12
+        // (minute 1) and Quiet Distrust −8 (minute 46); the drift nets Ael's
+        // bonds to 0 / 3 / 0 — the DISPLAYED values round to 0 / 3 / 0.
         for (let tick = 0; tick < 60; tick++) {
             fireEvent.click(screen.getByTestId('step-button'));
         }
         const stepped = screen.getByTestId('actor-relations');
         expect(
             Array.from(stepped.children).map((child) => child.textContent),
-        ).toEqual(['Bram — neutral (0)', 'Cove — neutral (25)', 'Dune — neutral (0)']);
+        ).toEqual(['Bram — neutral (0)', 'Cove — neutral (3)', 'Dune — neutral (0)']);
 
         // A different selection never shows its own name either — the list is
         // always the OTHER castaways, so pairs between third parties cannot
-        // be mislabelled as the inspected actor's bonds. Quiet Distrust bound
-        // Bram to Dune — Cove's own bonds are untouched.
+        // be mislabelled as the inspected actor's bonds. Both 0.8 scenarios
+        // bound Ael to Cove — Bram's own bonds stay neutral across the round.
         fireEvent.click(screen.getByTestId('actor-chip-Ael'));
         fireEvent.click(screen.getByTestId('actor-chip-Bram'));
         const bram = screen.getByTestId('actor-relations');
         const bramRows = Array.from(bram.children).map((child) => child.textContent);
-        expect(bramRows).toEqual(['Ael — neutral (0)', 'Cove — neutral (0)', 'Dune — neutral (-8)']);
+        expect(bramRows).toEqual(['Ael — neutral (0)', 'Cove — neutral (0)', 'Dune — neutral (0)']);
         expect(bramRows.join('|')).not.toContain('Bram');
 
         // The story feed carries the encounters as coherent story blocks —
         // newest first, the latest scenario's block on top. The feed holds
-        // 12 beats: five spawns, Kiki's exit past the world's edge, the
-        // three bond moves and the three story blocks.
+        // 10 beats: five spawns, Kiki's exit past the world's edge, the
+        // two bond moves and the two story blocks.
         fireEvent.click(screen.getByTestId('story-tab'));
         const entries = screen.getAllByTestId('story-entry');
-        expect(entries.length).toBe(12);
-        expect(entries[0].textContent).toContain('Night Watch');
-        expect(entries[0].textContent).toContain('Ael and Cove agree to split the night');
+        expect(entries.length).toBe(10);
+        expect(entries[0].textContent).toContain('Quiet Distrust');
+        expect(entries[0].textContent).toContain('counting the food stores');
     });
 
     it('the tick carries its fixed world minute at every view — the scale ladder is a pure view', () => {
@@ -556,22 +556,24 @@ describe('App', () => {
 
     it('ground items appear as canvas objects only in the interior view (scale 0)', () => {
         render(<App seed={7} />);
-        // Scale 1 (the island view): the ingressed meadow tile (1,−4)
+        // Scale 1 (the island view): the ingressed meadow tile (1,−2)
         // carries its localized tree fringe — the tree decoration draws at
-        // the island view too (the fringe is a real standing stand)
-        expect((screen.getByTestId('unicode-tile-1--4').textContent)).toBe('🌳');
+        // the island view too (the fringe is a real standing stand; the
+        // 0.85-era (1,−4) tile became a lake at the lowered 0.8 threshold)
+        expect((screen.getByTestId('unicode-tile-1--2').textContent)).toBe('🌳');
         // A BARE meadow tile shows nothing but terrain — no woods beside
         // (0,−3), no fringe, no decoration (the berries stay list-only)
         expect((screen.getByTestId('unicode-tile-0--3').textContent)).toBe('');
         // Zoom into the meadow: the interior view (scale 0) — its two berries
-        // stand at their scattered subtiles (5,1) and (7,−6) as visible objects
-        fireEvent.click(screen.getByTestId('unicode-tile-1--4'));
+        // stand at their scattered subtiles (1,−3) and (11,0) as visible
+        // objects (the 0.8 berry scatter, regrow-capped)
+        fireEvent.click(screen.getByTestId('unicode-tile-1--2'));
         fireEvent.click(screen.getByTestId('zoom-toggle'));
         expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 0');
-        expect(screen.getByTestId('unicode-tile-5-1').textContent).toBe('🍒');
-        expect(screen.getByTestId('unicode-tile-7--6').textContent).toBe('🍒');
+        expect(screen.getByTestId('unicode-tile-1--3').textContent).toBe('🍒');
+        expect(screen.getByTestId('unicode-tile-11-0').textContent).toBe('🍒');
         // The berry subtiles list their berries by name (item granularity)
-        fireEvent.click(screen.getByTestId('unicode-tile-5-1'));
+        fireEvent.click(screen.getByTestId('unicode-tile-1--3'));
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
         ).toEqual(['1 Berry']);
@@ -593,15 +595,15 @@ describe('App', () => {
 
     it('treed tiles draw the tree icon in unicode and the vector tree in svg', () => {
         render(<App seed={7} />);
-        // A treed tile with nobody standing on it: (3,−6) → tile
-        // (−6+8)×25+(3+12) = 65 — the unicode tab draws the 🌳 tree emoji
+        // A treed tile with nobody standing on it: (4,−5) → tile
+        // (−5+8)×25+(4+12) = 91 — the unicode tab draws the 🌳 tree emoji
         // (the woods, visible at last; the decoration rides the frame data
-        // the canvas plugins expose). The tile's neighborhood-counted
-        // stand reads 276 trees.
-        const treed = screen.getByTestId('unicode-tile-3--6');
+        // the canvas plugins expose; the 0.85-era (3,−6) tile 65 became a
+        // beach). The tile's neighborhood-counted stand reads 319 trees.
+        const treed = screen.getByTestId('unicode-tile-4--5');
         expect(treed.textContent).toBe('🌳');
         expect(treed.querySelector('[data-testid="tree-icon-unicode"]')).not.toBeNull();
-        expect(treed.title).toContain('tree ×276');
+        expect(treed.title).toContain('tree ×319');
         // A treed tile with a castaway standing on it: Dune came ashore on
         // the treed tile (5,−1) — the entity wins the tile, no tree icon
         expect(screen.getByTestId('unicode-tile-5--1').textContent).toBe('🧍‍♂️');
@@ -613,7 +615,7 @@ describe('App', () => {
         fireEvent.click(screen.getByTestId('canvas-tab-svg'));
         const board = screen.getByTestId('world-grid-svg') as SVGSVGElement;
         const tiles = board.querySelectorAll('g');
-        const treedTile = tiles[65];
+        const treedTile = tiles[91];
         // The vector tree: canopy circle + trunk rect, NO text glyph (the
         // svg twin of the 🌳 emoji)
         expect(treedTile.querySelector('text')).toBeNull();
@@ -742,34 +744,34 @@ describe('App', () => {
     it('the Tile Inspector reads the forest layer: the stand summary and the tree card', () => {
         render(<App seed={7} />);
         // A treed tile's Resources row carries the mirror (the
-        // neighborhood-counted 276-tree stand beside the ground supply);
+        // neighborhood-counted 319-tree stand beside the ground supply);
         // the FOREST row carries the wood stats
-        fireEvent.click(screen.getByTestId('unicode-tile-3--6'));
+        fireEvent.click(screen.getByTestId('unicode-tile-4--5'));
         expect(screen.getByTestId('tile-resources').textContent).toBe(
-            'tree ×276 · stone ×∞ · dirt ×∞ · grass ×∞',
+            'tree ×319 · stone ×∞ · dirt ×∞ · grass ×∞',
         );
-        expect(screen.getByTestId('tile-forest').textContent).toContain('276 trees');
+        expect(screen.getByTestId('tile-forest').textContent).toContain('319 trees');
         expect(screen.getByTestId('tile-forest').textContent).toContain('wood standing');
         // No tree card at the island view (the summary shape)
         expect(screen.getByTestId('tile-forest-tree').textContent).toBe('');
         // An INGRESS meadow rides its fringe's forest layer; a BARE meadow
         // carries no forest layer at all
-        fireEvent.click(screen.getByTestId('unicode-tile-1--4'));
+        fireEvent.click(screen.getByTestId('unicode-tile-1--2'));
         expect(screen.queryByTestId('tile-forest')).not.toBeNull();
         fireEvent.click(screen.getByTestId('unicode-tile-0--3'));
         expect(screen.queryByTestId('tile-forest')).toBeNull();
         // ── Scale 0: the tree card on the inspected fine spot ────────────
-        fireEvent.click(screen.getByTestId('unicode-tile-3--6'));
+        fireEvent.click(screen.getByTestId('unicode-tile-4--5'));
         fireEvent.click(screen.getByTestId('zoom-toggle'));
-        // The woods' top-left tree stands at the fine spot (−12,−8) — the
-        // card reads its wood pool, age (in years) and maturity
-        fireEvent.click(screen.getByTestId('unicode-tile--12--8'));
-        expect(screen.getByTestId('tile-forest-tree').textContent).toContain('wood 2');
-        expect(screen.getByTestId('tile-forest-tree').textContent).toContain('age 1.5 y');
+        // A tree of this wood stands at the fine spot (4,−7) — the card
+        // reads its wood pool, age (in years) and maturity
+        fireEvent.click(screen.getByTestId('unicode-tile-4--7'));
+        expect(screen.getByTestId('tile-forest-tree').textContent).toContain('wood 6');
+        expect(screen.getByTestId('tile-forest-tree').textContent).toContain('age 6.6 y');
         expect(screen.getByTestId('tile-forest-tree').textContent).toContain('growing');
         // A bare fine cell of the same wood carries no card — the forest
         // layer resolves only for a TREED fine spot, so the row drops out
-        fireEvent.click(screen.getByTestId('unicode-tile-4--7'));
+        fireEvent.click(screen.getByTestId('unicode-tile-9-5'));
         expect(screen.queryByTestId('tile-forest')).toBeNull();
     });
 

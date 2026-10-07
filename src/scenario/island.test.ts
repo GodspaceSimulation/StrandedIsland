@@ -143,11 +143,11 @@ describe('createIslandWorld', () => {
         expect(handle.world.ticker.ticks()).toBe(1);
         // One step = ONE world minute (the Scale-0 pace). The task rhythm:
         // the lumber rung ranks above the idle wander — the woodless cast
-        // plans wood first: Ael came ashore on a bare beach and travels to
-        // the woods (1-minute fine steps), while the castaways standing on
-        // treed tiles queue the 15-minute chop. The first ledger decrement
-        // lands at minute 2 — after ONE step every task still holds time.
-        // Kiki glides once and the seeded rain of minute 1 pools water.
+        // plans wood first: Ael and Bram came ashore on bare shore and
+        // travel to the woods (1-minute fine steps), while the castaways
+        // standing on treed tiles queue the 15-minute chop. The first ledger
+        // decrement lands at minute 2 — after ONE step every task still holds
+        // time. Kiki glides once and the seeded rain of minute 1 pools water.
         expect(handle.world.ticker.elapsed()).toBe(1);
         // The whole motion stays out of the log — the event bus carries the
         // story (spawns, encounters, exchanges), never the position plumbing
@@ -166,7 +166,7 @@ describe('createIslandWorld', () => {
         ]);
         expect(handle.tasks.tasks().map((task) => ({ actorId: task.actorId, kind: task.kind, label: task.label, remaining: task.remaining }))).toEqual([
             { actorId: 'actor-1', kind: 'move', label: 'travels to trees', remaining: 1 },
-            { actorId: 'actor-2', kind: 'chop', label: 'chops a tree', remaining: 15 },
+            { actorId: 'actor-2', kind: 'move', label: 'travels to trees', remaining: 1 },
             { actorId: 'actor-3', kind: 'chop', label: 'chops a tree', remaining: 15 },
             { actorId: 'actor-4', kind: 'chop', label: 'chops a tree', remaining: 15 },
         ]);
@@ -191,7 +191,7 @@ describe('createIslandWorld', () => {
         ]);
         expect(Array.from(handle.world.actors.keys()).map((id) => handle.world.subOf(id))).toEqual([
             { x: -7, y: 0 },
-            { x: -9, y: -5 },
+            { x: -10, y: -5 },
             { x: -2, y: 3 },
             { x: -11, y: 8 },
         ]);
@@ -201,10 +201,9 @@ describe('createIslandWorld', () => {
         // on (Dune's wandering wrapped off the tile's west edge — the
         // island position moved with it). The log gains the wilds' own
         // beat: Tusk the boar wanders in from the far shore at minute 6
-        // (far from the cast — no meeting). The seeded rain of minute 10
-        // shifted past the window — the survey's richer map moved the
-        // inventory plugin's roll stream (the vine/seaweed draws), so no
-        // rain lands inside these twenty minutes.
+        // (far from the cast — no meeting). The seeded rain of minute 8
+        // now lands inside the window (the 0.8 basins shifted the survey's
+        // roll stream — the water rhythm moved earlier).
         for (let index = 0; index < 18; index++) {
             handle.world.step();
         }
@@ -216,6 +215,7 @@ describe('createIslandWorld', () => {
             { kind: 'spawn', message: 'Dune washes ashore.', time: 0 },
             { kind: 'spawn', message: 'Kiki wheels above the island.', time: 0 },
             { kind: 'spawn', message: 'Tusk wanders in from the wilds.', time: 6 },
+            { kind: 'weather', message: 'Rain sweeps the island.', time: 8 },
         ]);
         // The boar roams the far shore — no castaway has met it yet. Tusk
         // is a living thing: the behavior plugin plans it through the
@@ -226,15 +226,15 @@ describe('createIslandWorld', () => {
         ]);
         expect(Array.from(handle.world.actors.values()).map((actor) => ({ ...actor.position }))).toEqual([
             { x: -11, y: 0, z: 0 },
-            { x: 9, y: -1, z: 0 },
+            { x: 8, y: -1, z: 0 },
             { x: 1, y: 5, z: 0 },
-            { x: 5, y: -1, z: 0 },
+            { x: 5, y: 0, z: 0 },
         ]);
         expect(Array.from(handle.world.actors.keys()).map((id) => handle.world.subOf(id))).toEqual([
             { x: 11, y: 0 },
-            { x: -9, y: -3 },
-            { x: 0, y: 4 },
-            { x: -12, y: 7 },
+            { x: 12, y: -5 },
+            { x: -3, y: 2 },
+            { x: -10, y: -8 },
         ]);
     });
 
@@ -361,14 +361,16 @@ describe('createIslandWorld', () => {
         // The highland's stone deposit surfaces the tile with the stone
         // palette color
         expect(frame.tiles[212].background).toBe('#8d939e');
-        // A treed tile: (3,−6) → tile 2×25+15 = 65 surfaces as tree, the
+        // A treed tile: (4,−5) → tile 3×25+16 = 91 surfaces as tree, the
         // forest's deposit (no iron lode fits the 25×17 seed-7 island —
-        // every vein sample stays below the lode threshold). Trees paint
-        // GREEN on the canvas — the greenery of the standing woods. The
-        // deposit count is the tile's neighborhood-counted stand (276).
-        expect(frame.tiles[65].background).toBe('#4caf50');
-        expect(frame.tiles[65].title).toBe(
-            'forest · height 5 · stone / stone / stone / dirt / grass / forest · tree ×276 · stone ×∞ · dirt ×∞ · grass ×∞',
+        // every vein sample stays below the lode threshold; the 0.85-era
+        // (3,−6) tile 65 became a beach at the lowered 0.8 threshold).
+        // Trees paint GREEN on the canvas — the greenery of the standing
+        // woods. The deposit count is the tile's neighborhood-counted
+        // stand (319 at 0.8).
+        expect(frame.tiles[91].background).toBe('#4caf50');
+        expect(frame.tiles[91].title).toBe(
+            'forest · height 5 · stone / stone / stone / dirt / grass / forest · tree ×319 · stone ×∞ · dirt ×∞ · grass ×∞',
         );
     });
 
@@ -463,16 +465,25 @@ describe('createIslandWorld', () => {
             ['actor-4', 'sentient', 'human', 'Dune', 'well', 5, -1, 0],
         ]);
         // Terrain census: cell counts per SURFACE key (the tiles appear as
-        // the resources their ground is — the meadows beside woods surface
-        // as their tree ingress, only 8 bare meadows keep the grass
-        // identity; the sea keeps its plain biomes), alphabetical
+        // the resources their ground is — most meadows beside woods surface
+        // as their tree ingress, a few bare meadows keep the grass identity
+        // (29 bare cells at the 0.8 threshold); the lowered 0.8 basins grow
+        // five lakes and eight ponds — the R2 water-surface read ranks the
+        // lake/pond wetland ABOVE the tree stand that seeded beneath it, so
+        // every basin paints water (11 of the 13 basin tiles that carried a
+        // tree ingress now count here, not under tree), and one iron lode
+        // sits below the surface; the sea keeps its plain biomes),
+        // alphabetical
         expect(frame.tables[1].rows).toEqual([
-            ['grass', 8],
+            ['grass', 29],
+            ['iron', 1],
+            ['lake', 5],
             ['ocean', 46],
-            ['sand', 160],
+            ['pond', 8],
+            ['sand', 138],
             ['shallows', 97],
-            ['stone', 9],
-            ['tree', 105],
+            ['stone', 8],
+            ['tree', 93],
         ]);
         // Canvas overview: the 25×17 frame
         expect(frame.tables[2].rows).toEqual([
@@ -669,9 +680,18 @@ describe('createIslandWorld', () => {
             'boar:sleep',
             'shark:sleep',
         ]);
-        // The cast survived the whole march (weak bellies, no deaths —
-        // health-zero never fired) and the wilds roam on
-        expect(handle.world.events.log().filter((event) => event.kind === 'death')).toEqual([]);
+        // ZERO DEATHS in 3000 world minutes — the ORIGINAL no-death
+        // reference the R1–R5 terrain + the R4 tool economy must preserve.
+        // The island's food is per-cell capped and regrows (×∞ deposits,
+        // e.g. the bush refills to its cap), so the supply never runs out —
+        // the earlier re-pin of 2 deaths at 2910 / 2931 was the hunger rung's
+        // passability-blind food targeting (a fish stocked in impassable
+        // shallows), fixed by pruning the hunger targets to PASSABLE cells
+        // plus the berry bushes as forage — see
+        // plugins/behavior/behaviorPlugin.ts. The wilds roam on.
+        expect(
+            handle.world.events.log().filter((event) => event.kind === 'death').map((event) => ({ actorId: event.actorId, tick: event.tick })),
+        ).toEqual([]);
         expect(Array.from(handle.world.actors.values()).map((actor) => actor.type)).toEqual([
             'human',
             'human',
@@ -699,10 +719,13 @@ describe('createIslandWorld', () => {
         // the food treks grew (10 → 31 trips, up to ~90 world minutes
         // each), which slowed the wood-fetch cadence and moved the boat
         // past the old 3000-minute pin. The construction governance itself
-        // is unchanged — the boat completes deterministically at minute
-        // 4470 (measured twice on the redesigned terrain), and the fort
-        // finishes by minute 6000, so the reference horizon is 6000
-        // (measured 4470 + ~34% margin, the orchestrator's bounded max).
+        // is unchanged — with the starvation corrections in (zero-death
+        // march), the plan completes deterministically at shelter 343,
+        // raft 933, house 1517, boat 3428 and fort 3769 of the seed-7
+        // reference run (measured after the craft-gate / survival-release
+        // fixes; the earlier 4470 boat pin captured the buggy starvation
+        // run), so the reference horizon is 6000 (measured 3769 + a
+        // generous margin for the crew to reach the horizon idle).
         const handle = createIslandWorld({ seed: 7 });
         // THE FOREST IN THE MARCH — the ecology is mounted (the default):
         // the woods are static at the real-year pace (no recruitment, no
@@ -713,7 +736,6 @@ describe('createIslandWorld', () => {
         const alive = (id: string) =>
             handle.world.actors.has(id) || handle.world.coordinates.entryOf(id) !== undefined;
         let stale = 0;
-        let deaths = 0;
         for (let minute = 1; minute <= 6000; minute++) {
             handle.world.step();
             // NO STALE TASKS — every queued task's body still lives
@@ -722,8 +744,24 @@ describe('createIslandWorld', () => {
                     stale = stale + 1;
                 }
             });
-            deaths = deaths + handle.world.events.log().filter((event) => event.kind === 'death').length;
         }
+        // ZERO DEATHS over the full 6000-minute horizon — the ORIGINAL
+        // all-cast reference the terrain + tool corrections must preserve.
+        // The earlier re-pin (Dune 2910 / Bram 2931 / Ael 3250) was three
+        // distinct starvation mechanics, not a food shortage — the global
+        // stock never ran low: (a) the hunger rung's passability-blind
+        // targeting (a fish in impassable shallows) — fixed by pruning the
+        // hunger targets to passable cells; (b) the craft rung's bag-room
+        // gate refused a full hand although the craft's NET change is
+        // negative (fronds 3 → cloth 1 frees two slots — two of the cast
+        // were stuck exactly on 3 fronds with the boat's cloth line open)
+        // — the craft gate is now a net bag-fit check; (c) a full hand of
+        // SURPLUS no project owes can only be freed by a construction rung
+        // that was also gated on room, so the body clogged re-planning a
+        // chop with food underfoot — past the desperation line the thirst
+        // / hunger rungs now abandon one expendable unit and take the
+        // underfoot forage. Count the deaths from the log, not per-minute.
+        const deaths = handle.world.events.log().filter((event) => event.kind === 'death').length;
         expect(stale).toBe(0);
         expect(deaths).toBe(0);
         expect(Array.from(handle.world.actors.keys())).toEqual(['actor-1', 'actor-2', 'actor-3', 'actor-4']);
@@ -731,9 +769,9 @@ describe('createIslandWorld', () => {
         // the shelter (wood 2 + thatch 2, 10 work), the raft (wood 4 +
         // rope 2, 30), the house (wood 4 + plank 4 + thatch 4 — TWELVE
         // staging units through eight-unit bags, 40 work), the boat
-        // (plank 6 + rope 4 + cloth 2, 60 — built at minute 4470 of the
-        // captured run) and the fort (stone 8 + wood 4, 120 work — finished
-        // inside the horizon's tail).
+        // (plank 6 + rope 4 + cloth 2, 60 — built at minute 3428 of the
+        // captured zero-death reference run) and the fort (stone 8 + wood 4,
+        // 120 work — built at minute 3769, inside the horizon's tail).
         expect(handle.construction.completedBlueprints()).toEqual(['shelter', 'raft', 'house', 'boat', 'fort']);
         expect(handle.construction.project()).toBeUndefined();
         expect(
