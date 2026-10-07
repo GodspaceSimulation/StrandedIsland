@@ -9,11 +9,16 @@
 //   (−12,−8)  shallows           h2  voxels [dirt, sand, water]  deposits {}         stock {fish:1}
 //   (0,0)     stone tile (highland) h7  voxels [stone ×5, dirt, stone]  supply
 //             {stone:1, dirt:1}  stock {stone:1, dirt:1}  Kiki flies at z 2
-//   (1,−4)    grass tile (meadow) h5  voxels [stone ×3, dirt, grass]  supply
-//             {stone:1, dirt:1, grass:1}  stock {stone:1, dirt:1, grass:1, berry:2}
+//   (1,−4)    tree tile (meadow with its localized ingress) h5  voxels
+//             [stone ×3, dirt, grass]  supply
+//             {stone:1, dirt:1, grass:1, tree:10}  stock
+//             {tree:10, stone:1, dirt:1, grass:1, berry:2} — the meadow
+//             beside the woods carries its 10-spot edge fringe (the
+//             neighborhood model's localized tree ingress)
 //   (−7,0)    tree tile (forest) h5  voxels [stone ×3, dirt, grass, forest]
-//             supply {stone:1, dirt:1, grass:1} + the 383-tree mirror — the
-//             persistent fine-scale stand (plugins/forest)
+//             supply {stone:1, dirt:1, grass:1} + the neighborhood-counted
+//             298-tree mirror — the persistent fine-scale stand
+//             (plugins/forest)
 //   (−5,3)    iron tile (lode — on the 37×25 reference board; the smaller
 //             25×17 default keeps every vein sample below the threshold)
 //             h7  supply {stone:1, dirt:1, iron:1}  stock {stone:1, dirt:1, iron:1, flint:1}
@@ -174,11 +179,12 @@ describe('tileGround', () => {
             { category: 'food', label: 'Foods', count: 1 },
         ]);
         // The meadow (1,−4): 2 berries (food) + the ground supply (stone,
-        // dirt, grass — three materials) — the categories list in ITEM_KINDS
-        // order (food before material)
+        // dirt, grass) + its localized 10-tree ingress fringe (each tree a
+        // material unit) — thirteen materials in all; the categories list
+        // in ITEM_KINDS order (food before material)
         expect(tileGround(island, [{ x: 1, y: -4 }])).toEqual([
             { category: 'food', label: 'Foods', count: 2 },
-            { category: 'material', label: 'Materials', count: 3 },
+            { category: 'material', label: 'Materials', count: 13 },
         ]);
         // Ael's beach: coconut (food) + the ground supply (three materials)
         expect(tileGround(island, [{ x: -11, y: 0 }])).toEqual([
@@ -189,12 +195,13 @@ describe('tileGround', () => {
 
     it('keeps the category generalization exact while the stock moves', () => {
         // The berry stock is live — emptying it drops the Foods category
-        // entirely (zero categories drop out of the list)
+        // entirely (zero categories drop out of the list); the ingress
+        // fringe's ten tree units keep the meadow's materials at thirteen
         const stock = island.inventory.cellStock(1, -4);
         const before = stock.berry ?? 0;
         stock.berry = 0;
         expect(tileGround(island, [{ x: 1, y: -4 }])).toEqual([
-            { category: 'material', label: 'Materials', count: 3 },
+            { category: 'material', label: 'Materials', count: 13 },
         ]);
         stock.berry = before;
     });
@@ -242,16 +249,20 @@ describe('tileResources', () => {
     it('lists the tile deposits with their unlimited flag, in resource order', () => {
         // The meadow (1,−4) carries the voxel ground supply — every ground
         // voxel material the column is built from, each ×∞ (stone bedrock,
-        // the dirt under it, the grass cover), in TILE_RESOURCES order
+        // the dirt under it, the grass cover) — PLUS its localized 10-tree
+        // ingress fringe beside the woods (the finite biological stand),
+        // in TILE_RESOURCES order (tree first)
         expect(tileResources(island.world.cellAt(1, -4)?.resources)).toEqual([
+            { resource: 'tree', count: 10, unlimited: false },
             { resource: 'stone', count: 1, unlimited: true },
             { resource: 'dirt', count: 1, unlimited: true },
             { resource: 'grass', count: 1, unlimited: true },
         ]);
-        // The forest keeps its FINITE biological stand (the 383-tree mirror)
-        // beside the ground supply — TILE_RESOURCES order (tree first)
+        // The forest keeps its FINITE biological stand (the
+        // neighborhood-counted 298-tree mirror) beside the ground supply —
+        // TILE_RESOURCES order (tree first)
         expect(tileResources(island.world.cellAt(-7, 0)?.resources)).toEqual([
-            { resource: 'tree', count: 383, unlimited: false },
+            { resource: 'tree', count: 298, unlimited: false },
             { resource: 'stone', count: 1, unlimited: true },
             { resource: 'dirt', count: 1, unlimited: true },
             { resource: 'grass', count: 1, unlimited: true },
@@ -271,11 +282,15 @@ describe('tileResources', () => {
 
 describe('tileForest', () => {
     it('summarizes a forest tile\u2019s stand and reads a fine spot\u2019s tree card', () => {
-        // The island view: the seeded stand of the woods (−7,0) — 383
-        // standing trees, 1518 wood across their pools (captured)
-        expect(tileForest(island, [{ x: -7, y: 0 }])).toEqual({ trees: 383, wood: 1518 });
-        // A non-forest tile carries no forest layer
-        expect(tileForest(island, [{ x: 1, y: -4 }])).toBeUndefined();
+        // The island view: the seeded stand of the woods (−7,0) — its
+        // neighborhood-counted 298 standing trees, 1176 wood across their
+        // pools (captured)
+        expect(tileForest(island, [{ x: -7, y: 0 }])).toEqual({ trees: 298, wood: 1176 });
+        // An INGRESS MEADOW carries its localized fringe as a real stand —
+        // the same summary shape the woods read
+        expect(tileForest(island, [{ x: 1, y: -4 }])).toEqual({ trees: 10, wood: 47 });
+        // A BARE meadow (no forest neighbor) carries no forest layer
+        expect(tileForest(island, [{ x: 0, y: -3 }])).toBeUndefined();
         expect(tileForest(island, [{ x: -11, y: 0 }])).toBeUndefined();
         // Scale 0: the tree standing exactly on a treed fine spot — its
         // card (wood pool, age, maturity). The stand's first seeded
@@ -369,15 +384,17 @@ describe('tileSummary', () => {
         // The surface key: the standing trees win (the landmark deposit)
         expect(summary?.surface).toBe('tree');
         expect(summary?.resources).toEqual([
-            { resource: 'tree', count: 383, unlimited: false },
+            { resource: 'tree', count: 298, unlimited: false },
             { resource: 'stone', count: 1, unlimited: true },
             { resource: 'dirt', count: 1, unlimited: true },
             { resource: 'grass', count: 1, unlimited: true },
         ]);
         // THE FOREST LAYER — the stand summary (captured at minute 0)
-        expect(summary?.forest).toEqual({ trees: 383, wood: 1518 });
-        // A non-forest tile carries no forest layer
-        expect(tileSummary(island, [{ x: 1, y: -4 }])?.forest).toBeUndefined();
+        expect(summary?.forest).toEqual({ trees: 298, wood: 1176 });
+        // An INGRESS meadow rides its fringe's layer; a bare meadow carries
+        // no forest layer at all
+        expect(tileSummary(island, [{ x: 1, y: -4 }])?.forest).toEqual({ trees: 10, wood: 47 });
+        expect(tileSummary(island, [{ x: 0, y: -3 }])?.forest).toBeUndefined();
     });
 
     it('assembles an iron lode column with its deposits', () => {

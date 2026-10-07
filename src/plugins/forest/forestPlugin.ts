@@ -51,7 +51,9 @@
 //   • A day IS a day — no "one day = one year" fast-forward unless the
 //     configuration says so: growthRateMultiplier speeds the BIOLOGY only
 //     (the clock, needs and tasks keep their own pace).
-//   • Density — stands seed at 90% (FOREST_COVERAGE, plugins/terrain) and
+//   • Density — stands seed at their NEIGHBORHOOD coverage (plugins/terrain
+//     islandTerrain.ts: the 8-neighbor model — a wood ringed by forests
+//     seeds the full 100%, edge woods land below the old uniform 90%) and
 //     recruitment may carry an uncut stand to the full 100% of its fine
 //     cells over the years; every felled spot refills by recruitment.
 //   • Wood yield — the mature cap (WOOD_CAP, 8 units) stands in for a
@@ -305,7 +307,13 @@ export const forestPlugin = (wiring: { terrain: IslandTerrainPlugin; inventory: 
 
     // ── Recruitment — the seed bank ─────────────────────────────────────────
     // One sapling into a free fine cell of a forest tile, EVEN clearcut
-    // (the forest voxel's seed bank stands in for the felled mothers).
+    // (the forest voxel's seed bank stands in for the felled mothers). A
+    // boulder spot is never free ground: the tile's rock-spillover band
+    // (cell.carving.rock — the neighborhood model's carve, plugins/terrain
+    // islandTerrain.ts rockSpillSpots) holds rock, and NO tree stands on a
+    // boulder — the seeding refuses the band, and recruitment EXCLUDES it
+    // below (both the random probe and the bounded fallback), so the
+    // long-run refill never violates the invariant.
     const applyRecruit = (x: number, y: number, at: number) => {
         if (!world) {
             return;
@@ -321,21 +329,31 @@ export const forestPlugin = (wiring: { terrain: IslandTerrainPlugin; inventory: 
             return;
         }
         const canvas = world.canvas;
-        const capacity = canvas.width * canvas.height;
-        // The density cap: a stand may fill EVERY fine cell (the initial
-        // 90% refills to 100% over the years — the documented cap)
+        // The boulder band — the tile's REAL recorded rock spots (Set-deduped:
+        // rockSpillSpots writes unique row-major keys, and the Set keeps a
+        // malformed list from double-counting). The capacity prices the band
+        // out — a stand may fill every fine cell EXCEPT its boulders — and
+        // the Math.max floor keeps a pathological carve from computing a
+        // negative capacity (which would silently stop all recruitment).
+        const rocks = new Set(cell.carving?.rock ?? []);
+        const capacity = Math.max(0, canvas.width * canvas.height - rocks.size);
+        // The density cap: a stand may fill every fine cell OFF the band
+        // (the neighborhood-counted seed refills toward that full stand
+        // over the years — the documented cap; boulders hold no trees)
         if (stand.trees.size >= capacity) {
             return;
         }
         // Deterministic free-spot probe: the seeded stream rolls fine
-        // positions until one is bare (bounded by the grid's cell count)
+        // positions until one is bare AND unbouldered (bounded by the
+        // capacity — the non-rock spot count)
         const halfX = (canvas.width - 1) / 2;
         const halfY = (canvas.height - 1) / 2;
         const stream = randomKeyed(seed, `forest-recruit:${x},${y}:${at}`);
         for (let attempt = 0; attempt < capacity; attempt++) {
             const fx = Math.floor(stream() * canvas.width) - halfX;
             const fy = Math.floor(stream() * canvas.height) - halfY;
-            if (!stand.trees.has(`${fx},${fy}`)) {
+            const spot = `${fx},${fy}`;
+            if (!stand.trees.has(spot) && !rocks.has(spot)) {
                 // A recruited sapling: born in-world at wood 1
                 terrain.forestPlant(x, y, { x: fx, y: fy }, {
                     born: at,
@@ -349,14 +367,18 @@ export const forestPlugin = (wiring: { terrain: IslandTerrainPlugin; inventory: 
         }
         // The bounded FALLBACK — a near-full stand (one bare spot among
         // hundreds) can evade every random probe; one row-major scan finds
-        // the first bare fine cell deterministically, so the documented
-        // 100% density cap fills reliably (the probe's 63%-per-cycle hit
-        // rate would leave the last percent to luck forever otherwise)
+        // the first bare NON-BOULDER fine cell deterministically, so the
+        // neighborhood cap (every fine cell but the boulder band) fills
+        // reliably (the probe's 63%-per-cycle hit rate would leave the last
+        // percent to luck forever otherwise). The scan completes without
+        // planting when only boulders remain bare — the capacity gate above
+        // already stopped a stand at its full non-rock count.
         for (let row = 0; row < canvas.height; row++) {
             for (let col = 0; col < canvas.width; col++) {
                 const fx = col - halfX;
                 const fy = row - halfY;
-                if (!stand.trees.has(`${fx},${fy}`)) {
+                const spot = `${fx},${fy}`;
+                if (!stand.trees.has(spot) && !rocks.has(spot)) {
                     terrain.forestPlant(x, y, { x: fx, y: fy }, {
                         born: at,
                         base: 1,

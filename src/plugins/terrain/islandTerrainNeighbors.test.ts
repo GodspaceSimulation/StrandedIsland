@@ -1,0 +1,541 @@
+// Tests for the NEIGHBORHOOD RESOURCE MODEL (plugins/terrain/islandTerrain.ts
+// generation pass 2) — the focused controlled-neighborhood regression pins.
+//
+// The model: resources generated within a tile depend on ALL EIGHT of its
+// neighbors (NEIGHBOR_OFFSETS — 4 cardinals + 4 diagonals), cardinals
+// weighing DOUBLE the diagonals:
+//   forest neighbor   — coverage gain (FOREST_NEIGHBOR_CARDINAL 0.1 /
+//                       FOREST_NEIGHBOR_DIAGONAL 0.05) on the FOREST side;
+//                       a wood ringed by 8 forests clamps to the FULL 100%
+//                       stand, fewer forest neighbors land lower;
+//   meadow neighbor   — no coverage gain; instead MEADOW tiles beside woods
+//                       gain their own LOCALIZED TREE INGRESS along each
+//                       shared edge (meadowIngressSpots — 6 spots per
+//                       cardinal edge, 2 per diagonal corner, every shared
+//                       edge served, spots closest to THAT edge first);
+//   highland neighbor — coverage penalty (ROCK_NEIGHBOR_* — the same 0.1 /
+//                       0.05 ladder) AND a rock-spillover band carved along
+//                       the shared edge (rockSpillSpots — checkerboard
+//                       halved); the zoomed interior crowns the band's fine
+//                       cells with a boulder and no tree stands on one;
+//   beach / water     — contribute nothing.
+//
+// The pure helpers (neighborhoodOf / forestCoverageOf / rockSpillSpots /
+// meadowIngressSpots) are pinned on SYNTHETIC canvases with hand-placed
+// biomes — fully controlled neighborhoods; the generateIsland integration
+// pins sweep the whole seed-7 reference board (every forest and meadow)
+// against the same pure math, plus the stand/subgrid/carve/cache fallout.
+// Every expected value below was captured from a reference run — the model
+// is a pure function of the finished biome map (no random draws).
+
+import { describe, it, expect } from 'vitest';
+import {
+    generateIsland,
+    islandTerrainPlugin,
+    neighborhoodOf,
+    forestCoverageOf,
+    rockSpillSpots,
+    meadowIngressSpots,
+    FOREST_COVERAGE,
+    FOREST_NEIGHBOR_CARDINAL,
+    FOREST_NEIGHBOR_DIAGONAL,
+    ROCK_NEIGHBOR_CARDINAL,
+    ROCK_NEIGHBOR_DIAGONAL,
+    MEADOW_INGRESS_CARDINAL,
+    MEADOW_INGRESS_DIAGONAL,
+    type Neighborhood,
+    type Offset,
+} from './islandTerrain';
+import { createWorld } from '../../engine/world';
+import { NEIGHBOR_OFFSETS } from '@godspace/core';
+import type { Biome, Canvas, TerrainCell } from '../../engine/types';
+
+// ── Synthetic canvas helper — hand-placed biomes, fully controlled ──────────
+
+/** Single-letter biome layout ('b' beach, 'f' forest, 'h' highland,
+ * 'm' meadow, 'o' ocean, 's' shallows) → a centered Canvas. */
+const BIOME_OF: Record<string, Biome> = {
+    b: 'beach',
+    f: 'forest',
+    h: 'highland',
+    m: 'meadow',
+    o: 'ocean',
+    s: 'shallows',
+};
+const syntheticCanvas = (layout: string[]): Canvas => {
+    const width = layout[0].length;
+    const height = layout.length;
+    const cells: TerrainCell[] = [];
+    for (let row = 0; row < height; row++) {
+        for (let col = 0; col < width; col++) {
+            cells.push({
+                x: col - (width - 1) / 2,
+                y: row - (height - 1) / 2,
+                biome: BIOME_OF[layout[row][col]],
+                voxels: [],
+                height: 1,
+                waterLevel: 3,
+                passable: true,
+                resources: {},
+            });
+        }
+    }
+    return { width, height, cells };
+};
+
+/** The eight NEIGHBOR_OFFSETS in their fixed clockwise order — the pin the
+ * classification order asserts against. */
+const OFFSETS = NEIGHBOR_OFFSETS as ReadonlyArray<Offset>;
+
+describe('the neighborhood weights (constants)', () => {
+    it('cardinals weigh double the diagonals, on both the gain and the penalty side', () => {
+        expect(FOREST_COVERAGE).toBe(0.45);
+        expect(FOREST_NEIGHBOR_CARDINAL).toBe(0.1);
+        expect(FOREST_NEIGHBOR_DIAGONAL).toBe(0.05);
+        expect(ROCK_NEIGHBOR_CARDINAL).toBe(0.1);
+        expect(ROCK_NEIGHBOR_DIAGONAL).toBe(0.05);
+        expect(MEADOW_INGRESS_CARDINAL).toBe(6);
+        expect(MEADOW_INGRESS_DIAGONAL).toBe(2);
+    });
+});
+
+describe('neighborhoodOf (the 8-neighbor classification)', () => {
+    it('classifies the eight in-grid neighbors by biome in NEIGHBOR_OFFSETS order', () => {
+        // Center forest; N + NE forest; W + SW highland; E + S meadow;
+        // NW + SE beach. The classes come back in NEIGHBOR_OFFSETS' fixed
+        // clockwise order (N, NE, E, SE, S, SW, W, NW):
+        //   forest  → N (0,−1) then NE (1,−1)
+        //   rock    → SW (−1,1) then W (−1,0) — SW sits earlier in the order
+        //   meadow  → E (1,0) then S (0,1)
+        const canvas = syntheticCanvas([
+            'bbffb',
+            'bbffb',
+            'bhfmb',
+            'bhmbb',
+            'bbbbb',
+        ]);
+        expect(neighborhoodOf(canvas, 0, 0)).toEqual({
+            forest: [{ dx: 0, dy: -1 }, { dx: 1, dy: -1 }],
+            rock: [{ dx: -1, dy: 1 }, { dx: -1, dy: 0 }],
+            meadow: [{ dx: 1, dy: 0 }, { dx: 0, dy: 1 }],
+        });
+        // The offset objects ARE the NEIGHBOR_OFFSETS elements (the same
+        // identities the directional sum reads) — order pinned explicitly
+        const neighborhood = neighborhoodOf(canvas, 0, 0) as Neighborhood;
+        expect(neighborhood.forest.map((offset) => OFFSETS.indexOf(offset))).toEqual([0, 1]);
+        expect(neighborhood.rock.map((offset) => OFFSETS.indexOf(offset))).toEqual([5, 6]);
+        expect(neighborhood.meadow.map((offset) => OFFSETS.indexOf(offset))).toEqual([2, 4]);
+    });
+
+    it('reads the ACTUAL biome names — meadow neighbors never feed the woods', () => {
+        // A wood ringed by meadows on every side: the meadows contribute NO
+        // coverage gain (the grassland's complement is its own ingress) and
+        // no rock penalty — the classification is empty on both sides
+        const canvas = syntheticCanvas([
+            'mmmmm',
+            'mmmmm',
+            'mmfmm',
+            'mmmmm',
+            'mmmmm',
+        ]);
+        const neighborhood = neighborhoodOf(canvas, 0, 0);
+        expect(neighborhood.forest).toEqual([]);
+        expect(neighborhood.rock).toEqual([]);
+        expect(neighborhood.meadow.map((offset) => OFFSETS.indexOf(offset))).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+        // …and a beach ring contributes nothing either
+        const beachRing = syntheticCanvas([
+            'bbbbb',
+            'bbbbb',
+            'bbfbb',
+            'bbbbb',
+            'bbbbb',
+        ]);
+        expect(neighborhoodOf(beachRing, 0, 0).meadow).toEqual([]);
+        expect(neighborhoodOf(beachRing, 0, 0).rock).toEqual([]);
+    });
+
+    it('out-of-grid positions are not neighbors (the rim is always open sea)', () => {
+        const canvas = syntheticCanvas([
+            'fbbbb',
+            'bbbbb',
+            'bbbbb',
+            'bbbbb',
+            'bbbbb',
+        ]);
+        // The corner tile (−2,−2) has only three in-grid neighbors — all
+        // beach, so every class comes back empty (the out-of-grid rim
+        // positions contributed nothing)
+        expect(neighborhoodOf(canvas, -2, -2)).toEqual({ forest: [], rock: [], meadow: [] });
+        // A 1×1 canvas has no neighbors at all
+        expect(neighborhoodOf(syntheticCanvas(['f']), 0, 0)).toEqual({ forest: [], rock: [], meadow: [] });
+    });
+});
+
+describe('forestCoverageOf (cardinal vs diagonal arithmetic)', () => {
+    it('the isolated base stands alone; each cardinal adds 0.1, each diagonal 0.05', () => {
+        // The exact IEEE doubles the generator's arithmetic produces —
+        // pinned as the literals the runtime rounds back to
+        expect(forestCoverageOf([], [])).toBe(0.45);
+        expect(forestCoverageOf([{ dx: 1, dy: 0 }], [])).toBe(0.55);
+        expect(forestCoverageOf([{ dx: 1, dy: -1 }], [])).toBe(0.5);
+        // Direction does not matter — only cardinal vs diagonal
+        expect(forestCoverageOf([{ dx: 0, dy: 1 }], [])).toBe(0.55);
+        expect(forestCoverageOf([{ dx: -1, dy: 1 }], [])).toBe(0.5);
+    });
+
+    it('rocky neighbors subtract the same ladder; the total clamps to [0, 1]', () => {
+        expect(forestCoverageOf([], [{ dx: 1, dy: 0 }])).toBe(0.35);
+        expect(forestCoverageOf([], [{ dx: 1, dy: 1 }])).toBe(0.4);
+        // Four cardinal forests: 0.45 + 0.4 — above the old uniform
+        // seeding, below the full stand (the exact accumulated double)
+        expect(
+            forestCoverageOf([{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }], []),
+        ).toBe(0.8500000000000001);
+        // Four diagonal forests only: 0.45 + 0.2 = 0.65 — strictly below the
+        // same COUNT of cardinals (the cardinal-double rule)
+        expect(
+            forestCoverageOf([{ dx: 1, dy: 1 }, { dx: -1, dy: 1 }, { dx: 1, dy: -1 }, { dx: -1, dy: -1 }], []),
+        ).toBe(0.65);
+        // A wood ringed by 8 forests clamps to the FULL 100% stand
+        expect(forestCoverageOf(OFFSETS.slice(), [])).toBe(1);
+        // A wood crushed under 8 rocky neighbors clamps at 0 — the empty
+        // stand keeps the seed bank alive (seedStands seeds forest tiles
+        // even at 0)
+        expect(forestCoverageOf([], OFFSETS.slice())).toBe(0);
+        // The mixed neighborhood the synthetic classification test built:
+        // 0.45 + (0.1 + 0.05) − (0.05 + 0.1) — the exact double the float
+        // arithmetic lands on
+        expect(forestCoverageOf([{ dx: 0, dy: -1 }, { dx: 1, dy: -1 }], [{ dx: -1, dy: 1 }, { dx: -1, dy: 0 }]))
+            .toBe(0.45000000000000007);
+    });
+});
+
+describe('rockSpillSpots (the spillover band)', () => {
+    it('a cardinal highland spills one checkerboard-halved fine row/column along the shared edge', () => {
+        // 7×5 board (half 3/2): the north edge row y=−2 keeps its even
+        // (x+y)-parity spots only — scree scatters, never walls
+        expect(rockSpillSpots(7, 5, [{ dx: 0, dy: -1 }])).toEqual(['-2,-2', '0,-2', '2,-2']);
+        // The south edge row y=+2 — the same parity half
+        expect(rockSpillSpots(7, 5, [{ dx: 0, dy: 1 }])).toEqual(['-2,2', '0,2', '2,2']);
+        // The east edge column x=+3
+        expect(rockSpillSpots(7, 5, [{ dx: 1, dy: 0 }])).toEqual(['3,-1', '3,1']);
+        // Both edges combined — the union, row-major
+        expect(rockSpillSpots(7, 5, [{ dx: 0, dy: -1 }, { dx: 0, dy: 1 }])).toEqual([
+            '-2,-2', '0,-2', '2,-2', '-2,2', '0,2', '2,2',
+        ]);
+    });
+
+    it('a diagonal highland spills the corner wedge (the corner cell plus its two flanks)', () => {
+        // SE corner (3,2): the corner itself is odd-parity (bare), its two
+        // flanks (3,1) and (2,2) carry even parity — row-major order
+        expect(rockSpillSpots(7, 5, [{ dx: 1, dy: 1 }])).toEqual(['3,1', '2,2']);
+        // NW corner (−3,−2): the corner is odd-parity, the flanks (−2,−2)
+        // and (−3,−1) even — row-major
+        expect(rockSpillSpots(7, 5, [{ dx: -1, dy: -1 }])).toEqual(['-2,-2', '-3,-1']);
+    });
+
+    it('the 25×17 board carves the exact bands generation stamps (the reference carves)', () => {
+        // The seed-7 default island's six carved tiles — captured; (2,0)
+        // and (2,1) sit beside TWO highlands (the west highland column's
+        // full checkerboard band plus the diagonal corner)
+        expect(rockSpillSpots(25, 17, [{ dx: -1, dy: 0 }])).toEqual([
+            '-12,-8', '-12,-6', '-12,-4', '-12,-2', '-12,0', '-12,2', '-12,4', '-12,6', '-12,8',
+        ]);
+        expect(rockSpillSpots(25, 17, [{ dx: -1, dy: -1 }])).toEqual(['-12,-8']);
+        expect(rockSpillSpots(25, 17, [{ dx: -1, dy: 1 }])).toEqual(['-12,8']);
+    });
+
+    it('no rocky neighbors carve nothing; the output is row-major and pure', () => {
+        expect(rockSpillSpots(7, 5, [])).toEqual([]);
+        // Pure: the same inputs return an equal (fresh) list every call
+        const first = rockSpillSpots(7, 5, [{ dx: 1, dy: 1 }]);
+        expect(rockSpillSpots(7, 5, [{ dx: 1, dy: 1 }])).toEqual(first);
+        expect(first).not.toBe(rockSpillSpots(7, 5, [{ dx: 1, dy: 1 }]));
+    });
+});
+
+describe('meadowIngressSpots (the localized tree ingress)', () => {
+    it('a cardinal forest edge claims its 6 closest fine cells along THAT shared edge', () => {
+        // 7×5 board, forest to the EAST: the five edge cells (x=3) rank
+        // first, the sixth spot reaches one cell deeper — row-major first
+        expect(meadowIngressSpots(7, 5, [{ dx: 1, dy: 0 }])).toEqual([
+            '2,-2', '3,-2', '3,-1', '3,0', '3,1', '3,2',
+        ]);
+        // Forest to the WEST — the mirrored fringe
+        expect(meadowIngressSpots(7, 5, [{ dx: -1, dy: 0 }])).toEqual([
+            '-3,-2', '-2,-2', '-3,-1', '-3,0', '-3,1', '-3,2',
+        ]);
+        // 25×17, forest to the NORTH: the first six cells of the top row
+        expect(meadowIngressSpots(25, 17, [{ dx: 0, dy: -1 }])).toEqual([
+            '-12,-8', '-11,-8', '-10,-8', '-9,-8', '-8,-8', '-7,-8',
+        ]);
+    });
+
+    it('a diagonal forest edge claims its 2 closest cells at the shared corner', () => {
+        // SE corner (3,2) on the 7×5 board: the corner first, then the
+        // closest unclaimed cell by row-major Chebyshev rank
+        expect(meadowIngressSpots(7, 5, [{ dx: 1, dy: 1 }])).toEqual(['2,1', '3,2']);
+        // 25×17 SW corner: the corner plus the cell above it
+        expect(meadowIngressSpots(25, 17, [{ dx: -1, dy: 1 }])).toEqual(['-12,7', '-12,8']);
+    });
+
+    it('every shared edge gains its fringe — claimed spots fall through to the next edge', () => {
+        // East cardinal edge + SE diagonal edge: the cardinal fills its six
+        // (edge row + one deep), the diagonal's closest two were claimed by
+        // the shared edge cells, so its fringe reaches the next rank —
+        // EIGHT spots total, each edge served
+        expect(meadowIngressSpots(7, 5, [{ dx: 1, dy: 0 }, { dx: 1, dy: 1 }])).toEqual([
+            '2,-2', '3,-2', '3,-1', '3,0', '2,1', '3,1', '2,2', '3,2',
+        ]);
+    });
+
+    it('a meadow beside no woods gains nothing; the output is row-major and pure', () => {
+        expect(meadowIngressSpots(7, 5, [])).toEqual([]);
+        const first = meadowIngressSpots(7, 5, [{ dx: 1, dy: 0 }]);
+        expect(meadowIngressSpots(7, 5, [{ dx: 1, dy: 0 }])).toEqual(first);
+        expect(first).not.toBe(meadowIngressSpots(7, 5, [{ dx: 1, dy: 0 }]));
+    });
+});
+
+// ── The generateIsland integration — the whole seed-7 reference board ───────
+
+/** Row-major cell lookup on a centered canvas. */
+const cellAt = (canvas: Canvas, x: number, y: number): TerrainCell => {
+    const halfX = (canvas.width - 1) / 2;
+    const halfY = (canvas.height - 1) / 2;
+    return canvas.cells[(y + halfY) * canvas.width + (x + halfX)];
+};
+
+describe('the neighborhood model on the seed-7 reference island (25×17)', () => {
+    const island = generateIsland({ seed: 7 });
+
+    it('every forest carries exactly its neighborhood-counted coverage', () => {
+        // The full sweep: every forest tile's tree deposit IS
+        // Math.round(forestCoverageOf(its 8-neighbor classes) × 425) — the
+        // model is a pure function of the finished biome map
+        const forests = island.cells.filter((cell) => cell.biome === 'forest');
+        expect(forests.length).toBe(75);
+        forests.forEach((cell) => {
+            const neighborhood = neighborhoodOf(island, cell.x, cell.y);
+            const coverage = forestCoverageOf(neighborhood.forest, neighborhood.rock);
+            expect(cell.resources.tree).toBe(Math.round(coverage * island.width * island.height));
+        });
+    });
+
+    it('a wood ringed by forests stands FULL; fewer forest neighbors stand lower', () => {
+        // FULL interior: (3,−3) is ringed by 8 forests → the clamp at 425
+        expect(neighborhoodOf(island, 3, -3).forest.length).toBe(8);
+        expect(cellAt(island, 3, -3).resources.tree).toBe(425);
+        // The 425-full woods are exactly the eight-forest interiors
+        // (captured census — 19 of the 75 woods reach the clamp)
+        expect(island.cells.filter((cell) => cell.biome === 'forest' && cell.resources.tree === 425).length).toBe(19);
+        // PARTIAL edges land strictly below the clamp — captured pairs,
+        // each with its measured forest-neighbor count:
+        //   (4,−5): 6 forest neighbors → 383
+        expect(cellAt(island, 4, -5).resources.tree).toBe(383);
+        //   (2,−5): 4 forest neighbors → 319
+        expect(cellAt(island, 2, -5).resources.tree).toBe(319);
+        //   (3,−6): 3 forest neighbors → 276
+        expect(cellAt(island, 3, -6).resources.tree).toBe(276);
+        // MONOTONIC — more forest neighbors, more trees (cardinals weigh
+        // double, so the same count can differ; these pairs differ in count)
+        expect(cellAt(island, 3, -3).resources.tree).toBeGreaterThan(cellAt(island, 4, -5).resources.tree);
+        expect(cellAt(island, 4, -5).resources.tree).toBeGreaterThan(cellAt(island, 2, -5).resources.tree);
+        expect(cellAt(island, 2, -5).resources.tree).toBeGreaterThan(cellAt(island, 3, -6).resources.tree);
+    });
+
+    it('meadows beside woods carry their localized edge ingress; bare meadows carry none', () => {
+        const meadows = island.cells.filter((cell) => cell.biome === 'meadow');
+        expect(meadows.length).toBe(38);
+        // The full sweep: every meadow's tree deposit IS its ingress
+        // fringe's size (meadowIngressSpots of its forest edges) — bare
+        // meadows read 0
+        meadows.forEach((cell) => {
+            const edges = neighborhoodOf(island, cell.x, cell.y).forest;
+            expect(cell.resources.tree ?? 0).toBe(meadowIngressSpots(island.width, island.height, edges).length);
+        });
+        // CARDINAL-ONLY quota: (0,3) has one cardinal forest edge (0,1) —
+        // exactly 6 ingress spots (captured)
+        expect(neighborhoodOf(island, 0, 3).forest).toEqual([{ dx: 0, dy: 1 }]);
+        expect(cellAt(island, 0, 3).resources.tree).toBe(6);
+        // DIAGONAL-ONLY corner fringe: (−1,3) has one diagonal forest edge —
+        // exactly 2 spots (captured)
+        expect(neighborhoodOf(island, -1, 3).forest).toEqual([{ dx: 1, dy: 1 }]);
+        expect(cellAt(island, -1, 3).resources.tree).toBe(2);
+        // The cardinal-double rule on the ingress side: (1,3) has two
+        // DIAGONAL edges → 4 spots; (1,2) has 1 cardinal + 1 diagonal → 8
+        expect(neighborhoodOf(island, 1, 3).forest).toEqual([{ dx: 1, dy: -1 }, { dx: -1, dy: 1 }]);
+        expect(cellAt(island, 1, 3).resources.tree).toBe(4);
+        expect(neighborhoodOf(island, 1, 2).forest).toEqual([{ dx: 1, dy: -1 }, { dx: 1, dy: 0 }]);
+        expect(cellAt(island, 1, 2).resources.tree).toBe(8);
+        // A fully walled-in meadow corner: (6,1) has 3 cardinal + 3 diagonal
+        // forest edges → 6×3 + 2×3 = 24 (captured); (7,1) adds a fourth
+        // cardinal → 26
+        expect(cellAt(island, 6, 1).resources.tree).toBe(24);
+        expect(cellAt(island, 7, 1).resources.tree).toBe(26);
+        // BARE meadows (no forest neighbor at all): no deposit at all
+        ['0,-3', '0,-2', '-2,1', '-2,2', '-1,2', '0,2', '-3,3', '-2,3'].forEach((key) => {
+            const [x, y] = key.split(',').map(Number);
+            expect(neighborhoodOf(island, x, y).forest).toEqual([]);
+            expect(cellAt(island, x, y).resources.tree).toBeUndefined();
+        });
+        // THE INGRESS IS LOCALIZED — (1,−4) shares its east edge with the
+        // woods: its 10 spots (1 cardinal + 2 diagonal edges) hug that edge
+        // in the tile's east column; captured exact list
+        expect(meadowIngressSpots(island.width, island.height, neighborhoodOf(island, 1, -4).forest)).toEqual([
+            '11,-8', '12,-8', '12,-7', '12,-6', '12,-5', '12,-4', '12,-3', '12,-2', '11,7', '12,8',
+        ]);
+        expect(cellAt(island, 1, -4).resources.tree).toBe(10);
+    });
+
+    it('rocky neighborhoods suppress the stand and carve the spillover band (captured carves)', () => {
+        // The island's six carved tiles — the exact bands, row-major
+        const carvings = island.cells
+            .filter((cell) => cell.carving)
+            .map((cell) => `${cell.x},${cell.y}:${cell.carving?.rock.join(',')}`);
+        expect(carvings).toEqual([
+            '-2,-2:12,8',
+            '-3,-1:12,8',
+            '2,-1:-12,8',
+            '2,0:-12,-8,-12,-6,-12,-4,-12,-2,-12,0,-12,2,-12,4,-12,6,-12,8',
+            '2,1:-12,-8,-12,-6,-12,-4,-12,-2,-12,0,-12,2,-12,4,-12,6,-12,8',
+            '2,2:-12,-8',
+        ]);
+        // THE ROCK SUPPRESSION — (2,0) sits beside the west highland column
+        // (cardinal −0.1) and the highland corner (diagonal −0.05): 5 forest
+        // neighbors land it at 0.70 → 298 trees, well below its unpenalized
+        // 0.85-coverage peers (361)
+        const neighborhood = neighborhoodOf(island, 2, 0);
+        expect(neighborhood.rock).toEqual([{ dx: -1, dy: 1 }, { dx: -1, dy: 0 }]);
+        expect(forestCoverageOf(neighborhood.forest, neighborhood.rock)).toBe(0.70000000000000007);
+        expect(cellAt(island, 2, 0).resources.tree).toBe(298);
+        // The band never eats the whole stand: the deposit stays within the
+        // band-free pool (425 − 9 band spots)
+        expect(cellAt(island, 2, 0).resources.tree).toBeLessThanOrEqual(425 - 9);
+    });
+
+    it('is deterministic: the same seed regenerates the identical canvas, carves included', () => {
+        const again = generateIsland({ seed: 7 });
+        expect(again.cells).toEqual(island.cells);
+        // A different seed draws a different island
+        const other = generateIsland({ seed: 8 });
+        expect(other.cells).not.toEqual(island.cells);
+    });
+});
+
+describe('the neighborhood fallout in the zoomed interior (sub-grids, stands, cache)', () => {
+    const plugin = islandTerrainPlugin();
+    const world = createWorld({ seed: 7, plugins: [plugin] });
+    const canvas = world.canvas;
+    const halfX = (canvas.width - 1) / 2;
+    const halfY = (canvas.height - 1) / 2;
+    const cellAt = (x: number, y: number): TerrainCell =>
+        canvas.cells[(y + halfY) * canvas.width + (x + halfX)];
+
+    it('the ingress meadow persists a REAL stand exactly matching its fringe (one source of truth)', () => {
+        // The meadow (1,−4) carries a stand of its 10 ingress spots; the
+        // stand's positions ARE meadowIngressSpots' selection (the same
+        // pure list generation pass 2 wrote the deposit from)
+        const stand = plugin.forestOf(1, -4);
+        expect(stand?.trees.size).toBe(10);
+        const spotList = Array.from(stand?.trees.keys() ?? []).sort((left, right) => {
+            const [lx, ly] = left.split(',').map(Number);
+            const [rx, ry] = right.split(',').map(Number);
+            return ly - ry || lx - rx;
+        });
+        expect(spotList).toEqual([
+            '11,-8', '12,-8', '12,-7', '12,-6', '12,-5', '12,-4', '12,-3', '12,-2', '11,7', '12,8',
+        ]);
+        // The zoom mirrors it: exactly those 10 subtiles carry one tree
+        const sub = plugin.canvasFor([{ x: 1, y: -4 }]);
+        const treed = sub?.cells.filter((cell) => (cell.resources.tree ?? 0) > 0).map((cell) => `${cell.x},${cell.y}`);
+        expect(treed).toEqual(spotList);
+        // A BARE meadow carries no stand and no zoomed trees
+        expect(plugin.forestOf(0, -3)).toBeUndefined();
+        const bareSub = plugin.canvasFor([{ x: 0, y: -3 }]);
+        expect(bareSub?.cells.every((cell) => cell.resources.tree === undefined)).toBe(true);
+    });
+
+    it('no tree stands on a boulder: the spillover band and the stand never overlap', () => {
+        // (2,0) carries the 9-spot west band; the zoomed interior crowns
+        // EXACTLY those fine cells with a stone voxel stacked on top
+        const carved = cellAt(2, 0);
+        const band = carved.carving?.rock ?? [];
+        expect(band.length).toBe(9);
+        const sub = plugin.canvasFor([{ x: 2, y: 0 }])!;
+        const bouldered = sub.cells
+            .filter((cell) => cell.voxels.length === carved.voxels.length + 1 && cell.voxels[cell.voxels.length - 1] === 'stone')
+            .map((cell) => `${cell.x},${cell.y}`)
+            .sort((left, right) => {
+                const [lx, ly] = left.split(',').map(Number);
+                const [rx, ry] = right.split(',').map(Number);
+                return ly - ry || lx - rx;
+            });
+        expect(bouldered).toEqual(band);
+        // NO tree stands on a boulder — the stand seeding refused the band
+        const stand = plugin.forestOf(2, 0)!;
+        const overlap = band.filter((spot) => stand.trees.has(spot));
+        expect(overlap).toEqual([]);
+        // The zoomed treed subtiles and the boulder spots are disjoint too
+        const treedSubs = sub.cells
+            .filter((cell) => (cell.resources.tree ?? 0) > 0)
+            .map((cell) => `${cell.x},${cell.y}`);
+        expect(treedSubs.filter((spot) => band.includes(spot))).toEqual([]);
+        // The stand mirrors the deposit exactly (the coverage already
+        // priced the rock penalty in)
+        expect(stand.trees.size).toBe(carved.resources.tree ?? 0);
+        // The exposed fine stone reads as rock through the surface key's
+        // boulder crown (the top voxel is the stacked stone)
+        const boulderCell = sub.cells.find((cell) => `${cell.x},${cell.y}` === band[0]);
+        expect(boulderCell?.voxels[boulderCell.voxels.length - 1]).toBe('stone');
+    });
+
+    it('the sub-grid fingerprint stamps the carve: a cached grid never outlives its carve', () => {
+        // The cache serves the SAME grid while the parent is untouched
+        const first = plugin.canvasFor([{ x: 2, y: 0 }]);
+        expect(plugin.canvasFor([{ x: 2, y: 0 }])).toBe(first);
+        // THE CARVE RIDES THE STAMP — move the band's carve on the parent
+        // (what a neighborhood change would do): the cached grid
+        // invalidates and the boulders move with the new carve
+        const carved = cellAt(2, 0);
+        const originalBand = (carved.carving?.rock ?? []).slice();
+        carved.carving = { rock: ['0,0'] };
+        const second = plugin.canvasFor([{ x: 2, y: 0 }]);
+        expect(second).not.toBe(first);
+        const bouldered = second?.cells
+            .filter((cell) => cell.voxels.length === carved.voxels.length + 1 && cell.voxels[cell.voxels.length - 1] === 'stone')
+            .map((cell) => `${cell.x},${cell.y}`);
+        expect(bouldered).toEqual(['0,0']);
+        // Restoring the original carve re-stamps and re-crowns the band
+        carved.carving = { rock: originalBand };
+        const third = plugin.canvasFor([{ x: 2, y: 0 }]);
+        expect(third).not.toBe(second);
+        expect(third?.cells.filter((cell) => cell.voxels.length === carved.voxels.length + 1 && cell.voxels[cell.voxels.length - 1] === 'stone').length).toBe(9);
+        // A carve-less parent never grows boulders (no carving field → no
+        // band → the fingerprint's 'none' stamp)
+        expect(cellAt(3, -3).carving).toBeUndefined();
+        const cleanSub = plugin.canvasFor([{ x: 3, y: -3 }]);
+        expect(cleanSub?.cells.every((cell) => cell.voxels.length === cellAt(3, -3).voxels.length)).toBe(true);
+    });
+
+    it('stand, deposit and zoom agree on EVERY treed tile (forests and ingress meadows)', () => {
+        // The whole-board consistency sweep: every tile carrying a tree
+        // deposit holds a stand of exactly that size; the zoomed sub-grid
+        // carries one tree unit on exactly the stand's positions
+        const treedTiles = canvas.cells.filter((cell) => (cell.resources.tree ?? 0) > 0);
+        expect(treedTiles.length).toBe(105);
+        treedTiles.forEach((tile) => {
+            const stand = plugin.forestOf(tile.x, tile.y);
+            expect(stand).toBeDefined();
+            expect(stand?.trees.size).toBe(tile.resources.tree);
+            const sub = plugin.canvasFor([{ x: tile.x, y: tile.y }]);
+            const treedSubs = sub?.cells.filter((cell) => (cell.resources.tree ?? 0) > 0) ?? [];
+            expect(treedSubs.length).toBe(stand?.trees.size);
+            treedSubs.forEach((cell) => {
+                expect(stand?.trees.has(`${cell.x},${cell.y}`)).toBe(true);
+                // One tree per fine cell, beside the inherited ground supply
+                expect(cell.resources.tree).toBe(1);
+            });
+        });
+    });
+});

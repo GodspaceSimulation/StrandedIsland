@@ -10,12 +10,17 @@
 // rules: the INFINITE GROUND SUPPLY — every ground voxel material a dry
 // column is built from, at the symbolic count of 1 (stone/dirt/grass/sand —
 // never depleted, mirrored onto every fine cell); and the FINITE biological
-// TREE STAND — forested tiles seed FOREST_COVERAGE (90%) of their fine
-// cells with one persistent tree each, the tile's tree deposit mirroring
-// the standing count (383 on the 425-cell default island, Math.round of
-// 382.5). Iron lodes stay finite vein landmarks. Wood is NOT a deposit —
-// it is the product of cutting a tree's wood pool (the lumber behaviour's
-// chop → inventory.harvest → plugins/forest).
+// TREE STAND under the NEIGHBORHOOD MODEL — every forested tile seeds the
+// 8-neighbor coverage (isolated base FOREST_COVERAGE 45% + forest
+// cardinal/diagonal gains − rocky penalties, clamped to [0,1]) with one
+// persistent tree per covered fine cell, and every MEADOW beside woods
+// gains its localized edge ingress (meadowIngressSpots). The exact per-tile
+// counts below were captured from a reference run of the seed-7 default
+// island (see the neighboring islandTerrainNeighbors.test.ts for the
+// controlled-neighborhood model pins). Iron lodes stay finite vein
+// landmarks. Wood is NOT a deposit — it is the product of cutting a tree's
+// wood pool (the lumber behaviour's chop → inventory.harvest →
+// plugins/forest).
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -93,36 +98,72 @@ describe('generateIsland', () => {
         expect(island.stats).toEqual({ land: 282, water: 143, forest: 75, iron: 0 });
     });
 
-    it('carries resource deposits: the voxel ground supply, the tree stand, bare sea', () => {
+    it('carries resource deposits: the voxel ground supply, the neighborhood tree stands, bare sea', () => {
         const island = generateIsland({ seed: 7 });
-        // The density ladder: EVERY forested tile seeds 90% of its fine
-        // cells — FOREST_COVERAGE pins the fraction, forestTreeCount pins
-        // the exact rounding choice (Math.round(0.9 × 425) = 383)
-        expect(FOREST_COVERAGE).toBe(0.9);
-        expect(forestTreeCount(25, 17)).toBe(383);
-        expect(forestTreeCount(7, 5)).toBe(32);
-        // Forest (3,−6): the tile mirrors its seeded 383-tree stand, PLUS
-        // the voxel ground supply its column is built from (stone bedrock,
-        // the dirt under it, the grass the woods stand on)
+        // The density ladder: the ISOLATED wood seeds its FOREST_COVERAGE
+        // base (45% — pinned below), the neighborhood model moves every
+        // forested tile from there (forestTreeCount pins the exact rounding
+        // choice, Math.round(0.45 × 425) = 191)
+        expect(FOREST_COVERAGE).toBe(0.45);
+        expect(forestTreeCount(25, 17)).toBe(191);
+        expect(forestTreeCount(7, 5)).toBe(16);
+        // Forest (3,−6): the tile mirrors its neighborhood-counted 276-tree
+        // stand, PLUS the voxel ground supply its column is built from
+        // (stone bedrock, the dirt under it, the grass the woods stand on)
         expect(island.cells.find((cell) => cell.x === 3 && cell.y === -6)?.resources).toEqual({
             stone: 1,
             dirt: 1,
             grass: 1,
-            tree: 383,
+            tree: 276,
         });
-        // Every one of the island's 75 forests carries exactly 383 trees
-        expect(island.cells.filter((cell) => (cell.resources.tree ?? 0) === 383).length).toBe(75);
+        // THE NEIGHBORHOOD MODEL — every one of the island's 75 forests
+        // carries the coverage its 8 neighbors price (captured per tile:
+        // woods ringed by forests clamp to the FULL 425, edge woods land
+        // well below, rocky edges lose their spillover band's worth)
+        const forestCounts = island.cells
+            .filter((cell) => cell.biome === 'forest')
+            .map((cell) => `${cell.x},${cell.y}:${cell.resources.tree}`)
+            .join(' ');
+        expect(forestCounts).toBe(
+            '3,-6:276 2,-5:319 3,-5:404 4,-5:383 5,-5:319 2,-4:361 3,-4:425 4,-4:425 ' +
+            '5,-4:425 6,-4:340 2,-3:361 3,-3:425 4,-3:425 5,-3:425 6,-3:425 7,-3:340 ' +
+            '-3,-2:276 -2,-2:234 2,-2:361 3,-2:425 4,-2:425 5,-2:425 6,-2:425 7,-2:425 ' +
+            '8,-2:340 -3,-1:234 2,-1:340 3,-1:425 4,-1:383 5,-1:383 6,-1:425 7,-1:425 ' +
+            '8,-1:425 9,-1:319 -7,0:298 -6,0:361 -5,0:319 2,0:298 3,0:404 6,0:340 ' +
+            '7,0:383 8,0:404 9,0:319 -7,1:319 -6,1:425 -5,1:404 -4,1:276 2,1:298 ' +
+            '3,1:425 4,1:383 5,1:340 8,1:340 -6,2:319 -5,2:319 2,2:276 3,2:361 ' +
+            '4,2:361 5,2:361 6,2:361 7,2:383 8,2:340 6,3:383 7,3:425 8,3:361 ' +
+            '0,4:276 6,4:298 7,4:361 8,4:298 -1,5:340 0,5:404 1,5:319 -2,6:255 ' +
+            '-1,6:340 0,6:361 1,6:298',
+        );
+        // THE MEADOW INGRESS — every meadow beside woods carries its
+        // localized edge fringe (6 spots per cardinal forest edge, 2 per
+        // diagonal); bare meadows carry none (captured per tile)
+        const meadowCounts = island.cells
+            .filter((cell) => cell.biome === 'meadow')
+            .map((cell) => `${cell.x},${cell.y}:${cell.resources.tree ?? 0}`)
+            .join(' ');
+        expect(meadowCounts).toBe(
+            '1,-4:10 -4,-3:2 -3,-3:8 -2,-3:8 -1,-3:2 0,-3:0 1,-3:10 -4,-2:8 -1,-2:6 ' +
+            '0,-2:0 1,-2:10 -6,-1:10 -5,-1:8 -4,-1:10 -2,-1:14 1,-1:10 -3,0:8 -3,1:6 ' +
+            '-2,1:0 6,1:24 7,1:26 -4,2:14 -3,2:2 -2,2:0 -1,2:0 0,2:0 1,2:8 -5,3:8 ' +
+            '-4,3:2 -3,3:0 -2,3:0 -1,3:2 0,3:6 1,3:4 2,3:8 -1,4:14 1,4:14 -2,5:14',
+        );
+        // The treed-tile census: 75 woods + the 30 ingressed meadows
+        expect(island.cells.filter((cell) => (cell.resources.tree ?? 0) > 0).length).toBe(105);
         // Beach (−4,−7): the column is stone/dirt/sand — all three supply
         expect(island.cells.find((cell) => cell.x === -4 && cell.y === -7)?.resources).toEqual({
             stone: 1,
             dirt: 1,
             sand: 1,
         });
-        // Meadow (1,−4): stone bedrock + dirt + the grass cover
+        // Meadow (1,−4): stone bedrock + dirt + the grass cover, plus its
+        // cardinal+diagonal forest edges' 10-spot ingress fringe
         expect(island.cells.find((cell) => cell.x === 1 && cell.y === -4)?.resources).toEqual({
             stone: 1,
             dirt: 1,
             grass: 1,
+            tree: 10,
         });
         // The ground-supply censuses: every dry land cell carries stone
         // (the bedrock under everything) and dirt; grass covers meadows
@@ -178,10 +219,14 @@ describe('generateIsland', () => {
         const reference = generateIsland({ seed: 7, width: 37, height: 25 });
         expect(tileSurfaceKey(reference.cells.find((cell) => cell.x === -5 && cell.y === 3)!)).toBe('iron');
         // The tile's GROUND reads the topmost resource-bearing voxel: a
-        // meadow surfaces as its grass cover (its own resource identity —
-        // not the dirt under it), a highland as its stone
+        // meadow BESIDE woods surfaces as its localized tree ingress (the
+        // fringe the meadow gained — the landmark outranks the ground), a
+        // BARE meadow as its grass cover, a highland as its stone
         const current = generateIsland({ seed: 7 });
-        expect(tileSurfaceKey(current.cells.find((cell) => cell.x === 1 && cell.y === -4)!)).toBe('grass');
+        // (1,−4): 1 cardinal + 2 diagonal forest edges → the 10-spot fringe
+        expect(tileSurfaceKey(current.cells.find((cell) => cell.x === 1 && cell.y === -4)!)).toBe('tree');
+        // (0,−3): every neighbor is meadow/beach/water — no woods, no fringe
+        expect(tileSurfaceKey(current.cells.find((cell) => cell.x === 0 && cell.y === -3)!)).toBe('grass');
         expect(tileSurfaceKey(current.cells.find((cell) => cell.x === 0 && cell.y === 0)!)).toBe('stone');
         // A clearcut wood keeps its forest look (the forest voxel stands —
         // the canopy branch reads the voxels directly)
@@ -232,7 +277,9 @@ describe('generateIsland', () => {
     it('builds voxel columns bottom → top with dirt under the surface', () => {
         const island = generateIsland({ seed: 7, width: 7, height: 5 });
         // Forest cell (0,0) — the canvas middle: stone bedrock, dirt, grass
-        // surface, forest on top, the seeded 32-tree stand mirrored
+        // surface, forest on top, the neighborhood-counted 23-tree stand
+        // mirrored (2 cardinal forest neighbors price 65% of the 35 fine
+        // cells — the 7×5 island's woods are (−1,0), (0,0), (0,1))
         expect(island.cells[2 * 7 + 3]).toEqual({
             x: 0,
             y: 0,
@@ -241,7 +288,7 @@ describe('generateIsland', () => {
             waterLevel: 3,
             biome: 'forest',
             passable: true,
-            resources: { stone: 1, dirt: 1, grass: 1, tree: 32 },
+            resources: { stone: 1, dirt: 1, grass: 1, tree: 23 },
         });
         // Top-left corner (−3,−2): shallow seabed sand + water stacked to
         // the sea level — no deposits on a sea column
@@ -421,20 +468,21 @@ describe('islandTerrainPlugin', () => {
     it('distributes the parent deposits onto the subtiles (the zoomed view)', () => {
         const plugin = islandTerrainPlugin({ width: 7, height: 5 });
         const world = createWorld({ seed: 7, plugins: [plugin] });
-        // The forest center seeds 32 trees (90% of 35 fine cells) — their
+        // The forest center seeds 23 trees (the neighborhood model's 65%
+        // of 35 fine cells — 2 cardinal forest neighbors) — their
         // PERSISTENT fine positions carry one tree unit each, and every
         // subtile mirrors the ground supply (stone/dirt/grass ×∞)
         const forest = plugin.canvasFor([{ x: 0, y: 0 }]);
         const treeTiles = forest?.cells.filter((cell) => (cell.resources.tree ?? 1) === 1 && cell.resources.tree === 1);
         expect(treeTiles?.map((cell) => [cell.x, cell.y])).toEqual([
-            [-3, -2], [-1, -2], [0, -2], [1, -2], [2, -2], [3, -2],
-            [-3, -1], [-2, -1], [-1, -1], [0, -1], [1, -1], [2, -1], [3, -1],
-            [-3, 0], [-2, 0], [0, 0], [1, 0], [2, 0], [3, 0],
-            [-3, 1], [-2, 1], [0, 1], [1, 1], [2, 1], [3, 1],
+            [-3, -2], [-1, -2], [0, -2], [1, -2], [2, -2],
+            [-3, -1], [-2, -1], [-1, -1], [1, -1], [3, -1],
+            [1, 0], [2, 0], [3, 0],
+            [-3, 1], [0, 1], [3, 1],
             [-3, 2], [-2, 2], [-1, 2], [0, 2], [1, 2], [2, 2], [3, 2],
         ]);
-        // Exactly three bare fine cells remain (35 − 32) — the seeded gaps
-        expect(forest?.cells.filter((cell) => cell.resources.tree === undefined).length).toBe(3);
+        // Exactly twelve bare fine cells remain (35 − 23) — the seeded gaps
+        expect(forest?.cells.filter((cell) => cell.resources.tree === undefined).length).toBe(12);
         // A treed subtile carries its tree + the ground supply; a bare one
         // only the supply
         expect(plugin.cellFor([{ x: 0, y: 0 }, { x: 2, y: -2 }])?.resources).toEqual({
@@ -465,7 +513,7 @@ describe('islandTerrainPlugin', () => {
         // A length-1 path resolves the root canvas cell
         expect(plugin.cellFor([{ x: 0, y: 0 }])).toEqual(world.cellAt(0, 0));
         // A length-2 path resolves a subtile of the forest's sub-grid — one
-        // of the 32 stand-authored tree subtiles
+        // of the 23 stand-authored tree subtiles
         const subtile = plugin.cellFor([{ x: 0, y: 0 }, { x: 2, y: -2 }]);
         expect(subtile?.biome).toBe('forest');
         expect(subtile?.resources).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 1 });
@@ -487,12 +535,12 @@ describe('islandTerrainPlugin', () => {
         // drops with the stand, plugins/forest syncMirror) leaves every
         // OTHER position byte-identical — the trees never reshuffle
         const before = plugin.canvasFor([{ x: 0, y: 0 }])!.cells.map((cell) => cell.resources.tree ?? 0);
-        expect(before.filter((count) => count === 1).length).toBe(32);
+        expect(before.filter((count) => count === 1).length).toBe(23);
         plugin.forestOf(0, 0)!.trees.delete('-3,-2');
         plugin.forestOf(0, 0)!.trees.delete('-1,-2');
-        world.cellAt(0, 0)!.resources.tree = 30;
+        world.cellAt(0, 0)!.resources.tree = 21;
         const after = plugin.canvasFor([{ x: 0, y: 0 }])!.cells.map((cell) => cell.resources.tree ?? 0);
-        expect(after.filter((count) => count === 1).length).toBe(30);
+        expect(after.filter((count) => count === 1).length).toBe(21);
         // The surviving positions are byte-identical to the seeded layout
         after.forEach((count, index) => {
             if (before[index] === 0) {
@@ -509,20 +557,20 @@ describe('islandTerrainPlugin', () => {
     it('regenerates sub-grids when the parent deposits change (fingerprint)', () => {
         const plugin = islandTerrainPlugin({ width: 7, height: 5 });
         const world = createWorld({ seed: 7, plugins: [plugin] });
-        // The forest mirrors its 32-tree stand; the fingerprint (deposits +
+        // The forest mirrors its 23-tree stand; the fingerprint (deposits +
         // voxels + biome) changes when a tree is felled off the record —
         // the cached sub-grid invalidates and the mirror re-reads the stand
         const sub = plugin.canvasFor([{ x: 0, y: 0 }]);
-        expect(sub?.cells.filter((cell) => (cell.resources.tree ?? 0) === 1).length).toBe(32);
+        expect(sub?.cells.filter((cell) => (cell.resources.tree ?? 0) === 1).length).toBe(23);
         const firstPass = sub!.cells.map((cell) => cell.resources.tree ?? 0);
         // A regeneration with an UNCHANGED parent serves the cached grid
         expect(plugin.canvasFor([{ x: 0, y: 0 }])).toBe(sub);
         // Drop the standing-tree mirror by one (what a full fell does) —
         // the sub-grid invalidates and re-mirrors
-        world.cellAt(0, 0)!.resources.tree = 31;
+        world.cellAt(0, 0)!.resources.tree = 22;
         plugin.forestOf(0, 0)!.trees.delete('-3,-2');
         const second = plugin.canvasFor([{ x: 0, y: 0 }]);
-        expect(second?.cells.filter((cell) => (cell.resources.tree ?? 0) === 1).length).toBe(31);
+        expect(second?.cells.filter((cell) => (cell.resources.tree ?? 0) === 1).length).toBe(22);
         // The reshape is exact: only the felled position went bare
         second!.cells.forEach((cell, index) => {
             const before = firstPass[index];

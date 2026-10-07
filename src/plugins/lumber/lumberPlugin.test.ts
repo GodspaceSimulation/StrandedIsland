@@ -72,7 +72,7 @@ describe('lumberPlugin', () => {
 
     it('a woodless actor on a treed tile chops: the wood lands in the bag on completion', () => {
         const { world, inventory, tasks } = buildStack();
-        // Forest (−7,0) mirrors its 383-tree stand
+        // Forest (−7,0) mirrors its neighborhood-counted 298-tree stand
         spawn(world, 'a', 'Ael', -7, 0);
         world.step();
         // The 15-minute chop was planned at minute 1 — the tree is NOT
@@ -93,14 +93,13 @@ describe('lumberPlugin', () => {
         }
         // The chop completed at minute 16: one wood off a tree's POOL into
         // the bag — wood never stood on the tile. The SOURCE tree was the
-        // sapling standing exactly on Ael's fine spot (11,−3): pool 1, so
-        // the chop FELLED it — the mirror drops to 382 (a young tree gives
-        // its 1 wood and is gone). The woods' own stocks stand beside the
-        // grove (berry; the mushroom regrew a second one on its minute-15
-        // rhythm)
+        // tree standing exactly on Ael's fine spot: the cut takes ONE wood
+        // and the tree STANDS (its pool holds more wood — captured) — the
+        // mirror stays at 298. The woods' own stocks stand beside the grove
+        // (berry; the mushroom regrew a second one on its minute-15 rhythm)
         expect(inventory.of('a')).toEqual({ wood: 1 });
-        expect(inventory.cellStock(-7, 0)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 382, berry: 1, mushroom: 2 });
-        expect(world.cellAt(-7, 0)?.resources).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 382 });
+        expect(inventory.cellStock(-7, 0)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 298, berry: 1, mushroom: 2 });
+        expect(world.cellAt(-7, 0)?.resources).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 298 });
         // The felling is silent — a solo beat, not a story between entities
         expect(world.events.log().map((event) => event.kind)).toEqual(['spawn']);
         // Wooded up, the lumber gate fails — the actor fine-wanders on
@@ -111,7 +110,7 @@ describe('lumberPlugin', () => {
         const { world, inventory, tasks, forest } = buildStack();
         spawn(world, 'a', 'Ael', -7, 0);
         // The seeded stand's standing wood at minute 0 (captured reference)
-        expect(forest.standOf({ x: -7, y: 0 })).toEqual({ trees: 383, wood: 1518 });
+        expect(forest.standOf({ x: -7, y: 0 })).toEqual({ trees: 298, wood: 1176 });
         for (let index = 0; index < 16; index++) {
             world.step();
         }
@@ -124,13 +123,13 @@ describe('lumberPlugin', () => {
         for (let index = 0; index < 15; index++) {
             world.step();
         }
-        // The second chop cut the stand's next-nearest tree: the stand
-        // counts 382 trees (the sapling fell on the first chop) and the
+        // The second chop cut the stand's next wood — both cuts came off
+        // standing trees (no fell: the stand still counts 298) and the
         // standing wood dropped by exactly the two cut units — the default
         // biology adds nothing in 31 world minutes (real-year pace)
         expect(inventory.of('a')).toEqual({ wood: 1 });
-        expect(inventory.cellStock(-7, 0).tree).toBe(382);
-        expect(forest.standOf({ x: -7, y: 0 })).toEqual({ trees: 382, wood: 1516 });
+        expect(inventory.cellStock(-7, 0).tree).toBe(298);
+        expect(forest.standOf({ x: -7, y: 0 })).toEqual({ trees: 298, wood: 1174 });
     });
 
     it('a woodless actor with no tree underfoot travels toward the nearest treed tile', () => {
@@ -138,12 +137,14 @@ describe('lumberPlugin', () => {
         // Ael stands on the forest (6,2) with its own grove FELLED away
         // (the stock mirror only — the tile deposit regrows through the
         // ecology's recruitment, not a stock rhythm): the nearest treed
-        // tile is (5,2), one tile west (the row-major survey order wins the
-        // distance tie with (7,2))
+        // tiles are all ONE Chebyshev step away — (5,1) west-north,
+        // (6,1) north, (7,1) north-east, (5,2) west, (7,2) east — and the
+        // row-major survey order wins the distance tie: (5,1) ranks first
         spawn(world, 'a', 'Ael', 6, 2);
         delete inventory.cellStock(6, 2).tree;
         world.step();
-        // One fine step toward the grove — a 1-minute task
+        // One fine step toward the grove — a 1-minute task (the first leg
+        // runs west either way)
         expect(tasks.taskOf('a')).toEqual({
             id: 't-1',
             actorId: 'a',
@@ -156,14 +157,16 @@ describe('lumberPlugin', () => {
             remaining: 1,
         });
         // The trek west (24 fine steps, the wrap into (5,2) landing at
-        // minute 25) then the chop: by minute 40 the wood is in the bag.
-        // The grove reads tree ×383 (the tile's tree mirror holds — no
-        // stock regrow rhythm any more; the chop cut a pool wood)
+        // minute 25) then the chop: by minute 40 the wood is in the bag —
+        // the wrap onto the treed (5,2) short-circuits the trek (a tree
+        // underfoot chops). The grove reads tree ×361 (the tile's tree
+        // mirror holds — no stock regrow rhythm any more; the chop cut a
+        // pool wood)
         for (let index = 0; index < 40; index++) {
             world.step();
         }
         expect(inventory.of('a')).toEqual({ wood: 1 });
-        expect(inventory.cellStock(5, 2)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 383, berry: 2, mushroom: 2, vine: 1 });
+        expect(inventory.cellStock(5, 2)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 361, berry: 2, mushroom: 2, vine: 1 });
         expect(world.actors.get('a')).toMatchObject({ position: { x: 5, y: 2, z: 0 } });
     });
 

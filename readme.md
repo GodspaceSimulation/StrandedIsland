@@ -139,8 +139,10 @@ The canvas draws the woods: a treed tile carries the 'tree' DECORATION
 (scenario/island.ts decorationOf → @godspace/canvas frames), and the
 unicode tab paints the 🌳 emoji on every empty treed tile (entities always
 win the tile) while the SVG tab draws the vector tree — trunk + canopy.
-DENSE WOODS: every forested tile seeds its interior at 90% tree coverage —
-zoom in and the woods fill the ground (see the Forest Ecology below).
+DENSE WOODS: a forested tile seeds its interior at its NEIGHBORHOOD
+coverage — a wood ringed by forests fills the ground completely (100%),
+edge woods thin out, woods beside rock thin out further and take its
+boulders in (see the Forest Ecology below).
 
 ## The ground supply — infinite resources by voxel name
 
@@ -162,11 +164,38 @@ a finite vein landmark.
 ## Forest Ecology — the living woods (plugins/forest)
 
 The woods are a population, not a pile. The terrain plugin seeds every
-forested tile with a PERSISTENT FINE-SCALE STAND: 90% of the tile's fine
-cells (`FOREST_COVERAGE` — Math.round(0.9 × 425) = 383 trees on the default
-island) hold one tree each at mixed seeded ages, and the zoomed interior
-mirrors those exact positions — trees never reshuffle after a cut. The
-tile's `tree` deposit count mirrors the standing stand.
+forested tile with a PERSISTENT FINE-SCALE STAND sized by the
+**neighborhood model** (plugins/terrain/islandTerrain.ts): a tile's
+generated resources are affected by ALL EIGHT of its neighbors — the
+cardinal directions (left/right/up/down) weighing DOUBLE the diagonals —
+classified by the neighbor's actual biome:
+
+- **forest neighbor** — the woods feed the woods: the tile's tree coverage
+  gains (`FOREST_NEIGHBOR_CARDINAL` / `FOREST_NEIGHBOR_DIAGONAL`). A wood
+  ringed by 8 forests seeds the FULL 100% — 425 trees on the default
+  island, every fine cell holding a tree (the old uniform 90% cap is gone,
+  `FOREST_COVERAGE` is now the BASE coverage of an isolated wood); a wood
+  with 4 forest neighbors lands well below it.
+- **meadow neighbor** — the grassland complements the woods' border: the
+  MEADOW tile gains its own LOCALIZED TREE INGRESS along the shared edge
+  (`MEADOW_INGRESS_*` — 6 trees per cardinal forest edge, 2 per diagonal
+  corner, placed on the fine cells nearest that edge). The meadow keeps
+  its biome ('meadow' — never a grassland alias); its trees are a real
+  persistent stand: the ecology's chop harvests them, the Tile Inspector
+  reads them, and a spread conversion plants its sapling INTO the ingress
+  stand (the ingress is the spread's beachhead).
+- **highland neighbor** — the rock crowds the woods: the tile's coverage
+  drops (`ROCK_NEIGHBOR_*`) AND a rock-spillover band is carved along the
+  shared edge — the zoomed interior crowns those fine cells with a BOULDER
+  voxel (a stone voxel on top of the column — the fine cell reads as rock,
+  `tileSurfaceKey`'s boulder crown), and no tree stands on a boulder.
+- **beach / water neighbor** — sand and sea feed nothing.
+
+Every seeded tree holds one fine cell at mixed seeded ages, and the zoomed
+interior mirrors those exact positions — trees never reshuffle after a
+cut. The tile's `tree` deposit count mirrors the standing stand (ingress
+meadows included). The neighbor carve rides the sub-grid fingerprint, so a
+cached zoomed grid never outlives the parent data it was generated from.
 
 **Wood grows on the tree.** Each tree carries a wood pool that grows with
 its age toward the mature cap (8 units): a sapling gives 1 wood, an old
@@ -175,19 +204,23 @@ inventory.harvest → the forest chop) takes ONE unit per chop; the tree
 stands while wood remains and regrows from its post-cut baseline — a
 partially harvested mature tree is never dead-ended. A tree chopped to 0
 is felled away: its record and the mirrors leave, and recruitment refills
-the spot. Living trees are never bagged (`takeFromCell('tree')` refuses).
+the spot (never a boulder spot — the rock-spillover band is treeless
+forever). Living trees are never bagged (`takeFromCell('tree')` refuses).
 
 **Recruitment and spread** (the ecology's own staggered per-tile
 schedules, bounded per minute):
 
-- a forest VOXEL recruits one sapling into a free fine cell on its rhythm —
-  EVEN clearcut (the seed bank stands in for the felled mothers; the
-  documented assumption);
+- a forest VOXEL recruits one sapling into a free fine cell OFF its
+  rock-spillover boulders on its rhythm — EVEN clearcut (the seed bank
+  stands in for the felled mothers; the documented assumption). Boulders
+  hold no tree: the recruitment probe, its bounded fallback and the
+  terrain plugin's `forestPlant` boundary all refuse the carve;
 - a forest tile holding a LIVING MATURE tree converts ONE adjacent meadow
   tile (grass substrate) into woods every spread slot: the forest voxel
-  stacks on the grass, the biome re-skins, a sapling seeds the new stand;
-- trees NEVER spread onto sand, stone or water — they cannot grow there,
-  regardless of the soil underlayer.
+  stacks on the grass, the biome re-skins, a sapling seeds the new stand —
+  or JOINS the meadow's ingress stand when the border already seeded one;
+  - trees NEVER spread onto sand, stone or water — they cannot grow there,
+    regardless of the soil underlayer.
 
 **Research-backed pacing** (representative fast pioneer, DEFAULT real
 time — one year = 525,600 world minutes of 1440-minute days):

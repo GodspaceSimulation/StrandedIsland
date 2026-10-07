@@ -22,12 +22,53 @@
 //   ground. Mirrored onto every fine cell at the zoomed scale.
 //
 //   THE FOREST STAND (finite, biological) — a forested tile seeds a
-//   PERSISTENT FINE-SCALE TREE RECORD (ForestStand below): FOREST_COVERAGE
-//   of the tile's fine cells hold one tree each, at mixed seeded ages. The
-//   stand is authoritative; the tile's `tree` deposit count MIRRORS the
-//   standing tree count (the inventory plugin's gatherable stock seeds from
-//   it, the canvas surface reads it). The plugins/forest ecology grows the
-//   trees' wood, recruits new ones and spreads the woods — see that plugin.
+//   PERSISTENT FINE-SCALE TREE RECORD (ForestStand below): the tile's
+//   NEIGHBORHOOD COVERAGE of its fine cells hold one tree each, at mixed
+//   seeded ages (the 8-neighbor model below). The stand is authoritative;
+//   the tile's `tree` deposit count MIRRORS the standing tree count (the
+//   inventory plugin's gatherable stock seeds from it, the canvas surface
+//   reads it). The plugins/forest ecology grows the trees' wood, recruits
+//   new ones and spreads the woods — see that plugin.
+//
+//   THE NEIGHBORHOOD MODEL — resources generated within a tile are
+//   affected by ALL EIGHT of its neighbors (NEIGHBOR_OFFSETS from
+//   @godspace/core — 4 cardinals + 4 diagonals), with the cardinal
+//   directions weighing DOUBLE the diagonals. The model is a pure function
+//   of the finished biome map (generation pass 2 below — no random draws,
+//   so the noise-lattice stream order above is untouched), classified per
+//   neighbor's actual biome name ('meadow' — the engine/types biome
+//   vocabulary — never a 'grassland' alias):
+//
+//     forest neighbor   — the woods feed the woods: the tile's tree
+//                         coverage GAINS (FOREST_NEIGHBOR_* weights). A
+//                         forest ringed by 8 forests clamps to the FULL
+//                         100% stand — 425 trees on the default island,
+//                         not the old uniform 90% cap; a forest with only
+//                         4 forest neighbors lands well below it.
+//     meadow neighbor   — no coverage gain on the forest side; instead the
+//                         MEADOW tiles beside woods gain their own
+//                         LOCALIZED TREE INGRESS (meadowIngressSpots
+//                         below): a thin stand of trees along the shared
+//                         edge — the grassland complementing the woods'
+//                         border. The meadow keeps its biome; its trees
+//                         are a real persistent stand the ecology's chop
+//                         harvests and the spread conversion joins.
+//     highland neighbor — the rock crowds the woods: the tile's coverage
+//                         DROPS (ROCK_NEIGHBOR_* weights) AND a
+//                         rock-spillover band is carved along the shared
+//                         edge (rockSpillSpots below) — the TileCarving on
+//                         engine/types.ts; the zoomed interior crowns the
+//                         band's fine cells with a boulder voxel (their top
+//                         surface reads as rock) and no tree stands on a
+//                         boulder.
+//     beach / water     — sand and sea feed nothing (no contribution).
+//
+//   Out-of-grid positions (beyond the canvas rim) are not neighbors — the
+//   rim is always open sea anyway. Highland edges never change after
+//   generation (the ecology only converts meadows), so a carve is stable
+//   for its tile's life; the sub-grid fingerprint stamps it regardless,
+//   so cached grids invalidate exactly when the carve is present or
+//   changes (fingerprintOf below).
 //
 // The deposits are what the tile appears as on the canvas (tileSurfaceKey
 // below) and what the inventory plugin seeds its gatherable cell stocks
@@ -38,8 +79,9 @@
 // which is what the tests assert. `@presource/core` has no seeded PRNG, so the
 // stream comes from engine/random.ts (mulberry32) via @godspace/core.
 
-import { randomCreate, randomKeyed, type RandomSource } from '@godspace/core';
-import type { Biome, Canvas, TerrainCell, TileResource, TileResources, VoxelKind } from '../../engine/types';
+import { arrayEach } from '@presource/core';
+import { NEIGHBOR_OFFSETS, randomCreate, randomKeyed, type RandomSource } from '@godspace/core';
+import type { Biome, Canvas, TerrainCell, TileCarving, TileResource, TileResources, VoxelKind } from '../../engine/types';
 import { TILE_RESOURCES, UNLIMITED_TILE_RESOURCES } from '../../engine/types';
 import type { PluginContext, WorldPlugin } from '@godspace/core';
 import type { World } from '../../engine/world';
@@ -104,30 +146,270 @@ export const IRON_LODE_THRESHOLD = 0.5;
 export const FOREST_MOISTURE_THRESHOLD = 0.5;
 
 /**
- * The DENSE GROVE line — SUPERSEDED. Every forested tile now seeds the same
- * fine-scale tree stand at FOREST_COVERAGE coverage (90% of the tile's fine
- * cells — "90% of the map at scale 0 is covered in tree"); the old plain ×2 /
- * dense ×6 deposit ladder is gone because the zoomed interior is where the
- * density lives now.
- */
-
-/**
- * Tree coverage of a forest tile's fine cells at generation — "90% of the
- * map at scale 0 is covered in tree". The default island's 25×17 sub-grid
- * holds 425 fine cells → Math.round(0.9 × 425) = 383 trees per forest tile
- * (the rounding choice is pinned: 382.5 rounds UP to 383). Growth and
- * recruitment may carry an uncut stand toward the full 100% over the years
+ * The BASE tree coverage of a forest tile's fine cells at generation — the
+ * coverage of an ISOLATED wood (no forest neighbors at all). The
+ * neighborhood model builds on it: each forest neighbor adds
+ * FOREST_NEIGHBOR_CARDINAL (cardinals) / FOREST_NEIGHBOR_DIAGONAL
+ * (diagonals), each highland neighbor subtracts its ROCK_NEIGHBOR_* weight,
+ * and the total clamps to [0, 1] — a fully ringed wood reaches the FULL
+ * 100% (every fine cell holds a tree — 425 on the default island), while
+ * half-surrounded woods land below the old uniform 90% seeding. Recruitment
+ * may still carry an uncut stand to the full 100% over the years
  * (plugins/forest documents the cap); felled spots refill by recruitment.
  */
-export const FOREST_COVERAGE = 0.9;
+export const FOREST_COVERAGE = 0.45;
 
 /**
- * The exact standing-tree count a forest tile seeds: FOREST_COVERAGE of the
- * sub-grid's fine cells, half-up rounded (Math.round — 382.5 → 383 on the
- * 425-cell default island).
+ * Coverage gain per CARDINAL forest neighbor (left/right/up/down — the
+ * strong directions; diagonals weigh half). 8 forest neighbors: 4 cardinals
+ * + 4 diagonals = 0.45 + 4×0.1 + 4×0.05 = 1.05 → clamped 1.0 → the full
+ * 425-tree stand on the default island.
+ */
+export const FOREST_NEIGHBOR_CARDINAL = 0.1;
+
+/** Coverage gain per DIAGONAL forest neighbor — half the cardinal weight. */
+export const FOREST_NEIGHBOR_DIAGONAL = 0.05;
+
+/**
+ * Coverage penalty per CARDINAL highland (rocky) neighbor — the rock crowds
+ * the woods out beside it (paired with the spillover band, rockSpillSpots).
+ */
+export const ROCK_NEIGHBOR_CARDINAL = 0.1;
+
+/** Coverage penalty per DIAGONAL highland neighbor — half the cardinal. */
+export const ROCK_NEIGHBOR_DIAGONAL = 0.05;
+
+/**
+ * Meadow TREE INGRESS per cardinal forest neighbor — the localized tree
+ * seeding a meadow tile gains along the edge it shares with the woods (the
+ * grassland complementing the forest border). The spots are the fine cells
+ * closest to that shared edge (meadowIngressSpots), so the ingress stays a
+ * thin fringe, never a full stand.
+ */
+export const MEADOW_INGRESS_CARDINAL = 6;
+
+/** Meadow tree ingress per diagonal forest neighbor — the corner fringe. */
+export const MEADOW_INGRESS_DIAGONAL = 2;
+
+/**
+ * The BASE standing-tree count of a forest tile: FOREST_COVERAGE of the
+ * sub-grid's fine cells, half-up rounded (Math.round — 191.25 → 191 on the
+ * 425-cell default island). The neighborhood model starts here and moves
+ * with the 8 neighbors (forestCoverageOf); the exact per-tile count is what
+ * generation writes into the tile's `tree` deposit.
  */
 export const forestTreeCount = (width: number, height: number): number =>
     Math.round(FOREST_COVERAGE * width * height);
+
+// ── The neighborhood resource model (pure helpers) ───────────────────────────
+//
+// All four helpers below are PURE and deterministic: they read the finished
+// biome map and the fixed NEIGHBOR_OFFSETS order — no random draws anywhere,
+// which is what keeps the noise-lattice stream order untouched (the per-cell
+// loop draws nothing; generation pass 2 neither).
+
+/** One neighbor direction ({ dx, dy } — the NEIGHBOR_OFFSETS element shape). */
+type Offset = { dx: number; dy: number };
+
+/** The biome classes of a tile's eight IN-GRID neighbors. */
+export type Neighborhood = {
+    /** Neighbors carrying woods (biome 'forest') — coverage gain. */
+    forest: Offset[];
+    /** Neighbors carrying rock (biome 'highland') — penalty + spillover. */
+    rock: Offset[];
+    /** Neighbors carrying open grass (biome 'meadow') — the ingress side. */
+    meadow: Offset[];
+};
+
+/**
+ * Classifies a tile's eight in-grid neighbors by biome. Out-of-grid
+ * positions are not neighbors (the canvas rim is always open sea —
+ * generateIsland's edge rule). Reads the ACTUAL biome names ('meadow' —
+ * never a 'grassland' alias), in NEIGHBOR_OFFSETS' fixed clockwise order,
+ * so the classification is deterministic per board.
+ */
+export const neighborhoodOf = (
+    canvas: Pick<Canvas, 'width' | 'height' | 'cells'>,
+    x: number,
+    y: number,
+): Neighborhood => {
+    const neighborhood: Neighborhood = { forest: [], rock: [], meadow: [] };
+    const halfX = (canvas.width - 1) / 2;
+    const halfY = (canvas.height - 1) / 2;
+    arrayEach(NEIGHBOR_OFFSETS, ({ value: offset }) => {
+        const nx = x + offset.dx;
+        const ny = y + offset.dy;
+        if (ny < -halfY || ny > halfY || nx < -halfX || nx > halfX) {
+            return;
+        }
+        const neighbor = canvas.cells[(ny + halfY) * canvas.width + (nx + halfX)];
+        if (neighbor.biome === 'forest') {
+            neighborhood.forest.push(offset);
+        } else if (neighbor.biome === 'highland') {
+            neighborhood.rock.push(offset);
+        } else if (neighbor.biome === 'meadow') {
+            neighborhood.meadow.push(offset);
+        }
+    });
+    return neighborhood;
+};
+
+/** Sums a neighbor class's directional weight: cardinals full, diagonals half. */
+const directionalSum = (offsets: Offset[], cardinal: number, diagonal: number): number => {
+    let sum = 0;
+    arrayEach(offsets, ({ value: offset }) => {
+        sum = sum + (offset.dx !== 0 && offset.dy !== 0 ? diagonal : cardinal);
+    });
+    return sum;
+};
+
+/**
+ * The tree coverage fraction of a forest tile from its neighbor classes:
+ * the base (FOREST_COVERAGE) plus every forest neighbor's gain, minus every
+ * highland neighbor's penalty, clamped to [0, 1]. Meadow/beach/water
+ * neighbors contribute nothing (the meadow's complement is its own ingress;
+ * sand and sea feed no trees). Pure — the exact number the tile's tree
+ * deposit rounds to.
+ */
+export const forestCoverageOf = (forest: Offset[], rock: Offset[]): number => {
+    const coverage =
+        FOREST_COVERAGE +
+        directionalSum(forest, FOREST_NEIGHBOR_CARDINAL, FOREST_NEIGHBOR_DIAGONAL) -
+        directionalSum(rock, ROCK_NEIGHBOR_CARDINAL, ROCK_NEIGHBOR_DIAGONAL);
+    return Math.max(0, Math.min(1, coverage));
+};
+
+/**
+ * The rock-spillover band of a forest tile: the fine spots ("x,y" keys,
+ * row-major order) a rocky neighbor's boulders spill onto. A cardinal
+ * highland spills one full fine ROW/COLUMN deep along the shared edge; a
+ * diagonal highland spills the corner wedge (the corner fine cell + its two
+ * edge flanks). The checkerboard parity ((x + y) even — normalized for the
+ * centered negative coordinates) halves the band, so scree scatters along
+ * the edge instead of walling it. The zoomed interior crowns each spot's
+ * column with a boulder voxel (generateSubCanvas) and the stand seeding
+ * refuses them (no tree stands on a boulder). Pure — no draws, row-major
+ * output order stamped into the sub-grid fingerprint.
+ */
+export const rockSpillSpots = (width: number, height: number, rock: Offset[]): string[] => {
+    const halfX = (width - 1) / 2;
+    const halfY = (height - 1) / 2;
+    // The checkerboard: (x + y) even. The centered coordinates go negative,
+    // and JavaScript's % keeps the sign — normalize before the even test.
+    const bouldered = (x: number, y: number): boolean => ((x + y) % 2 + 2) % 2 === 0;
+    const spots = new Set<string>();
+    arrayEach(rock, ({ value: offset }) => {
+        if (offset.dx === 0) {
+            // Cardinal north/south — the first fine row on that edge
+            const y = offset.dy < 0 ? -halfY : halfY;
+            for (let x = -halfX; x <= halfX; x++) {
+                if (bouldered(x, y)) {
+                    spots.add(`${x},${y}`);
+                }
+            }
+        } else if (offset.dy === 0) {
+            // Cardinal west/east — the first fine column on that edge
+            const x = offset.dx < 0 ? -halfX : halfX;
+            for (let y = -halfY; y <= halfY; y++) {
+                if (bouldered(x, y)) {
+                    spots.add(`${x},${y}`);
+                }
+            }
+        } else {
+            // Diagonal — the corner wedge: the corner fine cell plus its two
+            // flanks (one along each edge sharing the corner)
+            const cornerX = offset.dx < 0 ? -halfX : halfX;
+            const cornerY = offset.dy < 0 ? -halfY : halfY;
+            arrayEach(
+                [
+                    { x: cornerX, y: cornerY },
+                    { x: cornerX - offset.dx, y: cornerY },
+                    { x: cornerX, y: cornerY - offset.dy },
+                ],
+                ({ value: spot }) => {
+                    if (bouldered(spot.x, spot.y)) {
+                        spots.add(`${spot.x},${spot.y}`);
+                    }
+                },
+            );
+        }
+    });
+    // Row-major output order — the stable layout the fingerprint stamps
+    return Array.from(spots).sort((left, right) => {
+        const [lx, ly] = left.split(',').map(Number);
+        const [rx, ry] = right.split(',').map(Number);
+        return ly - ry || lx - rx;
+    });
+};
+
+/**
+ * The meadow TREE INGRESS spots: the fine cells ("x,y" keys) a meadow tile
+ * gains trees on, LOCALIZED along the edges it shares with the woods. Each
+ * forest-facing edge claims its own fringe — MEADOW_INGRESS_CARDINAL spots
+ * along a cardinal edge, MEADOW_INGRESS_DIAGONAL at a shared corner — taken
+ * in the edges' NEIGHBOR_OFFSETS order, each edge ranking its fine cells by
+ * distance to THAT edge (cardinal: the perpendicular distance; diagonal: the
+ * Chebyshev distance to the shared corner), ties breaking row-major. A spot
+ * an earlier edge claimed is skipped (shared corners belong to the first
+ * edge that reaches them), so EVERY shared edge gains its fringe — the
+ * ingress stays a thin tree border hugging the woods, never crowding one
+ * edge while starving another. The same selection the generation pass and
+ * the stand seeding both read (one source of truth — the deposit count IS
+ * this list's length). Pure — no draws.
+ */
+export const meadowIngressSpots = (width: number, height: number, forest: Offset[]): string[] => {
+    const halfX = (width - 1) / 2;
+    const halfY = (height - 1) / 2;
+    if (forest.length === 0) {
+        return [];
+    }
+    // Distance from a fine spot to one forest-facing edge (cardinal: the
+    // perpendicular; diagonal: the Chebyshev distance to the shared corner —
+    // the max over the axes the offset actually crosses)
+    const edgeDistance = (x: number, y: number, offset: Offset): number => {
+        let distance = 0;
+        if (offset.dx !== 0) {
+            distance = Math.max(distance, offset.dx > 0 ? halfX - x : x + halfX);
+        }
+        if (offset.dy !== 0) {
+            distance = Math.max(distance, offset.dy > 0 ? halfY - y : y + halfY);
+        }
+        return distance;
+    };
+    // Per-edge allocation in the fixed NEIGHBOR_OFFSETS order — each shared
+    // edge fills its own quota from its closest unclaimed spots
+    const taken = new Set<string>();
+    arrayEach(forest, ({ value: offset }) => {
+        const quota = offset.dx !== 0 && offset.dy !== 0 ? MEADOW_INGRESS_DIAGONAL : MEADOW_INGRESS_CARDINAL;
+        const ranked: Array<{ key: string; distance: number; order: number }> = [];
+        for (let row = 0; row < height; row++) {
+            for (let col = 0; col < width; col++) {
+                const x = col - halfX;
+                const y = row - halfY;
+                ranked.push({ key: `${x},${y}`, distance: edgeDistance(x, y, offset), order: ranked.length });
+            }
+        }
+        ranked.sort((left, right) => left.distance - right.distance || left.order - right.order);
+        // The closest unclaimed spots fill the quota (clamped to the grid —
+        // a tiny board fully ringed by woods ingresses every cell it has)
+        let claimed = 0;
+        for (let index = 0; index < ranked.length && claimed < quota; index++) {
+            const spot = ranked[index];
+            if (taken.has(spot.key)) {
+                continue;
+            }
+            taken.add(spot.key);
+            claimed = claimed + 1;
+        }
+    });
+    // Row-major output order — the stable layout the deposit and the stand
+    // seeding both read
+    return Array.from(taken).sort((left, right) => {
+        const [lx, ly] = left.split(',').map(Number);
+        const [rx, ry] = right.split(',').map(Number);
+        return ly - ry || lx - rx;
+    });
+};
 
 // ── The persistent forest stands ─────────────────────────────────────────────
 //
@@ -136,8 +418,10 @@ export const forestTreeCount = (width: number, height: number): number =>
 // generateSubCanvas); the plugins/forest ecology reads and mutates the stands
 // through this plugin's `forestOf` / `forestPlant` API. Seeding happens in
 // `generateIsland`'s wake (regenerate → seedStands): every forested tile gets
-// forestTreeCount positions from its own keyed stream, each carrying a
-// VIRGIN record the ecology ages lazily (see plugins/forest poolOf).
+// its NEIGHBORHOOD-COUNTED positions (the tile's own keyed stream; forest
+// tiles even when the count is 0 — the seed bank) and every meadow beside
+// woods its ingress fringe, each carrying a VIRGIN record the ecology ages
+// lazily (see plugins/forest poolOf).
 
 /** One standing tree of a forest stand — the wood-growth bookkeeping. */
 export type ForestTreeRecord = {
@@ -162,7 +446,11 @@ export type ForestTreeRecord = {
     seedAge?: number;
 };
 
-/** The persistent fine-scale tree record of one forest tile. */
+/**
+ * The persistent fine-scale tree record of one tile — a forest's stand, or
+ * the localized edge ingress a meadow tile carries beside the woods (both
+ * seed and mirror exactly alike; see seedStands).
+ */
 export type ForestStand = {
     /** Standing trees by fine-spot key "x,y" (centered sub-grid coordinates). */
     trees: Map<string, ForestTreeRecord>;
@@ -364,10 +652,11 @@ export const generateIsland = (
             //   every fine cell at the zoom. Submerged columns supply
             //   nothing (no habitat, no access — the sea keeps its look).
             //
-            //   THE TREE STAND — forested tiles seed the persistent
-            //   fine-scale record (seedStands after generation); the count
-            //   mirrors the seeded stand size. Felling/recruitment move the
-            //   mirror with the stand (plugins/forest).
+            //   THE TREE STAND — its COUNT comes from the NEIGHBORHOOD MODEL
+            //   (pass 2 below — all 8 neighbors weigh in), not from a flat
+            //   constant; the persistent fine-scale record is seeded from
+            //   the deposit (seedStands after generation). Felling/
+            //   recruitment move the mirror with the stand (plugins/forest).
             const resources: TileResources = {};
             if (!submerged) {
                 if (stack.includes('stone')) {
@@ -382,9 +671,7 @@ export const generateIsland = (
                 if (stack.includes('sand')) {
                     resources.sand = 1;
                 }
-                if (forested) {
-                    resources.tree = forestTreeCount(width, height);
-                } else if (surface === 'stone' && veins(col, row) > IRON_LODE_THRESHOLD) {
+                if (surface === 'stone' && veins(col, row) > IRON_LODE_THRESHOLD) {
                     // Iron lodes hide in the stone highlands — the vein
                     // noise's rare landmark (a FINITE deposit; the mine gate
                     // limits who takes it)
@@ -416,6 +703,51 @@ export const generateIsland = (
         }
     }
 
+    // ── Generation pass 2 — the neighborhood resource model ─────────────────
+    // Runs over the FINISHED biome map (pass 1 built every cell — the
+    // neighbors exist to classify). PURE: no random draws (the tile's own
+    // keyed stand stream is the only randomness, consumed later in
+    // seedStands), so the noise-lattice stream order stays untouched and
+    // the pinned seed-7 biome maps stay byte-identical.
+    //
+    //   FOREST tiles — the coverage count from forestCoverageOf (all 8
+    //     neighbors weigh in; 8 forest neighbors clamp to the FULL 100%)
+    //     lands in the `tree` deposit, and a rocky neighborhood carves its
+    //     spillover band onto the cell (TileCarving — the zoomed interior
+    //     reads it, the fingerprint stamps it).
+    //   MEADOW tiles beside woods — the localized edge ingress (the
+    //     meadowIngressSpots fringe) lands in the `tree` deposit; the
+    //     meadow keeps its biome.
+    const canvas: Canvas = { width, height, cells };
+    arrayEach(cells, ({ value: cell }) => {
+        if (cell.biome !== 'forest' && cell.biome !== 'meadow') {
+            // Trees stand only on the woods and their meadow borders
+            return;
+        }
+        const neighborhood = neighborhoodOf(canvas, cell.x, cell.y);
+        if (cell.biome === 'forest') {
+            // The neighborhood coverage — the count the tile's tree deposit
+            // carries (the stand seeds from the mirror in seedStands)
+            const coverage = forestCoverageOf(neighborhood.forest, neighborhood.rock);
+            cell.resources.tree = Math.round(coverage * width * height);
+            // The rock-spillover carve — only rocky neighborhoods carve
+            const rock = rockSpillSpots(width, height, neighborhood.rock);
+            if (rock.length > 0) {
+                // The TileCarving (engine/types.ts) — the neighbor-derived
+                // data the zoomed interior reads and the fingerprint stamps
+                const carve: TileCarving = { rock };
+                cell.carving = carve;
+            }
+        } else if (neighborhood.forest.length > 0) {
+            // The meadow's localized ingress — the deposit IS the fringe's
+            // size (meadowIngressSpots' length), so seeding and mirror agree
+            const ingress = meadowIngressSpots(width, height, neighborhood.forest);
+            if (ingress.length > 0) {
+                cell.resources.tree = ingress.length;
+            }
+        }
+    });
+
     return { width, height, cells, stats };
 };
 
@@ -438,6 +770,9 @@ export type TileSurfaceCell = {
 /**
  * The canvas surface key of a tile:
  *   iron lode → 'iron'; standing trees → 'tree' — the landmarks stand out;
+ *   a BOULDER-crowned column (the rock spillover's fine cells — a stone
+ *   voxel stacked ON TOP of the column) → 'stone', so the spillover is
+ *   VISIBLE in the zoomed grid and not just the voxel summary;
  *   a forest voxel (the standing canopy — a clearcut wood keeps the look) →
  *   'forest'; else the topmost ground voxel that maps to a carried resource
  *   ('grass' | 'sand' | 'stone' | 'dirt') — the tile reads as its ground;
@@ -453,6 +788,14 @@ export const tileSurfaceKey = (cell: TileSurfaceCell): string | undefined => {
     }
     const voxels = cell.voxels;
     if (voxels && voxels.length > 0) {
+        // THE BOULDER CROWN — the spillover band's stone voxel sits ON TOP
+        // of the column (above even the forest canopy), so a rock-spilled
+        // fine cell reads as the rock it crowns. The stone resource check
+        // keeps deposit-less shapes (test fixtures) on their plain look.
+        const top = voxels[voxels.length - 1];
+        if (top === 'stone' && (resources.stone ?? 0) > 0) {
+            return 'stone';
+        }
         // The standing canopy outranks the ground — a clearcut wood keeps
         // its forest look (the forest voxel still stands)
         if (voxels.includes('forest')) {
@@ -507,7 +850,8 @@ export const tileDepositSummary = (resources?: TileResources): string =>
  * The plugin also owns the PERSISTENT FOREST STANDS (the fine-scale tree
  * records the zoom mirrors and the plugins/forest ecology mutates):
  * `forestOf(tile)` reads a tile's stand, `forestPlant(tile, fine, record)`
- * adds one tree (recruitment + spread conversions plant through it).
+ * adds one tree (recruitment + spread conversions plant through it) —
+ * a plant onto the tile's rock-spillover boulders is refused.
  */
 export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPlugin<World> & {
     stats(): IslandStats | undefined;
@@ -525,7 +869,11 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
     cellFor(path: TilePath): TerrainCell | undefined;
     /** The persistent forest stand of a parent tile (undefined: none). */
     forestOf(x: number, y: number): ForestStand | undefined;
-    /** Adds one tree to a tile's stand (creating it), and returns the stand. */
+    /**
+     * Adds one tree to a tile's stand (creating it), and returns the stand.
+     * A plant onto the tile's rock-spillover band is refused (no tree stands
+     * on a boulder — the returned stand is unchanged).
+     */
     forestPlant(x: number, y: number, fine: { x: number; y: number }, record: ForestTreeRecord): ForestStand;
 } => {
     // Last generation stats, exposed for the god-view roster
@@ -574,47 +922,97 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
         };
         lastStats = generated.stats;
         // Seed the persistent forest stands from the fresh canvas (every
-        // forested tile gets its FOREST_COVERAGE fine positions with virgin
-        // records the ecology ages lazily — plugins/forest poolOf)
+        // forested tile gets its NEIGHBORHOOD-COUNTED fine positions, every
+        // meadow beside woods its ingress fringe, with virgin records the
+        // ecology ages lazily — plugins/forest poolOf)
         seedStands();
     };
 
     /**
-     * Seeds the persistent forest stands: every forested parent tile gets
-     * forestTreeCount fine positions, drawn from its own keyed stream. The
-     * positions come off a SEEDED SHUFFLE of the whole fine grid (Fisher-
-     * Yates over all spots, take the first count) so the density is EXACT —
-     * no collision-re-roll can under-fill a near-full stand. Each position
-     * carries a VIRGIN record (born 0 / baseMinute 0 / base 1) plus its
-     * pre-drawn age fraction — the ecology's lazy aging (plugins/forest
-     * poolOf) turns the fraction into a negative birth minute on first
-     * read, so the seeded woods hold mixed ages and wood immediately.
+     * Seeds the persistent forest stands from the fresh canvas. The tile's
+     * `tree` deposit — written by generation pass 2's neighborhood model —
+     * seeds the stand (the mirror is the source at birth; afterwards the
+     * stand is authoritative and plugins/forest's syncMirror keeps the
+     * mirror true):
+     *
+     *   FOREST tiles — every forested tile seeds a stand, EVEN a treeless
+     *     one (a wood crushed under rock clamps to 0 trees; the EMPTY stand
+     *     keeps the seed-bank recruitment alive — plugins/forest
+     *     applyRecruit refuses a stand-less tile). The tree count is the
+     *     deposit's mirror; the positions come off a SEEDED SHUFFLE
+     *     (Fisher-Yates over the NON-ROCK fine spots — the spillover
+     *     band's boulders hold no trees) so the density is EXACT — no
+     *     collision-re-roll can under-fill a near-full stand. Each
+     *     position carries a VIRGIN record (born 0 / baseMinute 0 /
+     *     base 1) plus its pre-drawn age fraction — the ecology's lazy
+     *     aging (plugins/forest poolOf) turns the fraction into a negative
+     *     birth minute on first read, so the seeded woods hold mixed ages
+     *     and wood immediately.
+     *   INGRESS MEADOWS — a meadow tile beside woods (biome stays
+     *     'meadow') carries its localized edge ingress as a REAL PERSISTENT
+     *     STAND: the same meadowIngressSpots selection generation pass 2
+     *     wrote the deposit from (one source of truth — the stand exactly
+     *     matches the mirror), seeded with virgin records like any stand.
+     *     The meadow's stand never recruits (the ecology gates on biome
+     *     'forest'); its trees thin when cut and refill only if the woods
+     *     spread onto the tile — the ingress IS the spread's beachhead.
      */
     const seedStands = () => {
         forestStands.clear();
-        const count = forestTreeCount(dims.width, dims.height);
+        const canvas = bound?.world.canvas;
+        if (!canvas) {
+            return;
+        }
         const halfX = (dims.width - 1) / 2;
         const halfY = (dims.height - 1) / 2;
-        bound?.world.canvas.cells.forEach((cell) => {
-            if ((cell.resources.tree ?? 0) <= 0) {
+        canvas.cells.forEach((cell) => {
+            const count = cell.resources.tree ?? 0;
+            const forested = cell.biome === 'forest';
+            // A stand for every forest tile (even treeless — the seed bank)
+            // and every tile carrying a tree deposit (the ingress meadows)
+            if (!forested && count <= 0) {
                 return;
             }
             const stream = randomKeyed(resolvedSeed, `forest:${cell.x},${cell.y}`);
-            // All fine spots, seeded-shuffled once — the first `count` hold trees
-            const spots: Array<{ x: number; y: number }> = [];
-            for (let row = 0; row < dims.height; row++) {
-                for (let col = 0; col < dims.width; col++) {
-                    spots.push({ x: col - halfX, y: row - halfY });
+            let spots: Array<{ x: number; y: number }>;
+            if (forested) {
+                // The rock-spillover band holds boulders, not trees — the
+                // stand's pool excludes it (the deposit count already priced
+                // the rock in via the coverage penalty)
+                const rocks = new Set(cell.carving?.rock ?? []);
+                spots = [];
+                for (let row = 0; row < dims.height; row++) {
+                    for (let col = 0; col < dims.width; col++) {
+                        const spot = { x: col - halfX, y: row - halfY };
+                        if (!rocks.has(`${spot.x},${spot.y}`)) {
+                            spots.push(spot);
+                        }
+                    }
                 }
-            }
-            for (let index = spots.length - 1; index > 0; index--) {
-                const swap = Math.floor(stream() * (index + 1));
-                const held = spots[index];
-                spots[index] = spots[swap];
-                spots[swap] = held;
+                // Seeded shuffle — the first `count` positions hold trees
+                for (let index = spots.length - 1; index > 0; index--) {
+                    const swap = Math.floor(stream() * (index + 1));
+                    const held = spots[index];
+                    spots[index] = spots[swap];
+                    spots[swap] = held;
+                }
+            } else {
+                // The ingress meadow's edge-ranked spots — the SAME pure
+                // selection the deposit was written from (generation pass 2)
+                const edges = neighborhoodOf(canvas, cell.x, cell.y).forest;
+                spots = meadowIngressSpots(dims.width, dims.height, edges)
+                    .slice(0, Math.max(0, count))
+                    .map((key) => {
+                        const [x, y] = key.split(',').map(Number);
+                        return { x, y };
+                    });
             }
             const stand: ForestStand = { trees: new Map() };
-            for (let unit = 0; unit < count; unit++) {
+            // The fill clamps to the pool (a pathological carve could price
+            // the deposit above the band-free spots — the mirror re-reads
+            // the stand below so it holds EXACTLY from birth)
+            const fill = Math.min(count, spots.length);
+            for (let unit = 0; unit < fill; unit++) {
                 const spot = spots[unit];
                 stand.trees.set(`${spot.x},${spot.y}`, {
                     born: 0,
@@ -625,6 +1023,10 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
                     // positions drew from, so seeding stays one pass
                     seedAge: stream(),
                 });
+            }
+            if (fill !== count) {
+                // Mirror exactness — the deposit follows the seeded stand
+                cell.resources.tree = fill;
             }
             forestStands.set(`${cell.x},${cell.y}`, stand);
         });
@@ -642,13 +1044,19 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
     };
 
     // The parent-change stamp of a cell: its deposits + height + water line
-    // + biome + voxel stack. The forest ecology now DOES reshape columns
-    // after generation (the spread conversion stacks a forest voxel onto a
-    // converted meadow and re-biomes it), so the stamp carries the voxels
-    // and biome too — a stamp change invalidates the cached sub-grid exactly
-    // when the parent tile changed (gathering, tree work, spread).
+    // + biome + voxel stack + NEIGHBORHOOD CARVE. The forest ecology now
+    // DOES reshape columns after generation (the spread conversion stacks a
+    // forest voxel onto a converted meadow and re-biomes it), so the stamp
+    // carries the voxels and biome too — a stamp change invalidates the
+    // cached sub-grid exactly when the parent tile changed (gathering, tree
+    // work, spread). The carve rides the stamp as well: it is the
+    // NEIGHBOR-DERIVED sub-canvas data (the spillover band), so a cached
+    // grid must never outlive the carve it was generated from — the stamp
+    // covers it (the cache-correctness rule for neighbor-derived data:
+    // generation pass 2 computes the carve, generateSubCanvas consumes it,
+    // and the stamp serializes it).
     const fingerprintOf = (cell: TerrainCell): string =>
-        `${TILE_RESOURCES.map((resource) => cell.resources[resource] ?? 0).join(',')}|${cell.height}|${cell.waterLevel}|${cell.biome}|${cell.voxels.join('+')}`;
+        `${TILE_RESOURCES.map((resource) => cell.resources[resource] ?? 0).join(',')}|${cell.height}|${cell.waterLevel}|${cell.biome}|${cell.voxels.join('+')}|${cell.carving ? cell.carving.rock.join(';') : 'none'}`;
 
     /**
      * Generates one tile's sub-grid from its parent cell — the microscopic
@@ -666,6 +1074,14 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
      *     authoritative, the parent count mirrors it — the fingerprint
      *     still invalidates the cache when the mirror moves, and the
      *     regenerated grid re-reads the SAME positions);
+     *   the NEIGHBORHOOD CARVE (the rock spillover band — parent.carving)
+     *     crowns its fine cells with a BOULDER: a stone voxel stacked ON
+     *     TOP of the inherited column, so the fine cell's TOP SURFACE reads
+     *     as rock (tileSurfaceKey's boulder crown) — visible edge influence,
+     *     not a duplicate of the bedrock stone supply every column already
+     *     carries. The carve applies at the FIRST zoom only: deeper grids
+     *     inherit the boulder through this very column copy (and no
+     *     carving field — re-applying would double-stack the boulder).
      *   remaining finite deposits (an iron lode) scatter one unit per
      *     seeded subtile.
      */
@@ -679,6 +1095,11 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
         // mirror (a stand-less forest tile falls back to the seeded scatter
         // below, the pre-ecology shape)
         const stand = forestOf(parent.x, parent.y);
+
+        // The parent's spillover band — the fine spots that crown with a
+        // boulder (rockSpillSpots wrote it at generation; the fingerprint
+        // stamps it so a cached grid never outlives its carve)
+        const rocks = new Set(parent.carving?.rock ?? []);
 
         // Pre-scatter the remaining finite deposits (an iron lode — and the
         // legacy tree scatter when no stand exists): each unit lands on its
@@ -727,6 +1148,14 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
                 if (stand?.trees.has(`${x},${y}`)) {
                     resources.tree = 1;
                 }
+                // The inherited column — and the spillover band's boulder
+                // stacked ON TOP (the fine cell's top surface reads as rock;
+                // tree positions and boulders never share a spot — seedStands
+                // refuses the band)
+                const stack = [...parent.voxels];
+                if (rocks.has(`${x},${y}`)) {
+                    stack.push('stone');
+                }
                 // Unlimited deposits are the ground itself — every subtile
                 // carries the symbolic deposit so the zoomed tile keeps the
                 // look its parent paints with (the microscopic-zoom rule)
@@ -741,7 +1170,7 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
                 cells.push({
                     x,
                     y,
-                    voxels: [...parent.voxels],
+                    voxels: stack,
                     height: parent.height,
                     waterLevel: parent.waterLevel,
                     biome: parent.biome,
@@ -800,7 +1229,17 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
     const forestOf = (x: number, y: number): ForestStand | undefined =>
         forestStands.get(`${x},${y}`);
 
-    /** Adds one tree to a tile's stand, creating the stand when absent. */
+    /**
+     * Adds one tree to a tile's stand, creating the stand when absent.
+     * THE BOULDER BOUNDARY — a plant onto the tile's rock-spillover band
+     * (carving.rock — a boulder holds no tree, the neighborhood model's
+     * invariant) is REFUSED: the stand is returned unchanged. The ecology's
+     * recruitment and spread never target a boulder (recruitment excludes
+     * the band; spread converts carve-less meadows), so this guard closes
+     * the boundary for any future caller — it never fires on the mounted
+     * paths. Conservative lookup: an unbound plugin (pre-setup) or an
+     * out-of-grid tile allows the plant (nothing to refuse against).
+     */
     const forestPlant = (
         x: number,
         y: number,
@@ -812,6 +1251,12 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
         if (!stand) {
             stand = { trees: new Map() };
             forestStands.set(key, stand);
+        }
+        // The boulder refusal — the tile's own carve decides (the real
+        // recorded band; a fine spot ON it never gains a tree)
+        const cell = bound ? cellOn(bound.world.canvas, x, y) : undefined;
+        if (cell?.carving?.rock.includes(`${fine.x},${fine.y}`)) {
+            return stand;
         }
         stand.trees.set(`${fine.x},${fine.y}`, record);
         return stand;

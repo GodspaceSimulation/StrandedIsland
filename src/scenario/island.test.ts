@@ -364,10 +364,11 @@ describe('createIslandWorld', () => {
         // A treed tile: (3,−6) → tile 2×25+15 = 65 surfaces as tree, the
         // forest's deposit (no iron lode fits the 25×17 seed-7 island —
         // every vein sample stays below the lode threshold). Trees paint
-        // GREEN on the canvas — the greenery of the standing woods.
+        // GREEN on the canvas — the greenery of the standing woods. The
+        // deposit count is the tile's neighborhood-counted stand (276).
         expect(frame.tiles[65].background).toBe('#4caf50');
         expect(frame.tiles[65].title).toBe(
-            'forest · height 5 · stone / stone / stone / dirt / grass / forest · tree ×383 · stone ×∞ · dirt ×∞ · grass ×∞',
+            'forest · height 5 · stone / stone / stone / dirt / grass / forest · tree ×276 · stone ×∞ · dirt ×∞ · grass ×∞',
         );
     });
 
@@ -462,15 +463,16 @@ describe('createIslandWorld', () => {
             ['actor-4', 'sentient', 'human', 'Dune', 'well', 5, -1, 0],
         ]);
         // Terrain census: cell counts per SURFACE key (the tiles appear as
-        // the resources their ground is — the meadows gained their grass
+        // the resources their ground is — the meadows beside woods surface
+        // as their tree ingress, only 8 bare meadows keep the grass
         // identity; the sea keeps its plain biomes), alphabetical
         expect(frame.tables[1].rows).toEqual([
-            ['grass', 38],
+            ['grass', 8],
             ['ocean', 46],
             ['sand', 160],
             ['shallows', 97],
             ['stone', 9],
-            ['tree', 75],
+            ['tree', 105],
         ]);
         // Canvas overview: the 25×17 frame
         expect(frame.tables[2].rows).toEqual([

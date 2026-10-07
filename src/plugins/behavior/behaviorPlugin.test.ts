@@ -165,7 +165,7 @@ describe('behaviorPlugin — every living thing plans through the ladder', () =>
         expect(needs.of('bird-1').hunger).toBe(51);
         // The tile's own food went with the forage; the woods' mushroom
         // still stands (the gather takes the first food in stock order)
-        expect(inventory.cellStock(6, 2)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 383, mushroom: 1 });
+        expect(inventory.cellStock(6, 2)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 361, mushroom: 1 });
         // Foraging is a solo beat — silent
         expect(world.events.log().filter((event) => event.kind === 'gather' || event.kind === 'consume')).toEqual([]);
     });
@@ -353,9 +353,9 @@ describe('behaviorPlugin — every living thing plans through the ladder', () =>
         }
         expect(sleptAt).toBe(94);
         expect(world.coordinates.positionOf('bird-1')).toEqual({ x: -7, y: 0, z: 0 });
-        // The gull roosts AMONG the trees (the seeded 383-tree stand — no
+        // The gull roosts AMONG the trees (the neighborhood-counted 298-tree stand — no
         // regrowth rhythm moves it any more; the ecology owns the trees)
-        expect(world.cellAt(-7, 0)?.resources).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 383 });
+        expect(world.cellAt(-7, 0)?.resources).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 298 });
     });
 
     it('a tired bird already among the trees sleeps there — the roost gate declines on a treed tile', () => {
@@ -582,7 +582,7 @@ describe('behaviorPlugin', () => {
         // dry. The cell's own stocks ran their rhythms (berry +1 at minute
         // 20, mushroom +1 at 15) and the survey hung a vine on this wood
         expect(inventory.of('a')).toEqual({ water: 1 });
-        expect(inventory.cellStock(8, 2)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 383, berry: 2, mushroom: 2, vine: 1 });
+        expect(inventory.cellStock(8, 2)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 340, berry: 2, mushroom: 2, vine: 1 });
         // The same minute re-plans the 2-minute drink from the bag,
         // completing at minute 33 (−35 thirst relief, the bag empties)
         for (let index = 0; index < 2; index++) {
@@ -682,7 +682,7 @@ describe('behaviorPlugin', () => {
         // dry. The cell's own stocks ran their rhythms (mushroom +1 at
         // minute 15, berry +1 at 20) and the survey hung a vine here
         expect(inventory.of('a')).toEqual({ water: 1 });
-        expect(inventory.cellStock(8, 2)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 383, berry: 2, mushroom: 2, vine: 1 });
+        expect(inventory.cellStock(8, 2)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 340, berry: 2, mushroom: 2, vine: 1 });
         // The same minute re-plans the 2-minute drink from the bag,
         // completing at minute 35 (−35 thirst relief, the bag empties)
         for (let index = 0; index < 2; index++) {
@@ -795,7 +795,7 @@ describe('behaviorPlugin', () => {
         // The start cell: the gathered berry is gone; berry regrowth runs on
         // a 30-minute rhythm (offset 20) — thirteen minutes never reach it.
         // The woods' mushroom stands (its own rhythm starts at minute 15)
-        expect(inventory.cellStock(6, 2)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 383, mushroom: 1 });
+        expect(inventory.cellStock(6, 2)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 361, mushroom: 1 });
         // The gather + the eat are silent solo beats
         expect(world.events.log().filter((event) => event.kind === 'gather' || event.kind === 'consume')).toEqual([]);
     });
@@ -816,7 +816,7 @@ describe('behaviorPlugin', () => {
         // water, the cell is dry
         expect(tasks.taskOf('a')).toMatchObject({ kind: 'drink', remaining: 2 });
         expect(inventory.of('a')).toEqual({ water: 1 });
-        expect(inventory.cellStock(1, -4)).toEqual({ stone: 1, dirt: 1, grass: 1, berry: 2 });
+        expect(inventory.cellStock(1, -4)).toEqual({ tree: 10, stone: 1, dirt: 1, grass: 1, berry: 2 });
         world.step();
         world.step();
         // −35 thirst relief on the completing minute 6, drunk OUT OF THE

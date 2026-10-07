@@ -556,10 +556,13 @@ describe('App', () => {
 
     it('ground items appear as canvas objects only in the interior view (scale 0)', () => {
         render(<App seed={7} />);
-        // Scale 1 (the island view): the meadow tile (1,−4) shows nothing but
-        // terrain — the berries stay list-only (the category read), never
-        // canvas objects
-        expect((screen.getByTestId('unicode-tile-1--4').textContent)).toBe('');
+        // Scale 1 (the island view): the ingressed meadow tile (1,−4)
+        // carries its localized tree fringe — the tree decoration draws at
+        // the island view too (the fringe is a real standing stand)
+        expect((screen.getByTestId('unicode-tile-1--4').textContent)).toBe('🌳');
+        // A BARE meadow tile shows nothing but terrain — no woods beside
+        // (0,−3), no fringe, no decoration (the berries stay list-only)
+        expect((screen.getByTestId('unicode-tile-0--3').textContent)).toBe('');
         // Zoom into the meadow: the interior view (scale 0) — its two berries
         // stand at their scattered subtiles (5,1) and (7,−6) as visible objects
         fireEvent.click(screen.getByTestId('unicode-tile-1--4'));
@@ -593,17 +596,19 @@ describe('App', () => {
         // A treed tile with nobody standing on it: (3,−6) → tile
         // (−6+8)×25+(3+12) = 65 — the unicode tab draws the 🌳 tree emoji
         // (the woods, visible at last; the decoration rides the frame data
-        // the canvas plugins expose)
+        // the canvas plugins expose). The tile's neighborhood-counted
+        // stand reads 276 trees.
         const treed = screen.getByTestId('unicode-tile-3--6');
         expect(treed.textContent).toBe('🌳');
         expect(treed.querySelector('[data-testid="tree-icon-unicode"]')).not.toBeNull();
-        expect(treed.title).toContain('tree ×383');
+        expect(treed.title).toContain('tree ×276');
         // A treed tile with a castaway standing on it: Dune came ashore on
         // the treed tile (5,−1) — the entity wins the tile, no tree icon
         expect(screen.getByTestId('unicode-tile-5--1').textContent).toBe('🧍‍♂️');
         // A bare meadow tile draws nothing — terrain is color-only (the
-        // no-flood rule the decorations never break)
-        expect(screen.getByTestId('unicode-tile-1--4').textContent).toBe('');
+        // no-flood rule the decorations never break; (0,−3) has no woods
+        // beside it, so no ingress fringe and no tree)
+        expect(screen.getByTestId('unicode-tile-0--3').textContent).toBe('');
         // ── The SVG twin — the vector tree icon ──────────────────────────
         fireEvent.click(screen.getByTestId('canvas-tab-svg'));
         const board = screen.getByTestId('world-grid-svg') as SVGSVGElement;
@@ -736,18 +741,22 @@ describe('App', () => {
 
     it('the Tile Inspector reads the forest layer: the stand summary and the tree card', () => {
         render(<App seed={7} />);
-        // A treed tile's Resources row carries the mirror (tree ×383 beside
-        // the ground supply); the FOREST row carries the wood stats
+        // A treed tile's Resources row carries the mirror (the
+        // neighborhood-counted 276-tree stand beside the ground supply);
+        // the FOREST row carries the wood stats
         fireEvent.click(screen.getByTestId('unicode-tile-3--6'));
         expect(screen.getByTestId('tile-resources').textContent).toBe(
-            'tree ×383 · stone ×∞ · dirt ×∞ · grass ×∞',
+            'tree ×276 · stone ×∞ · dirt ×∞ · grass ×∞',
         );
-        expect(screen.getByTestId('tile-forest').textContent).toContain('383 trees');
+        expect(screen.getByTestId('tile-forest').textContent).toContain('276 trees');
         expect(screen.getByTestId('tile-forest').textContent).toContain('wood standing');
         // No tree card at the island view (the summary shape)
         expect(screen.getByTestId('tile-forest-tree').textContent).toBe('');
-        // A meadow carries no forest layer at all
+        // An INGRESS meadow rides its fringe's forest layer; a BARE meadow
+        // carries no forest layer at all
         fireEvent.click(screen.getByTestId('unicode-tile-1--4'));
+        expect(screen.queryByTestId('tile-forest')).not.toBeNull();
+        fireEvent.click(screen.getByTestId('unicode-tile-0--3'));
         expect(screen.queryByTestId('tile-forest')).toBeNull();
         // ── Scale 0: the tree card on the inspected fine spot ────────────
         fireEvent.click(screen.getByTestId('unicode-tile-3--6'));

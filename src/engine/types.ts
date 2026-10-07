@@ -84,6 +84,27 @@ export const UNLIMITED_TILE_RESOURCES: readonly TileResource[] = ['grass', 'ston
 /** Deposit counts per resource kind on one tile (absent = no deposit). */
 export type TileResources = Partial<Record<TileResource, number>>;
 
+/**
+ * The NEIGHBORHOOD CARVE — the extra generation state a tile inherits from
+ * its 8 neighbors (plugins/terrain/islandTerrain.ts neighborhood model:
+ * resources generated within a tile are affected by all eight neighbors,
+ * cardinals weighing double the diagonals). Present only on tiles whose
+ * neighborhood shapes their zoomed interior beyond the deposit counts.
+ */
+export type TileCarving = {
+    /**
+     * Rock-spillover band — the fine spots ("x,y", centered sub-grid
+     * coordinates) along this tile's highland edges that generation crowned
+     * with a boulder: the zoomed interior stacks a stone voxel on them (the
+     * fine cell's TOP SURFACE reads as rock — observable, unlike a duplicate
+     * of the bedrock stone supply every column already carries), and the
+     * stand seeding refuses them (no tree stands on a boulder). Row-major
+     * order, deterministic. Rock-spilled tiles only (highland edges never
+     * change after generation, so the carve is stable for the tile's life).
+     */
+    rock: string[];
+};
+
 /** One voxel column of the canvas at grid position (x, y). */
 export type TerrainCell = {
     /**
@@ -112,6 +133,15 @@ export type TerrainCell = {
      * generator, kept in sync by gathering + the forest ecology.
      */
     resources: TileResources;
+    /**
+     * The generator's NEIGHBORHOOD CARVE (see TileCarving) — the
+     * 8-neighbor generation outcome that shapes this tile's zoomed interior
+     * beyond its deposits. Optional: only rock-spilled tiles carry one.
+     * Read by the terrain plugin's sub-grid generation and stamped into its
+     * parent-change fingerprint (islandTerrain.ts fingerprintOf), so cached
+     * sub-grids invalidate exactly when the carve is present or changes.
+     */
+    carving?: TileCarving;
 };
 
 /** The canvas: a width × height grid of voxel columns, row-major. */
