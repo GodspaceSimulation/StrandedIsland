@@ -26,14 +26,17 @@ export const materials: ItemRegistry = createItemRegistry();
 // water — the island's drinkable rain pool; iron and dirt — the tile
 // deposits the catalog only lists in compound form, 'iron-ore'; tree — the
 // standing deposit the canvas paints green; frond — the palm undergrowth
-// the construction chains shed beneath the trees). Display-only
-// definitions: the island's own stats stay in ITEM_CATALOG. 'sand' is
-// already listed in the shared stock catalog, so it needs no definition here.
+// the construction chains shed beneath the trees; grass — the ground cover
+// every grass-voxel column supplies infinitely, its own resource identity
+// beside the dirt under it). Display-only definitions: the island's own
+// stats stay in ITEM_CATALOG. 'sand' is already listed in the shared stock
+// catalog, so it needs no definition here.
 materials.define({ id: 'berry', name: 'Berry', kind: 'food' });
 materials.define({ id: 'water', name: 'Water', kind: 'resource' });
 materials.define({ id: 'iron', name: 'Iron', kind: 'resource' });
 materials.define({ id: 'dirt', name: 'Dirt', kind: 'resource' });
 materials.define({ id: 'tree', name: 'Tree', kind: 'resource' });
+materials.define({ id: 'grass', name: 'Grass', kind: 'resource' });
 materials.define({ id: 'frond', name: 'Frond', kind: 'resource' });
 
 export type ItemKind = 'food' | 'drink' | 'material' | 'tool';
@@ -60,17 +63,20 @@ export const ITEM_CATALOG: Record<string, ItemDef> = {
     mushroom: { name: 'Mushroom', kind: 'food', nutrition: 10 },
     seaweed: { name: 'Seaweed', kind: 'food', nutrition: 8, hydration: 2 },
     water: { name: 'Water', kind: 'drink', hydration: 35 },
-    // Tile deposits — the standing natural features: trees (felled into
-    // wood), stone, and the iron lodes hide in the highlands; sand and
-    // dirt are the UNLIMITED deposits (gathering them never empties the
-    // tile, see engine/types.ts UNLIMITED_TILE_RESOURCES). WOOD IS NOT A
-    // DEPOSIT — it is the product of cutting a tree down (the lumber
-    // behaviour's chop → inventory.harvest), a trade good like stone.
+    // Tile deposits — the standing natural features: trees (cut into wood
+    // by the chop), stone, and the iron lodes hide in the highlands. Grass,
+    // sand and dirt are the UNLIMITED ground supply — the voxel materials
+    // every dry column is built from (engine/types.ts
+    // UNLIMITED_TILE_RESOURCES): gathering them never empties the tile.
+    // WOOD IS NOT A DEPOSIT — it is the product of cutting a tree's wood
+    // (the lumber behaviour's chop → inventory.harvest), a trade good like
+    // stone.
     tree: { name: 'Tree', kind: 'material' },
     stone: { name: 'Stone', kind: 'material' },
     iron: { name: 'Iron', kind: 'material' },
     sand: { name: 'Sand', kind: 'material' },
     dirt: { name: 'Dirt', kind: 'material' },
+    grass: { name: 'Grass', kind: 'material' },
     wood: { name: 'Wood', kind: 'material' },
     vine: { name: 'Vine', kind: 'material' },
     // The palm undergrowth the trees shed (the inventory plugin's frond
@@ -86,6 +92,8 @@ export const ITEM_CATALOG: Record<string, ItemDef> = {
  * (plugins/entity/entityPlugin.ts). Taking stone or iron off a tile through
  * the inventory plugin's takeFromCell demands the entity's species to hold
  * the mine ability; every other item is free for any hand that reaches it.
+ * The gate is about WHO may work the ground — the supply itself is infinite
+ * (stone mirrors every stone-voxel tile), the ability limits the hands.
  */
 export const MINED_ITEMS: readonly string[] = ['stone', 'iron'];
 

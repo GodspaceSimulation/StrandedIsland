@@ -16,11 +16,13 @@
 //
 // The chop EFFECT (registered here as a ledger completion listener — the
 // behaviour governs its own tasks) converts the tree into wood at
-// completion: one unit of the tile's tree deposit leaves the stock AND the
-// tile (the last felled tree re-skins the tile to its plain biome through
-// tileSurfaceKey), one wood item lands in the bag. A tree felled by
-// someone else during the wait means the harvest re-validates and silently
-// fails — the actor re-plans next minute.
+// completion: with the forest ecology mounted (the scenario's default) one
+// unit of the source tree's wood pool leaves the record (the tree STANDS
+// while wood remains; a pool of 0 fells it — the standing-tree mirrors
+// sync inside the chop); without it, one whole tree deposit unit leaves
+// the stock AND the tile. Either way one wood item lands in the bag. A
+// tree felled by someone else during the wait means the harvest
+// re-validates and silently fails — the actor re-plans next minute.
 //
 // 'move' tasks (the treks toward the woods) flow through the behavior
 // plugin's move effect — the plugin needs the behavior plugin mounted to
@@ -92,10 +94,10 @@ export const lumberPlugin = (options: LumberPluginOptions): LumberPlugin => {
             });
 
             // The chop effect — tree → wood, applied on completion. The
-            // harvest re-validates the standing tree (the tile's deposit
-            // draws down with the stock; the last felled tree re-skins the
-            // tile). No log line — felling is a solo beat, not a story
-            // between entities (the log is a story teller).
+            // harvest re-validates (with the ecology mounted: the pool cut
+            // re-validated against the standing tree; without: the whole
+            // deposit unit). No log line — felling is a solo beat, not a
+            // story between entities (the log is a story teller).
             tasks.ledger.onComplete((task) => {
                 if (task.kind !== 'chop' || !world) {
                     return;

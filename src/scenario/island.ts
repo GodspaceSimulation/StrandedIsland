@@ -58,6 +58,7 @@ import {
     type IslandTerrainOptions,
 } from '../plugins/terrain/islandTerrain';
 import { inventoryPlugin, type InventoryPlugin } from '../plugins/inventory/inventoryPlugin';
+import { forestPlugin, type ForestPlugin, type ForestPacingOptions } from '../plugins/forest/forestPlugin';
 import { ITEM_TYPE_GLYPHS } from '../plugins/inventory/items';
 import { entityPlugin, type EntityPlugin } from '../plugins/entity/entityPlugin';
 import { needsPlugin, type NeedsPlugin, type NeedsPluginOptions } from '../plugins/needs/needsPlugin';
@@ -91,6 +92,13 @@ export type IslandOptions = {
     seed?: number;
     /** Terrain generator options (width/height/seaLevel/…). */
     terrain?: IslandTerrainOptions;
+    /**
+     * Forest ecology pacing — the biology's maturity/recruitment/spread
+     * rates (plugins/forest/forestPlugin.ts: research-backed defaults at
+     * the REAL pace; growthRateMultiplier or the direct minute overrides
+     * fast-forward the ecology without stepping millions of world minutes).
+     */
+    forest?: ForestPacingOptions;
     /** Needs pacing overrides (decay rates per world minute). */
     needs?: NeedsPluginOptions;
     /** How many actors wash ashore. Default 4, capped by the cast roster. */
@@ -106,6 +114,15 @@ export type IslandOptions = {
          */
         entity?: boolean;
         inventory?: boolean;
+        /**
+         * The forest ecology — trees grow wood biologically, stands
+         * recruit and the woods spread over the grass. Needs terrain +
+         * inventory (the stands live in the terrain plugin, the stock
+         * mirrors + the harvest entry in the inventory plugin). Default on;
+         * dropping it leaves a static forest (the legacy whole-tree
+         * harvest, no growth/recruitment/spread).
+         */
+        forest?: boolean;
         needs?: boolean;
         relationship?: boolean;
         /** The task ledger the agents plan through. Default on. */
@@ -169,6 +186,15 @@ export type IslandHandle = {
      */
     entity: EntityPlugin;
     inventory: InventoryPlugin;
+    /**
+     * The forest ecology plugin — trees grow wood biologically (the
+     * persistent fine-scale stands), stands recruit (even clearcut — the
+     * seed bank), and living mature woods spread over adjacent grass tiles
+     * (plugins/forest/forestPlugin.ts). Exposes the wood pools, the chop
+     * (the harvest provider mounted into the inventory) and the stand/tree
+     * inspection the Tile Inspector reads, plus the fast-forward control.
+     */
+    forest: ForestPlugin;
     needs: NeedsPlugin;
     relationship: RelationshipPlugin;
     /**
@@ -282,6 +308,7 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         terrain: true,
         entity: true,
         inventory: true,
+        forest: true,
         needs: true,
         relationship: true,
         tasks: true,
@@ -318,6 +345,11 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     // bags, flat rates, free movement)
     const profiles = toggles.entity ? entity : undefined;
     const inventory = inventoryPlugin({ profiles });
+    // The forest ecology — trees grow wood, stands recruit, woods spread.
+    // It coordinates the terrain plugin (the persistent fine-scale stands)
+    // and the inventory plugin (the stock mirrors + the harvest entry); it
+    // mounts its harvest provider into the inventory at setup.
+    const forest = forestPlugin({ terrain, inventory }, options.forest ?? {});
     const needs = needsPlugin({ profiles, ...options.needs });
     const relationship = relationshipPlugin();
     const tasks = tasksPlugin();
@@ -431,6 +463,16 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     const sexGlyphOf = (entry: CoordinateEntry): string | undefined =>
         entry.type && entry.sex ? HUMAN_SEX_GLYPHS[`${entry.type}:${entry.sex}`] : undefined;
 
+    // ── The grass surface palette — the GROUND-SUPPLY identity ──────────────
+    // A grass-voxel tile (every meadow, and the woods' substrate) surfaces
+    // as 'grass' since the ground supply gained its own resource identity
+    // (formerly it read as the dirt under it). The @godspace/canvas stock
+    // palettes don't list the key — the island extends them here (meadow
+    // kin — the grass ground reads as meadow green) without touching the
+    // shared package.
+    const GRASS_TILE_COLOR = '#5f9450';
+    const GRASS_TILE_PALETTE = { grass: GRASS_TILE_COLOR };
+
     // The representation plugin from @godspace/canvas — binds itself through
     // the engine's plugin context (world.canvas + world.coordinates)
     const ascii = asciiCanvasPlugin({
@@ -440,6 +482,8 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         // Treed tiles decorate (the ASCII view stays color-only — the frame
         // data carries the decoration for the emoji/vector siblings)
         decorationOf: decorationOfCell,
+        // The grass surface joins the palette (the ground-supply identity)
+        tiles: GRASS_TILE_PALETTE,
         // The birds' altitude fade bands — flying-N states draw with their
         // hex-alpha tint (plugins/birds/birdsPlugin.ts BIRD_ALTITUDE_STATES)
         states: BIRD_ALTITUDE_STATES,
@@ -472,6 +516,7 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         titleOf: titleOfCell,
         // Treed tiles decorate — the unicode view draws the 🌳 tree emoji
         decorationOf: decorationOfCell,
+        tiles: GRASS_TILE_PALETTE,
         types: {
             ...ITEM_TYPE_GLYPHS,
             ...STRUCTURE_TYPE_GLYPHS,
@@ -491,6 +536,7 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         titleOf: titleOfCell,
         // Treed tiles decorate — the SVG view draws the vector tree icon
         decorationOf: decorationOfCell,
+        tiles: GRASS_TILE_PALETTE,
         types: {
             ...ITEM_TYPE_GLYPHS,
             ...STRUCTURE_TYPE_GLYPHS,
@@ -514,6 +560,11 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         // only; plugin order is tick order and this plugin has no tick)
         ...(toggles.entity ? [entity] : []),
         ...(toggles.inventory ? [inventory] : []),
+        // The forest ecology mounts right behind the inventory — its tick
+        // advances the woods (growth is lazy; recruitment and spread run on
+        // the staggered per-tile schedules) and its setup mounts the wood
+        // harvest provider into the inventory
+        ...(toggles.forest && toggles.terrain && toggles.inventory ? [forest] : []),
         ...(toggles.needs ? [needs] : []),
         ...(toggles.relationship ? [relationship] : []),
         // The ledger advances BEFORE the behavior tick — a completed task's
@@ -618,5 +669,5 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         birds.release();
     }
 
-    return { world, terrain, entity, inventory, needs, relationship, tasks, sleep, survival, lumber, construction, story, birds, sharks, predators, scale, ascii, unicode, svg, data };
+    return { world, terrain, entity, inventory, forest, needs, relationship, tasks, sleep, survival, lumber, construction, story, birds, sharks, predators, scale, ascii, unicode, svg, data };
 };

@@ -5,9 +5,14 @@
 //   Position   — coordinates + the surface key the canvas paints the tile
 //                with (derived from the tile's resource deposits)
 //   Terrain    — height vs the water line, walkability, and the voxel stack
-//                bottom → top (runs merged, e.g. "stone ×3, soil, grass")
-//   Resources  — the tile's resource deposits (trees, stone, iron and the
-//                unlimited sand/dirt) — what the tile appears as
+//                bottom → top (runs merged, e.g. "stone ×3, dirt, grass")
+//   Resources  — the tile's resource deposits: the voxel-derived INFINITE
+//                ground supply (grass/dirt/sand/stone, never exhaustible)
+//                and the finite biological tree stand / iron lodes — what
+//                the tile appears as
+//   Forest     — the tree WOOD stats (plugins/forest): the stand summary at
+//                the island view; at scale 0 the tree card standing on the
+//                inspected fine spot (wood pool, age, maturity)
 //   Ground     — what lies on the terrain (the inventory plugin's cell stock;
 //                sea tiles stock fish, beaches hide shells…)
 //   Residents  — EVERY living thing in the column: people, birds, any creature
@@ -30,8 +35,27 @@ import {
     structureLine,
     type TileOccupant,
     type TileStructure,
+    type TileForest,
 } from './tileDetails';
 import { itemLabel } from '../plugins/inventory/items';
+
+/**
+ * One island year in world minutes — the tree card's age reads in years
+ * (the ecology's biological time unit, plugins/forest: 1440-minute days ×
+ * 365). One decimal keeps a young stand readable without float noise.
+ */
+const YEAR_MINUTES = 1440 * 365;
+
+/** Human readable tree-card line: "wood 7 · age 4.0 y · mature". */
+const forestTreeLine = (forest: TileForest): string => {
+    const card = forest.tree;
+    if (!card) {
+        return '';
+    }
+    // Years to one decimal (deterministic rounding — the card is inspectable)
+    const years = Math.round((card.ageMinutes / YEAR_MINUTES) * 10) / 10;
+    return ` · wood ${card.wood} · age ${years} y · ${card.mature ? 'mature' : 'growing'}`;
+};
 
 /** Two-column detail row — the label is dim, the value plain. */
 const Row = styled('div', {
@@ -183,8 +207,9 @@ export const TilePanel = () => {
                     <Row>
                         <RowName>Resources</RowName>
                         {/* The deposits the tile carries — what it appears as
-                            on the canvas (tree ×2 · sand ×∞; unlimited
-                            deposits can never be exhausted) */}
+                            on the canvas (tree ×383 · stone ×∞ · sand ×∞;
+                            unlimited deposits can never be exhausted — the
+                            voxel-derived ground supply) */}
                         <VoxelStack data-testid="tile-resources">
                             {summary.resources.length === 0
                                 ? '—'
@@ -197,6 +222,21 @@ export const TilePanel = () => {
                                       .join(' · ')}
                         </VoxelStack>
                     </Row>
+                    {/* The FOREST layer — the tree wood stats (plugins/
+                        forest): the island view lists the stand summary
+                        ("383 trees · 1234 wood standing"); at scale 0 a
+                        tree standing on the inspected fine spot adds its
+                        card — wood pool, age in years, maturity (the
+                        "selectable tree" stats, tile-forest-tree) */}
+                    {summary.forest ? (
+                        <Row>
+                            <RowName>Forest</RowName>
+                            <VoxelStack data-testid="tile-forest">
+                                {summary.forest.trees} trees · {summary.forest.wood} wood standing
+                                <span data-testid="tile-forest-tree">{forestTreeLine(summary.forest)}</span>
+                            </VoxelStack>
+                        </Row>
+                    ) : null}
                     <div>
                         <PanelTitle>On the ground</PanelTitle>
                         <List data-testid="tile-ground">

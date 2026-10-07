@@ -41,6 +41,7 @@ describe('item categories', () => {
         expect(itemCategory('iron')).toBe('material');
         expect(itemCategory('sand')).toBe('material');
         expect(itemCategory('dirt')).toBe('material');
+        expect(itemCategory('grass')).toBe('material');
         expect(itemCategory('vine')).toBe('material');
         expect(itemCategory('shell')).toBe('material');
         expect(itemCategory('flint')).toBe('tool');
@@ -49,6 +50,14 @@ describe('item categories', () => {
         expect(itemCategory('unobtanium')).toBe('material');
         expect(itemDef('unobtanium')).toEqual({
             name: 'unobtanium',
+            kind: 'material',
+            nutrition: undefined,
+            hydration: undefined,
+        });
+        // The new grass identity reads its own name (the shared catalog's
+        // display definition — recipes display compatible)
+        expect(itemDef('grass')).toEqual({
+            name: 'Grass',
             kind: 'material',
             nutrition: undefined,
             hydration: undefined,

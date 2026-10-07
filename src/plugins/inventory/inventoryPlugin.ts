@@ -1,24 +1,36 @@
 // The inventory environment plugin.
 //
 // Gives every actor a personal inventory, fills the canvas with resource
-// stocks by tile deposit (trees in the forests, berries AND mushrooms in
-// the meadows and woods, fish AND seaweed in the sea, coconuts on beaches,
-// stone/iron/flint on highlands, vines in the woods, and the UNLIMITED
-// sands and dirts of beaches and meadows), grows them back over time, rains
-// fresh water onto the land in scattered pools, and exposes the
-// gathering + harvest + exchange actions that other plugins (behavior,
-// lumber) and the god-view drive.
+// stocks by tile deposit (the voxel-derived ground supply — grass, dirt,
+// sand, stone — mirrors every matching dry column; trees stand in the
+// forests' persistent fine-scale records; berries AND mushrooms in the
+// meadows and woods, fish AND seaweed in the sea, coconuts on beaches,
+// iron lodes in the highlands, flints, vines, the sea's fish and
+// seaweed), grows the living stocks back over time, rains fresh water onto
+// the land in scattered pools, and exposes the gathering + harvest +
+// exchange actions that other plugins (behavior, lumber) and the god-view
+// drive.
 //
 // TILE DEPOSITS: every canvas cell carries `resources` (engine/types.ts
 // TileResources) — written by the terrain generator, kept in sync here. The
-// survey seeds each cell's gatherable stock from its deposits; taking a
-// deposit resource draws the tile's deposit down too (except the UNLIMITED
-// sand/dirt — never depleted), and regrowth grows the deposit back. That
-// keeps the tile's canvas appearance (scenario surfaceOf → tileSurfaceKey)
-// reading the same truth the actors gather from.
+// survey seeds each cell's gatherable stock from its deposits; taking an
+// UNLIMITED deposit (the ground supply: grass, dirt, sand, stone) never
+// decrements the tile — the ground hands it out forever; a FINITE deposit
+// (iron) draws down with its stock. The TREE deposit is the standing-tree
+// MIRROR of the persistent fine-scale forest records (plugins/terrain
+// ForestStand): it moves only when a tree is fully felled (its wood pool
+// chopped to 0) or when the forest ecology recruits one — the wood itself
+// comes off the trees' pools, one unit per chop (see harvest + the forest
+// plugin mounted below).
+//
+// WOOD IS NOT A NATURAL RESOURCE — it exists only as the product of
+// cutting a standing tree's wood pool.
 //
 // INSTALL ORDER: after the terrain plugin — setup scans the canvas to seed
-// resources. Without a canvas it simply starts with no resources.
+// resources. Without a canvas it simply starts with no resources. The
+// plugins/forest ecology MOUNTS its harvest provider here (mountForest) —
+// without it, harvesting consumes whole tree deposit units (the
+// pre-ecology behavior).
 
 import { arrayEach } from '@presource/core';
 import { randomKeyed, type Position3D } from '@godspace/core';
@@ -53,14 +65,13 @@ export type InventoryPluginOptions = {
     profiles?: EntityProfiles;
 };
 
-/** Regrowth caps per item — stocks never exceed these counts. The tree cap
- * is the base grove's two; a DENSE grove (islandTerrain's dense moisture
- * band — six standing trees) regrows toward its own richer deposit: the
- * growDeposit cap below never shrinks a tile's stock, so a dense tile keeps
- * its six until felled, then recovers to the base three. */
+/** Regrowth caps per item — stocks never exceed these counts. The TREE is
+ * no longer a regrowing stock: the standing-tree count is the MIRROR of the
+ * persistent fine-scale forest records, moved only by full fells and the
+ * plugins/forest ecology's recruitment (the old toy 60-minute tree clock is
+ * gone — trees grow wood biologically, plugins/forest). */
 const REGROW_CAPS: Record<string, number> = {
     berry: 3,
-    tree: 3,
     fish: 1,
     coconut: 2,
     water: 2,
@@ -74,8 +85,9 @@ const REGROW_CAPS: Record<string, number> = {
     // a frond sheds beneath the standing trees (see the frond shed below)
     vine: 1,
     frond: 1,
-    // shell / stone / iron / flint are finite — no regrowth
-    // sand / dirt are unlimited — never depleted, never regrown
+    // shell / iron / flint are finite — no regrowth
+    // grass / stone / sand / dirt are the unlimited ground supply — never
+    // depleted, never regrown
 };
 
 /**
@@ -87,7 +99,6 @@ const REGROW_CAPS: Record<string, number> = {
  */
 const REGROW_RHYTHM: Record<string, { every: number; offset: number }> = {
     berry: { every: 30, offset: 20 },
-    tree: { every: 60, offset: 40 },
     fish: { every: 40, offset: 0 },
     coconut: { every: 60, offset: 10 },
     mushroom: { every: 40, offset: 15 },
@@ -164,6 +175,20 @@ export type InventoryAgent = {
     position: Position3D;
 };
 
+/**
+ * The FOREST HARVEST PROVIDER — the plugins/forest ecology mounts itself
+ * into the inventory (mountForest) so the harvest action can cut wood off
+ * the trees' pools. One method: take one wood from a tile's stand — the
+ * exact fine spot's tree first, else the deterministic nearest standing
+ * tree inside the same tile; folds the tree's lazy growth, removes the
+ * record when the pool hits 0. `felled` reports whether the source tree
+ * died (the caller syncs the standing-tree mirrors). Null: no standing
+ * tree on the tile (nothing to cut — the harvest fails atomically).
+ */
+export type ForestEcology = {
+    chop(parent: { x: number; y: number }, fine: { x: number; y: number } | undefined): { felled: boolean } | null;
+};
+
 export type InventoryPlugin = WorldPlugin<World> & {
     /** An actor's bag — auto-created (empty) on first touch. */
     of(actorId: string): Inventory;
@@ -178,14 +203,16 @@ export type InventoryPlugin = WorldPlugin<World> & {
     /** Takes one `itemId` from the cell the agent stands on. */
     takeFromCell(agent: InventoryAgent, itemId: string): boolean;
     /**
-     * Harvests a tile deposit into its PRODUCT: removes one unit of the
-     * deposit resource (`depositId` — e.g. 'tree') standing on the agent's
-     * cell and adds one unit of the produced item (`yieldId` — e.g. 'wood')
-     * to the bag. Wood is not a natural resource — it exists only as the
-     * product of cutting a tree down, so the deposit draws down and the
-     * bag grows in one atomic step. Fails without side effects when the
-     * cell holds none of the deposit (or the deposit is unlimited — those
-     * are gathered raw with takeFromCell, never converted).
+     * Cuts one unit of wood off a standing tree (depositId 'tree') into the
+     * agent's bag (yieldId 'wood'). With the forest ecology mounted: the
+     * tree's pool shrinks by one (the actor's fine spot's tree first, else
+     * the deterministic nearest in the tile) and the tree STANDS while wood
+     * remains — a fully felled tree (pool 0) leaves the record and the
+     * standing-tree mirrors. Without the provider: the legacy whole-tree
+     * consumption (one deposit unit per wood). Fails without side effects
+     * when the tile holds no trees (or the deposit is unlimited — those are
+     * gathered raw with takeFromCell, never converted). Capacity is gated
+     * BEFORE anything moves (atomicity: a full bag never fells).
      */
     harvest(agent: InventoryAgent, depositId: string, yieldId: string): boolean;
     /** Gathers one available item from the agent's cell. Returns the item id. */
@@ -202,6 +229,10 @@ export type InventoryPlugin = WorldPlugin<World> & {
     spawnKit(actorId: string, kit: Inventory): void;
     /** Wipes and re-seeds every cell stock from the current canvas (resize flow). */
     resurvey(): void;
+    /** The forest ecology mounts its harvest provider (plugins/forest). */
+    mountForest(provider: ForestEcology): void;
+    /** The forest ecology unmounts (plugin swap) — legacy harvest resumes. */
+    unmountForest(): void;
 };
 
 export const inventoryPlugin = (options: InventoryPluginOptions = {}): InventoryPlugin => {
@@ -225,9 +256,17 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
     // The world reference arrives with setup; action hooks (exchange/give)
     // need it for event emission and canvas lookups before any tick runs.
     let world: World | null = null;
+    // The terrain handle — the biological boundary reads the persistent
+    // stands through it (a tree harvest without the forest ecology mounted
+    // is refused on stand-bearing tiles; see harvest)
+    let terrain: { forestOf(x: number, y: number): unknown } | null = null;
     // The plugin context captured in setup — resurvey() re-runs the canvas
     // survey with the same deterministic random stream after a regeneration
     let surveyContext: PluginContext<World> | null = null;
+    // The mounted forest ecology (plugins/forest) — the harvest provider
+    // that cuts wood off the trees' pools. Null: the legacy whole-tree
+    // harvest path — which serves ONLY stand-less terrain (see harvest).
+    let forest: ForestEcology | null = null;
 
     /** WHICH an entity is — the profile key. Castaways carry their type in
      * the actor registry, creatures in the coordinate space's facet. */
@@ -302,10 +341,13 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
     };
 
     // Internal: keeps a tile's deposit in step with its gatherable stock.
-    // Finite deposits (trees, stone, iron) follow the stock — taking one
-    // draws the tile's deposit down (deleting the entry at 0, which re-skins
-    // the tile to its plain biome through tileSurfaceKey). Unlimited
-    // deposits (sand, dirt) are never touched: a tile's sand cannot run out.
+    // Finite deposits (iron — and the legacy tree path) follow the stock —
+    // taking one draws the tile's deposit down (deleting the entry at 0
+    // falls the surface derivation through to the tile's next landmark /
+    // ground / voxel look through tileSurfaceKey: an exhausted iron lode
+    // reads its stone ground, a clearcut wood KEEPS its forest canopy —
+    // the forest voxel stands). Unlimited deposits are never touched: a
+    // tile's ground supply cannot run out.
     const drawDeposit = (x: number, y: number, itemId: string) => {
         if (!isTileResource(itemId) || isUnlimitedResource(itemId)) {
             return;
@@ -419,9 +461,19 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
         },
 
         takeFromCell: (actor, itemId) => {
+            // A LIVING TREE IS NEVER BAGGED — the standing `tree` stock is
+            // the mirror of the forest records (plugins/forest), not a
+            // pile of loose lumber. A tree's wood is taken by the HARVEST
+            // (the chop converts pool wood into the bag); picking the tree
+            // itself up would treat a living thing as a material bag item.
+            if (itemId === 'tree') {
+                return false;
+            }
             // THE MINE GATE — the 'mine' ability unlock: stone and iron come
             // off a tile only for species that can mine (a bird hopping onto
-            // a highland picks up nothing)
+            // a highland picks up nothing). The gate limits WHO works the
+            // ground — the stone supply itself is infinite (the ground
+            // mirrors it, unlimited takes below)
             if (MINED_ITEMS.includes(itemId) && !mayMine(actor.id)) {
                 return false;
             }
@@ -433,8 +485,9 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             const x = actor.position.x;
             const y = actor.position.y;
             const stock = stockOf(x, y);
-            // UNLIMITED deposits (sand, dirt) cannot be exhausted: the pile
-            // never decrements, so the tile hands them out forever
+            // UNLIMITED ground-supply deposits (grass, stone, sand, dirt)
+            // cannot be exhausted: the pile never decrements, so the tile
+            // hands them out forever — only the bag's capacity gates
             if (isUnlimitedResource(itemId)) {
                 if ((stock[itemId] ?? 0) <= 0) {
                     return false;
@@ -443,8 +496,9 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
                 return false;
             }
             inventoryAdd(bagOf(actor.id), itemId, 1);
-            // Finite deposits draw down with the pile — the tile re-skins
-            // when its last unit is taken
+            // Finite deposits draw down with the pile — an exhausted
+            // landmark falls through the surface derivation to the tile's
+            // next look (an exhausted iron lode reads its stone ground)
             drawDeposit(x, y, itemId);
             return true;
         },
@@ -457,21 +511,62 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             if (isUnlimitedResource(depositId)) {
                 return false;
             }
-            // THE CAPACITY GATE — checked BEFORE the deposit comes down so a
-            // full bag leaves the tile untouched (atomicity: a failed felling
-            // never drops a tree)
+            // THE CAPACITY GATE — checked BEFORE anything moves so a
+            // full bag leaves the tile untouched (atomicity: a failed
+            // cut never wounds a tree)
             if (!canHold(actor.id, { [yieldId]: 1 })) {
                 return false;
             }
             const stock = stockOf(x, y);
-            // The deposit must still be standing (a co-worker may have
-            // felled the last tree during the wait) — atomic: a failed
-            // check leaves stock, tile and bag untouched
+            // ── The forest ecology path — wood comes off the tree's POOL ──
+            // One chop takes one wood; the tree STANDS while wood remains
+            // and only a fully felled tree (pool 0) leaves the record. The
+            // standing-tree mirrors sync inside the chop itself (the
+            // ecology owns them — no ghosts, no stale deposits). The exact
+            // fine spot's tree is cut first; a bare fine cell cuts the
+            // deterministic nearest tree inside the same tile.
+            if (depositId === 'tree' && forest) {
+                const fine = world?.subOf(actor.id);
+                const outcome = forest.chop({ x, y }, fine);
+                if (!outcome) {
+                    // No standing tree on the tile — nothing moved
+                    return false;
+                }
+                // The wood lands in the bag — wood exists only as a yield
+                inventoryAdd(bagOf(actor.id), yieldId, 1);
+                return true;
+            }
+            // ── THE BIOLOGICAL BOUNDARY — a living tree harvests ONLY
+            // through its owner. On terrain carrying a persistent stand
+            // (plugins/terrain ForestStand — the scenario's default
+            // island), a tree harvest with NO mounted forest provider is
+            // refused BEFORE any mutation: the legacy whole-tree path
+            // would draw the standing-tree mirrors down without reaching
+            // the records, and a later remount would restore the count —
+            // the same wood reharvestable forever (the unbounded
+            // remove/cut/remount farm). Wood conservation beats tool
+            // availability: while the ecology is away, the woods simply
+            // cannot be cut (agents re-plan; the lumber rung declines
+            // through the failed harvest, no wedge).
+            if (depositId === 'tree' && terrain?.forestOf(x, y)) {
+                return false;
+            }
+            // ── The legacy path (no forest ecology mounted, NO persistent
+            // stand underfoot) — one whole tree deposit unit per wood. This
+            // serves fixtures and older terrain whose trees are plain tile
+            // deposits with no biological records: taking one draws the
+            // tile's deposit down with the stock (nothing can resurrect it
+            // — no stand exists to restore from). The deposit must still be
+            // standing (a co-worker may have taken the last unit during the
+            // wait) — atomic: a failed check leaves stock, tile and bag
+            // untouched
             if (!inventoryRemove(stock, depositId, 1)) {
                 return false;
             }
-            // The tree is gone from the tile — the deposit draws down and
-            // the last felled tree re-skins the tile to its plain biome
+            // The tree is gone from the tile — the deposit draws down. The
+            // tile's LOOK keeps its forest canopy: tileSurfaceKey reads the
+            // standing forest voxel, so even a legacy clearcut never
+            // re-skins the wood to its plain biome
             drawDeposit(x, y, depositId);
             // The product lands in the bag — wood exists only as a yield
             inventoryAdd(bagOf(actor.id), yieldId, 1);
@@ -571,6 +666,15 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             // same deterministic stream after the terrain regenerates
             world = context.world;
             surveyContext = context;
+            // The TERRAIN HANDLE — the biological boundary (harvest) reads
+            // the persistent stands through it. Resolved through the plugin
+            // roster so the boundary works regardless of mount order (the
+            // forest plugin re-mounts its provider over this handle).
+            const roster = context.world.plugins.list();
+            const terrainPlugin = roster.find((plugin) => plugin.id === 'island-terrain') as
+                | { forestOf(x: number, y: number): unknown }
+                | undefined;
+            terrain = terrainPlugin ?? null;
             survey(context, world.canvas);
         },
 
@@ -587,15 +691,27 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             survey(surveyContext, world.canvas);
         },
 
+        mountForest: (provider) => {
+            forest = provider;
+        },
+
+        unmountForest: () => {
+            forest = null;
+        },
+
         dispose: () => {
             // Dropping the plugin wipes all bags and stocks — the environment
             // is gone entirely, exactly what a plugin swap means
             bags.clear();
             stocks.clear();
-            // The fine clock resets with the environment
+            // The fine clock resets with the environment; the mounted forest
+            // provider and the terrain handle go with it (both re-resolve on
+            // the next setup)
             minute = 0;
             world = null;
             surveyContext = null;
+            forest = null;
+            terrain = null;
         },
 
         tick: (context: PluginContext<World>) => {

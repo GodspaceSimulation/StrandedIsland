@@ -314,16 +314,18 @@ describe('App', () => {
         // ground. Clicked on the default unicode board.
         fireEvent.click(screen.getByTestId('unicode-tile--5--7'));
         expect(screen.getByTestId('tile-position').textContent).toBe('(-5, -7) · sand');
-        expect(screen.getByTestId('tile-resources').textContent).toBe('sand ×∞');
+        // The ground supply: the column is stone/dirt/sand — all three
+        // mirror ×∞ (unlimited)
+        expect(screen.getByTestId('tile-resources').textContent).toBe('stone ×∞ · sand ×∞ · dirt ×∞');
         expect(screen.getByTestId('tile-terrain-meta').textContent).toBe(
             'height 3 · water line 3 · walkable',
         );
-        expect(screen.getByTestId('tile-voxels').textContent).toBe('stone, soil, sand');
+        expect(screen.getByTestId('tile-voxels').textContent).toBe('stone, dirt, sand');
         // Scale-0 granularity: the ground generalizes into its CATEGORIES —
-        // coconut is a food, the sand mirror is a material
+        // coconut is a food, the ground supply is three materials
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
-        ).toEqual(['Foods ×1', 'Materials ×1']);
+        ).toEqual(['Foods ×1', 'Materials ×3']);
         // Nobody lives here
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
@@ -343,7 +345,7 @@ describe('App', () => {
         expect(screen.getByTestId('tile-terrain-meta').textContent).toBe(
             'height 2 · water line 3 · submerged',
         );
-        expect(screen.getByTestId('tile-voxels').textContent).toBe('soil, sand, water');
+        expect(screen.getByTestId('tile-voxels').textContent).toBe('dirt, sand, water');
         // The fish generalizes to its category at scale 0
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
@@ -376,17 +378,19 @@ describe('App', () => {
         // flying gull (z 2)
         fireEvent.click(screen.getByTestId('unicode-tile-0-0'));
         expect(screen.getByTestId('tile-position').textContent).toBe('(0, 0) · stone');
-        expect(screen.getByTestId('tile-resources').textContent).toBe('stone ×1');
+        // The highland carries the ground supply: unlimited stone + the
+        // dirt under it
+        expect(screen.getByTestId('tile-resources').textContent).toBe('stone ×∞ · dirt ×∞');
         // All living things are actors: the bird is listed as a resident
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['Kiki — bird · flying-2 · z 2']);
-        // Highland floor: the stone deposit — generalized to categories.
+        // Highland floor: the ground supply — generalized to categories.
         // This run's highland hid a flint too (the survey's chance stream
         // moved with the richer map) — the tool is its own category
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
-        ).toEqual(['Materials ×1', 'Tools ×1']);
+        ).toEqual(['Materials ×2', 'Tools ×1']);
         // …but the tile click selects no entity — no inspector card opens
         // (the resident ROW would; the tile click alone does not)
         expect(screen.queryByTestId('actor-inventory')).toBeNull();
@@ -409,7 +413,7 @@ describe('App', () => {
         expect(screen.getByTestId('tile-terrain-meta').textContent).toBe(
             'height 2 · water line 3 · submerged',
         );
-        expect(screen.getByTestId('tile-voxels').textContent).toBe('soil, sand, water');
+        expect(screen.getByTestId('tile-voxels').textContent).toBe('dirt, sand, water');
         // The fish generalizes to its category at scale 0
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
@@ -504,7 +508,7 @@ describe('App', () => {
         // Inspector's lineage
         fireEvent.click(screen.getByTestId('unicode-tile-0-0'));
         expect(screen.getByTestId('tile-position').textContent).toBe('(-11, 0) · (0, 0) · sand');
-        expect(screen.getByTestId('tile-resources').textContent).toBe('sand ×∞');
+        expect(screen.getByTestId('tile-resources').textContent).toBe('stone ×∞ · sand ×∞ · dirt ×∞');
         // The item-level granularity: the coconut's subtile lists it BY NAME
         fireEvent.click(coconut);
         expect(screen.getByTestId('tile-position').textContent).toBe('(-11, 0) · (-11, 5) · sand');
@@ -593,7 +597,7 @@ describe('App', () => {
         const treed = screen.getByTestId('unicode-tile-3--6');
         expect(treed.textContent).toBe('🌳');
         expect(treed.querySelector('[data-testid="tree-icon-unicode"]')).not.toBeNull();
-        expect(treed.title).toContain('tree ×2');
+        expect(treed.title).toContain('tree ×383');
         // A treed tile with a castaway standing on it: Dune came ashore on
         // the treed tile (5,−1) — the entity wins the tile, no tree icon
         expect(screen.getByTestId('unicode-tile-5--1').textContent).toBe('🧍‍♂️');
@@ -728,6 +732,36 @@ describe('App', () => {
         expect(
             (screen.getByTestId('world-grid-svg') as SVGSVGElement).getAttribute('viewBox'),
         ).toBe('0 0 650 442');
+    });
+
+    it('the Tile Inspector reads the forest layer: the stand summary and the tree card', () => {
+        render(<App seed={7} />);
+        // A treed tile's Resources row carries the mirror (tree ×383 beside
+        // the ground supply); the FOREST row carries the wood stats
+        fireEvent.click(screen.getByTestId('unicode-tile-3--6'));
+        expect(screen.getByTestId('tile-resources').textContent).toBe(
+            'tree ×383 · stone ×∞ · dirt ×∞ · grass ×∞',
+        );
+        expect(screen.getByTestId('tile-forest').textContent).toContain('383 trees');
+        expect(screen.getByTestId('tile-forest').textContent).toContain('wood standing');
+        // No tree card at the island view (the summary shape)
+        expect(screen.getByTestId('tile-forest-tree').textContent).toBe('');
+        // A meadow carries no forest layer at all
+        fireEvent.click(screen.getByTestId('unicode-tile-1--4'));
+        expect(screen.queryByTestId('tile-forest')).toBeNull();
+        // ── Scale 0: the tree card on the inspected fine spot ────────────
+        fireEvent.click(screen.getByTestId('unicode-tile-3--6'));
+        fireEvent.click(screen.getByTestId('zoom-toggle'));
+        // The woods' top-left tree stands at the fine spot (−12,−8) — the
+        // card reads its wood pool, age (in years) and maturity
+        fireEvent.click(screen.getByTestId('unicode-tile--12--8'));
+        expect(screen.getByTestId('tile-forest-tree').textContent).toContain('wood 2');
+        expect(screen.getByTestId('tile-forest-tree').textContent).toContain('age 1.5 y');
+        expect(screen.getByTestId('tile-forest-tree').textContent).toContain('growing');
+        // A bare fine cell of the same wood carries no card — the forest
+        // layer resolves only for a TREED fine spot, so the row drops out
+        fireEvent.click(screen.getByTestId('unicode-tile-4--7'));
+        expect(screen.queryByTestId('tile-forest')).toBeNull();
     });
 
     it('the header reroll regenerates the whole world — fresh seed, picked size', () => {

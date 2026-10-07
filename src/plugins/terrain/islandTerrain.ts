@@ -5,16 +5,38 @@
 // bilinear + smoothstep) shaped by a radial falloff so the center rises above
 // the water line and the edges fall into the sea — a small island.
 //
-// Every column also carries RESOURCE DEPOSITS (TileResources on engine/types):
-// trees in the forests, stone on the highlands, iron lodes where the vein
-// noise concentrates, and the unlimited sands of the beaches and dirts of the
-// meadows. The deposits are what the tile appears as on the canvas
-// (tileSurfaceKey below) and what the inventory plugin seeds its gatherable
-// cell stocks from.
+// Every column also carries RESOURCE DEPOSITS (TileResources on engine/types)
+// under two rules:
+//
+//   GROUND SUPPLY (infinite) — every ground voxel material a DRY column is
+//   actually built from supplies its resource forever, at the symbolic count
+//   of 1: stone voxels → stone ×∞, dirt voxels → dirt ×∞, grass voxels →
+//   grass ×∞, sand voxels → sand ×∞. The match is by voxel NAME (the
+//   resource token inside the name — "voxel names with 'stone' 'grass'
+//   produce infinite resource of that type at the tile"), never by biome,
+//   and it reads the ACTUAL voxel column (underlayers included — the dirt
+//   under a meadow and the stone bedrock under everything supply too).
+//   Submerged columns supply nothing (no dry habitat, no access — the sea
+//   keeps its plain biome look and stocks fish only). Takes stay gated by
+//   bag capacity and the 'mine' ability (stone/iron) but never deplete the
+//   ground. Mirrored onto every fine cell at the zoomed scale.
+//
+//   THE FOREST STAND (finite, biological) — a forested tile seeds a
+//   PERSISTENT FINE-SCALE TREE RECORD (ForestStand below): FOREST_COVERAGE
+//   of the tile's fine cells hold one tree each, at mixed seeded ages. The
+//   stand is authoritative; the tile's `tree` deposit count MIRRORS the
+//   standing tree count (the inventory plugin's gatherable stock seeds from
+//   it, the canvas surface reads it). The plugins/forest ecology grows the
+//   trees' wood, recruits new ones and spreads the woods — see that plugin.
+//
+// The deposits are what the tile appears as on the canvas (tileSurfaceKey
+// below) and what the inventory plugin seeds its gatherable cell stocks
+// from. Wood is NOT a deposit — it is the product of cutting wood off a
+// tree (the lumber behaviour's chop → inventory.harvest).
 //
 // Everything is deterministic: the same seed produces the exact same island,
 // which is what the tests assert. `@presource/core` has no seeded PRNG, so the
-// stream comes from engine/random.ts (mulberry32).
+// stream comes from engine/random.ts (mulberry32) via @godspace/core.
 
 import { randomCreate, randomKeyed, type RandomSource } from '@godspace/core';
 import type { Biome, Canvas, TerrainCell, TileResource, TileResources, VoxelKind } from '../../engine/types';
@@ -22,6 +44,9 @@ import { TILE_RESOURCES, UNLIMITED_TILE_RESOURCES } from '../../engine/types';
 import type { PluginContext, WorldPlugin } from '@godspace/core';
 import type { World } from '../../engine/world';
 import { tilePathKey, type TilePath } from '@godspace/core';
+
+/** The terrain plugin handle's shape (the forest plugin coordinates with it). */
+export type IslandTerrainPlugin = ReturnType<typeof islandTerrainPlugin>;
 
 export type IslandTerrainOptions = {
     /** Grid width in cells (odd — 0,0 is the center). Default 25. */
@@ -70,28 +95,78 @@ export const IRON_LODE_THRESHOLD = 0.5;
 
 /**
  * Moisture threshold for forests: a dry grass-surface cell whose moisture
- * sample exceeds it grows one — trees ×2 stand on the tile (the
- * deriveBiome ladder and the tree deposit both read `forested` below).
- * Lowered from the old inline 0.6 so the meadows read as woodland more
- * often: on the seed-7 25×17 reference island the forest census moves
- * 52 → 75 (see islandTerrain.test.ts).
+ * sample exceeds it grows one — trees stand on the tile (the deriveBiome
+ * ladder and the tree deposit both read `forested` below). Lowered from the
+ * old inline 0.6 so the meadows read as woodland more often: on the seed-7
+ * 25×17 reference island the forest census moves 52 → 75 (see
+ * islandTerrain.test.ts).
  */
 export const FOREST_MOISTURE_THRESHOLD = 0.5;
 
 /**
- * The DENSE grove line — a forested cell whose moisture sample also
- * exceeds this is a THICK wood: tree ×6 stand on the tile (a grove with
- * room to chop and regrow), while the plain woods keep tree ×2. Calibrated
- * so dense groves stay the landmark woods — on the seed-7 25×17 reference
- * island a third of the forest cells densify (see islandTerrain.test.ts).
+ * The DENSE GROVE line — SUPERSEDED. Every forested tile now seeds the same
+ * fine-scale tree stand at FOREST_COVERAGE coverage (90% of the tile's fine
+ * cells — "90% of the map at scale 0 is covered in tree"); the old plain ×2 /
+ * dense ×6 deposit ladder is gone because the zoomed interior is where the
+ * density lives now.
  */
-export const DENSE_FOREST_MOISTURE_THRESHOLD = 0.78;
 
-/** Trees on a plain forested tile — the standing grove the canvas paints. */
-export const FOREST_TREES = 2;
+/**
+ * Tree coverage of a forest tile's fine cells at generation — "90% of the
+ * map at scale 0 is covered in tree". The default island's 25×17 sub-grid
+ * holds 425 fine cells → Math.round(0.9 × 425) = 383 trees per forest tile
+ * (the rounding choice is pinned: 382.5 rounds UP to 383). Growth and
+ * recruitment may carry an uncut stand toward the full 100% over the years
+ * (plugins/forest documents the cap); felled spots refill by recruitment.
+ */
+export const FOREST_COVERAGE = 0.9;
 
-/** Trees on a DENSE forested tile — the grove a lot of trees make. */
-export const DENSE_FOREST_TREES = 6;
+/**
+ * The exact standing-tree count a forest tile seeds: FOREST_COVERAGE of the
+ * sub-grid's fine cells, half-up rounded (Math.round — 382.5 → 383 on the
+ * 425-cell default island).
+ */
+export const forestTreeCount = (width: number, height: number): number =>
+    Math.round(FOREST_COVERAGE * width * height);
+
+// ── The persistent forest stands ─────────────────────────────────────────────
+//
+// The fine-scale tree record of ONE parent tile. The terrain plugin owns the
+// registry (its sub-grid generation is what consumes the positions — see
+// generateSubCanvas); the plugins/forest ecology reads and mutates the stands
+// through this plugin's `forestOf` / `forestPlant` API. Seeding happens in
+// `generateIsland`'s wake (regenerate → seedStands): every forested tile gets
+// forestTreeCount positions from its own keyed stream, each carrying a
+// VIRGIN record the ecology ages lazily (see plugins/forest poolOf).
+
+/** One standing tree of a forest stand — the wood-growth bookkeeping. */
+export type ForestTreeRecord = {
+    /**
+     * Birth minute on the ecology clock. Seeded old growth carries a
+     * NEGATIVE birth (the tree stood before the world did); virgin records
+     * (born 0 AND baseMinute 0 — see poolOf in plugins/forest) are aged
+     * lazily from `seedAge` on first read.
+     */
+    born: number;
+    /** Wood pool baseline (integer) standing at `baseMinute`. */
+    base: number;
+    /** The minute the baseline was taken (birth or the last harvest fold). */
+    baseMinute: number;
+    /** Fractional growth carry — numerator over the rate's denominator. */
+    carry: number;
+    /**
+     * Pre-drawn age fraction [0,1) for VIRGIN seeded trees — the ecology's
+     * lazy aging turns it into `born = −floor(seedAge × maturity)` once.
+     * Recruited/spread saplings carry none (they are born in-world).
+     */
+    seedAge?: number;
+};
+
+/** The persistent fine-scale tree record of one forest tile. */
+export type ForestStand = {
+    /** Standing trees by fine-spot key "x,y" (centered sub-grid coordinates). */
+    trees: Map<string, ForestTreeRecord>;
+};
 
 /**
  * Lattice value noise with bilinear interpolation and a smoothstep fade.
@@ -254,7 +329,7 @@ export const generateIsland = (
             const forested = surface === 'grass' && moisture(col, row) > FOREST_MOISTURE_THRESHOLD;
 
             // Build the voxel stack, bottom → top:
-            //   stone × (ground-2), soil × 1, surface × 1,
+            //   stone × (ground-2), dirt × 1, surface × 1,
             //   then water up to the sea level (submerged columns),
             //   then a forest voxel when wooded
             const stack: VoxelKind[] = [];
@@ -264,7 +339,7 @@ export const generateIsland = (
                 }
             }
             if (groundHeight >= 2) {
-                stack.push('soil');
+                stack.push('dirt');
             }
             stack.push(surface);
             const depth = submerged ? seaLevel - groundHeight : 0;
@@ -281,35 +356,40 @@ export const generateIsland = (
             // What the tile carries as gatherable material. Deposits are a
             // tile property: the inventory plugin seeds its gatherable cell
             // stocks from them, and tileSurfaceKey derives the canvas
-            // appearance from the top deposit (see below). Unlimited
-            // resources (sand, dirt) keep a symbolic count of 1 — the
-            // UNLIMITED_TILE_RESOURCES set protects them from depletion.
+            // appearance from the tile (see below). Two seeding rules:
+            //
+            //   GROUND SUPPLY — every ground voxel material the DRY column
+            //   is built from, at the symbolic count of 1: unlimited, never
+            //   depleted by takes (UNLIMITED_TILE_RESOURCES), mirrored onto
+            //   every fine cell at the zoom. Submerged columns supply
+            //   nothing (no habitat, no access — the sea keeps its look).
+            //
+            //   THE TREE STAND — forested tiles seed the persistent
+            //   fine-scale record (seedStands after generation); the count
+            //   mirrors the seeded stand size. Felling/recruitment move the
+            //   mirror with the stand (plugins/forest).
             const resources: TileResources = {};
             if (!submerged) {
-                if (forested) {
-                    // Forests stand on trees — a DENSE grove (the moisture
-                    // band past DENSE_FOREST_MOISTURE_THRESHOLD) carries a
-                    // lot of them, plain woods the base grove. Felled one
-                    // at a time into wood (the lumber behaviour's chop; the
-                    // wood item is the product, never the deposit)
-                    resources.tree =
-                        moisture(col, row) > DENSE_FOREST_MOISTURE_THRESHOLD
-                            ? DENSE_FOREST_TREES
-                            : FOREST_TREES;
-                } else if (surface === 'stone') {
-                    // Highlands are quarries: stone, plus an iron lode when
-                    // the vein noise concentrates past the threshold
+                if (stack.includes('stone')) {
                     resources.stone = 1;
-                    if (veins(col, row) > IRON_LODE_THRESHOLD) {
-                        resources.iron = 1;
-                        stats.iron = stats.iron + 1;
-                    }
-                } else if (surface === 'sand') {
-                    // Beaches are made of sand — an unlimited deposit
-                    resources.sand = 1;
-                } else {
-                    // Meadows grow on soil — dig dirt, unlimited
+                }
+                if (stack.includes('dirt')) {
                     resources.dirt = 1;
+                }
+                if (stack.includes('grass')) {
+                    resources.grass = 1;
+                }
+                if (stack.includes('sand')) {
+                    resources.sand = 1;
+                }
+                if (forested) {
+                    resources.tree = forestTreeCount(width, height);
+                } else if (surface === 'stone' && veins(col, row) > IRON_LODE_THRESHOLD) {
+                    // Iron lodes hide in the stone highlands — the vein
+                    // noise's rare landmark (a FINITE deposit; the mine gate
+                    // limits who takes it)
+                    resources.iron = 1;
+                    stats.iron = stats.iron + 1;
                 }
             }
 
@@ -340,32 +420,56 @@ export const generateIsland = (
 };
 
 // ── Tile appearance ──────────────────────────────────────────────────────────
-// The tile's RESOURCES decide what it appears as on the canvas: a tile shows
-// up as the resource it carries (treed tiles, ore tiles, sand tiles…), so
-// the god reads the island as a resource map, not just a biome map.
+// The tile's DEPOSITS + ACTUAL VOXELS decide what it appears as on the
+// canvas: landmarks first (an iron lode, standing trees), then the tile's
+// own GROUND material (the topmost voxel that maps to a resource, read from
+// the real column), falling back to the plain biome. The underlayer supplies
+// (the dirt under a meadow, the bedrock stone under everything) appear in
+// the Resources lists but never repaint the tile — the tile reads as what
+// its SURFACE is.
 
 /** The minimal cell slice the surface derivation reads. */
 export type TileSurfaceCell = {
     biome?: string;
     resources?: TileResources;
+    voxels?: VoxelKind[];
 };
 
 /**
- * Deposit-priority order for the canvas surface — the rarest deposit wins
- * the tile's look so landmarks stand out (an iron lode shows through the
- * stone it sits in; a tree grove shows through the meadow it borders).
- */
-const RESOURCE_SURFACE_PRIORITY: readonly TileResource[] = ['iron', 'tree', 'stone', 'sand', 'dirt'];
-
-/**
- * The canvas surface key of a tile: its top-priority deposit, falling back
- * to the plain biome when the tile carries no resources (sea columns, or a
- * land tile whose finite deposits were gathered away).
+ * The canvas surface key of a tile:
+ *   iron lode → 'iron'; standing trees → 'tree' — the landmarks stand out;
+ *   a forest voxel (the standing canopy — a clearcut wood keeps the look) →
+ *   'forest'; else the topmost ground voxel that maps to a carried resource
+ *   ('grass' | 'sand' | 'stone' | 'dirt') — the tile reads as its ground;
+ *   else the plain biome (sea columns, or the deposit-less fallback shapes).
  */
 export const tileSurfaceKey = (cell: TileSurfaceCell): string | undefined => {
     const resources = cell.resources ?? {};
-    const deposit = RESOURCE_SURFACE_PRIORITY.find((resource) => (resources[resource] ?? 0) > 0);
-    return deposit ?? cell.biome;
+    if ((resources.iron ?? 0) > 0) {
+        return 'iron';
+    }
+    if ((resources.tree ?? 0) > 0) {
+        return 'tree';
+    }
+    const voxels = cell.voxels;
+    if (voxels && voxels.length > 0) {
+        // The standing canopy outranks the ground — a clearcut wood keeps
+        // its forest look (the forest voxel still stands)
+        if (voxels.includes('forest')) {
+            return 'forest';
+        }
+        // The tile's GROUND: the topmost voxel whose material is carried as
+        // a resource (the resource-backed check keeps deposit-less shapes —
+        // sea columns, test fixtures — on their plain biome)
+        for (let index = voxels.length - 1; index >= 0; index--) {
+            const kind = voxels[index];
+            if ((kind === 'grass' || kind === 'sand' || kind === 'stone' || kind === 'dirt') &&
+                (resources[kind] ?? 0) > 0) {
+                return kind;
+            }
+        }
+    }
+    return cell.biome;
 };
 
 /** One "tree ×2" / "sand ×∞" fragment for hover titles and inspectors. */
@@ -399,6 +503,11 @@ export const tileDepositSummary = (resources?: TileResources): string =>
  * ladder counts UP from the interior ground: scale 0 the deepest generated
  * level, scale = depth the island root), `cellFor(path)` resolves one tile,
  * `depth()` reports the configured subtile levels.
+ *
+ * The plugin also owns the PERSISTENT FOREST STANDS (the fine-scale tree
+ * records the zoom mirrors and the plugins/forest ecology mutates):
+ * `forestOf(tile)` reads a tile's stand, `forestPlant(tile, fine, record)`
+ * adds one tree (recruitment + spread conversions plant through it).
  */
 export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPlugin<World> & {
     stats(): IslandStats | undefined;
@@ -414,6 +523,10 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
     canvasFor(path: TilePath): Canvas | undefined;
     /** One tile at a tile address (the parent path resolves its grid). */
     cellFor(path: TilePath): TerrainCell | undefined;
+    /** The persistent forest stand of a parent tile (undefined: none). */
+    forestOf(x: number, y: number): ForestStand | undefined;
+    /** Adds one tree to a tile's stand (creating it), and returns the stand. */
+    forestPlant(x: number, y: number, fine: { x: number; y: number }, record: ForestTreeRecord): ForestStand;
 } => {
     // Last generation stats, exposed for the god-view roster
     let lastStats: IslandStats | undefined;
@@ -431,11 +544,16 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
     let resolvedSeed = options.seed ?? 1;
     // Sub-grid cache, keyed by tile path — a zoomed-in view re-renders every
     // pulse, so regenerating 425 cells each time would burn the frame; the
-    // fingerprint (parent deposits + height + water line) invalidates a
-    // cached grid exactly when the parent tile changed (gathering, regrowth)
+    // fingerprint (parent deposits + height + water line + biome + voxels)
+    // invalidates a cached grid exactly when the parent tile changed
+    // (gathering, tree work, the forest spread's biome conversion)
     const subCanvases = new Map<string, { stamp: string; canvas: Canvas }>();
     // FIFO cap — zooming around must not accumulate grids without bound
     const SUB_CANVAS_CACHE = 32;
+    // The persistent forest stands — keyed by PARENT tile "x,y" (the ROOT
+    // grid's coordinates; sub-grid positions live INSIDE each stand).
+    // Rebuilt on every regeneration (resize = a reshaped world, fresh stands).
+    const forestStands = new Map<string, ForestStand>();
 
     /** One generation pass: builds the canvas and installs it on the world. */
     const regenerate = (context: PluginContext<World>) => {
@@ -455,6 +573,61 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
             cells: generated.cells,
         };
         lastStats = generated.stats;
+        // Seed the persistent forest stands from the fresh canvas (every
+        // forested tile gets its FOREST_COVERAGE fine positions with virgin
+        // records the ecology ages lazily — plugins/forest poolOf)
+        seedStands();
+    };
+
+    /**
+     * Seeds the persistent forest stands: every forested parent tile gets
+     * forestTreeCount fine positions, drawn from its own keyed stream. The
+     * positions come off a SEEDED SHUFFLE of the whole fine grid (Fisher-
+     * Yates over all spots, take the first count) so the density is EXACT —
+     * no collision-re-roll can under-fill a near-full stand. Each position
+     * carries a VIRGIN record (born 0 / baseMinute 0 / base 1) plus its
+     * pre-drawn age fraction — the ecology's lazy aging (plugins/forest
+     * poolOf) turns the fraction into a negative birth minute on first
+     * read, so the seeded woods hold mixed ages and wood immediately.
+     */
+    const seedStands = () => {
+        forestStands.clear();
+        const count = forestTreeCount(dims.width, dims.height);
+        const halfX = (dims.width - 1) / 2;
+        const halfY = (dims.height - 1) / 2;
+        bound?.world.canvas.cells.forEach((cell) => {
+            if ((cell.resources.tree ?? 0) <= 0) {
+                return;
+            }
+            const stream = randomKeyed(resolvedSeed, `forest:${cell.x},${cell.y}`);
+            // All fine spots, seeded-shuffled once — the first `count` hold trees
+            const spots: Array<{ x: number; y: number }> = [];
+            for (let row = 0; row < dims.height; row++) {
+                for (let col = 0; col < dims.width; col++) {
+                    spots.push({ x: col - halfX, y: row - halfY });
+                }
+            }
+            for (let index = spots.length - 1; index > 0; index--) {
+                const swap = Math.floor(stream() * (index + 1));
+                const held = spots[index];
+                spots[index] = spots[swap];
+                spots[swap] = held;
+            }
+            const stand: ForestStand = { trees: new Map() };
+            for (let unit = 0; unit < count; unit++) {
+                const spot = spots[unit];
+                stand.trees.set(`${spot.x},${spot.y}`, {
+                    born: 0,
+                    base: 1,
+                    baseMinute: 0,
+                    carry: 0,
+                    // The pre-drawn age fraction — the SAME stream the
+                    // positions drew from, so seeding stays one pass
+                    seedAge: stream(),
+                });
+            }
+            forestStands.set(`${cell.x},${cell.y}`, stand);
+        });
     };
 
     // The centered row-major cell lookup on an ARBITRARY canvas (world.cellAt
@@ -468,12 +641,14 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
         return canvas.cells[(y + halfY) * canvas.width + (x + halfX)];
     };
 
-    // The parent-change stamp of a cell: its deposits + height + water line.
-    // Voxels/biome/passability never change after generation, so the stamp
-    // catches exactly the mutations that reshape a sub-grid (a gathered
-    // deposit removes its subtile, regrowth adds one back)
+    // The parent-change stamp of a cell: its deposits + height + water line
+    // + biome + voxel stack. The forest ecology now DOES reshape columns
+    // after generation (the spread conversion stacks a forest voxel onto a
+    // converted meadow and re-biomes it), so the stamp carries the voxels
+    // and biome too — a stamp change invalidates the cached sub-grid exactly
+    // when the parent tile changed (gathering, tree work, spread).
     const fingerprintOf = (cell: TerrainCell): string =>
-        `${TILE_RESOURCES.map((resource) => cell.resources[resource] ?? 0).join(',')}|${cell.height}|${cell.waterLevel}`;
+        `${TILE_RESOURCES.map((resource) => cell.resources[resource] ?? 0).join(',')}|${cell.height}|${cell.waterLevel}|${cell.biome}|${cell.voxels.join('+')}`;
 
     /**
      * Generates one tile's sub-grid from its parent cell — the microscopic
@@ -482,11 +657,17 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
      * the parent column (voxels, height, water line, passability, biome):
      * the tile's interior ground IS the tile's ground. The parent's deposits
      * distribute across the subtiles — the zoom reveals WHERE they stand:
-     *   finite deposits (tree ×2 on a forest tile) scatter one unit per
-     *     seeded subtile — the individual trees/rocks/ore pockets, gathered
-     *     or regrown deposits reshape the scatter through the fingerprint;
-     *   unlimited deposits (sand, dirt) ARE the ground — every subtile
-     *     carries the symbolic deposit so the zoom preserves the tile's look.
+     *   the INFINITE ground supply (stone/dirt/grass/sand) IS the ground —
+     *     every subtile carries the symbolic deposit so the zoom preserves
+     *     the tile's look (rocks full-matching every stone-voxel tile);
+     *   the TREE stand is PERSISTENT — the forest record's fine positions
+     *     put one tree unit each on their exact subtile; felling and
+     *     recruitment never reshuffle the other positions (the stand is
+     *     authoritative, the parent count mirrors it — the fingerprint
+     *     still invalidates the cache when the mirror moves, and the
+     *     regenerated grid re-reads the SAME positions);
+     *   remaining finite deposits (an iron lode) scatter one unit per
+     *     seeded subtile.
      */
     const generateSubCanvas = (parent: TerrainCell, pathKey: string): Canvas => {
         const width = dims.width;
@@ -494,12 +675,22 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
         const halfX = (width - 1) / 2;
         const halfY = (height - 1) / 2;
 
-        // Pre-scatter the finite deposits: each unit of each finite resource
-        // lands on its own seeded subtile position (a bounded re-roll keeps
-        // units from stacking when the grid has room to spread them)
+        // The parent's persistent stand — its positions author the tree
+        // mirror (a stand-less forest tile falls back to the seeded scatter
+        // below, the pre-ecology shape)
+        const stand = forestOf(parent.x, parent.y);
+
+        // Pre-scatter the remaining finite deposits (an iron lode — and the
+        // legacy tree scatter when no stand exists): each unit lands on its
+        // own seeded subtile position (a bounded re-roll keeps units from
+        // stacking when the grid has room to spread them)
         const deposits = new Map<string, TileResources>();
         TILE_RESOURCES.forEach((resource) => {
             if (UNLIMITED_TILE_RESOURCES.includes(resource)) {
+                return;
+            }
+            // The tree mirror is stand-authored — no scatter when a stand exists
+            if (resource === 'tree' && stand) {
                 return;
             }
             const count = parent.resources[resource] ?? 0;
@@ -531,6 +722,11 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
                 const x = col - halfX;
                 const y = row - halfY;
                 const resources: TileResources = { ...(deposits.get(`${x},${y}`) ?? {}) };
+                // The persistent tree: the stand's exact fine position puts
+                // ONE tree unit here (a fine cell holds at most one tree)
+                if (stand?.trees.has(`${x},${y}`)) {
+                    resources.tree = 1;
+                }
                 // Unlimited deposits are the ground itself — every subtile
                 // carries the symbolic deposit so the zoomed tile keeps the
                 // look its parent paints with (the microscopic-zoom rule)
@@ -596,6 +792,31 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
         return canvas;
     };
 
+    // ── The persistent forest stand registry ─────────────────────────────────
+    // The terrain plugin OWNS the stands (its sub-grid generation mirrors
+    // them); the plugins/forest ecology mutates them through this pair.
+
+    /** A tile's persistent stand (undefined: the tile holds no forest). */
+    const forestOf = (x: number, y: number): ForestStand | undefined =>
+        forestStands.get(`${x},${y}`);
+
+    /** Adds one tree to a tile's stand, creating the stand when absent. */
+    const forestPlant = (
+        x: number,
+        y: number,
+        fine: { x: number; y: number },
+        record: ForestTreeRecord,
+    ): ForestStand => {
+        const key = `${x},${y}`;
+        let stand = forestStands.get(key);
+        if (!stand) {
+            stand = { trees: new Map() };
+            forestStands.set(key, stand);
+        }
+        stand.trees.set(`${fine.x},${fine.y}`, record);
+        return stand;
+    };
+
     return {
         id: 'island-terrain',
         label: 'Island Terrain',
@@ -647,5 +868,7 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
             const tail = path[path.length - 1];
             return cellOn(canvas, tail.x, tail.y);
         },
+        forestOf: (x, y) => forestOf(x, y),
+        forestPlant: (x, y, fine, record) => forestPlant(x, y, fine, record),
     };
 };

@@ -235,11 +235,11 @@ const TableData = styled('td', {
 
 /**
  * Legend order — the island's surface ladder. Resource surfaces first-class
- * (the tiles appear as the deposits they carry — trees, stone, iron and the
- * unlimited sand/dirt), then the plain biome fallbacks that surface when a
- * tile's finite deposits are gathered away (or on sea columns). The SAME
- * ladder serves every zoom level — subtile surfaces come from the same
- * deposit/biome derivation.
+ * (the tiles appear as the deposits they carry — trees, stone, iron, and the
+ * voxel-derived unlimited ground supply grass/sand/dirt), then the plain
+ * biome fallbacks that surface when a tile's finite deposits are gathered
+ * away (or on sea columns). The SAME ladder serves every zoom level —
+ * subtile surfaces come from the same deposit/voxel derivation.
  */
 const SURFACE_ORDER: string[] = [
     'ocean',
@@ -249,6 +249,7 @@ const SURFACE_ORDER: string[] = [
     'iron',
     'sand',
     'dirt',
+    'grass',
     'beach',
     'meadow',
     'forest',

@@ -17,11 +17,19 @@
 //               any depth resolve through the terrain plugin's
 //               canvasFor/cellFor (sub-grids generate deterministically
 //               from their parent).
-//   resources — the tile's resource DEPOSITS (trees, stone, iron and the
-//               unlimited sand/dirt). At the island view these are the
-//               tile's own; deeper they are the PARENT's deposits
-//               distributed onto the subtiles (tree ×2 → two tree subtiles)
-//               — the zoom reveals where the deposits stand.
+//   resources — the tile's resource deposits: the voxel-derived INFINITE
+//               ground supply (grass/dirt/sand/stone — symbolic counts,
+//               mirrored onto every fine cell), the FINITE biological tree
+//               stand (its count mirrors the persistent fine-scale forest
+//               records), and the finite iron lodes. At the island view
+//               these are the tile's own; deeper they are the PARENT's
+//               deposits distributed onto the subtiles — the zoom reveals
+//               where they stand (trees at their persistent positions).
+//   forest    — the tree WOOD stats (plugins/forest): at the island view
+//               the tile's stand summary (trees + total standing wood);
+//               at the scale-0 view the tree card standing exactly on the
+//               inspected fine spot (wood pool, age, maturity) when one
+//               stands there.
 //   ground    — what lies on the terrain. At the island view the inventory
 //               plugin's cell stock; deeper, the parent's stock scatters
 //               across the parent's sub-grid (one seeded spot per unit) and
@@ -51,18 +59,20 @@
 //             (scaleView below scatters them with the same seeded streams).
 //   deeper   — each unit shows WHERE it stands (canvas objects at exact
 //             spots); the parent subtile lists them by name.
-// Tile-resource items (tree/stone/iron/sand/dirt) are skipped from every
-// DEEPER list and scatter: their gatherable stock IS their deposit, and the
-// deposit units stand as the subtile surfaces the terrain generator
-// distributed — drawing them again would double every tree. The island
-// view's category aggregation INCLUDES them (their gatherable stock is
-// still "on the ground" at the island view — Sand reads as a Material).
+// Tile-resource items (tree/stone/iron/sand/dirt/grass) are skipped from
+// every DEEPER list and scatter: their gatherable stock IS their deposit,
+// and the deposit units stand as the subtile surfaces the terrain
+// distributed (the trees at their persistent stand positions) — drawing
+// them again would double every tree. The island view's category
+// aggregation INCLUDES them (their gatherable stock is still "on the
+// ground" at the island view — Sand reads as a Material).
 
 import type { CoordinateEntry, TilePath } from '@godspace/core';
 import { randomKeyed, tilePathKey, tilePathParent, tilePathTail } from '@godspace/core';
 import type { Canvas, TileResource, TileResources, VoxelKind } from '../engine/types';
 import { TILE_RESOURCES, UNLIMITED_TILE_RESOURCES } from '../engine/types';
 import type { IslandHandle } from '../scenario/island';
+import type { ForestTreeInfo } from '../plugins/forest/forestPlugin';
 import { inventoryEntries } from '../plugins/inventory/inventory';
 import {
     inventoryCategories,
@@ -293,6 +303,47 @@ export const tileResources = (resources?: TileResources): TileResourceStack[] =>
         unlimited: (UNLIMITED_TILE_RESOURCES as readonly string[]).includes(resource),
     }));
 
+// ── Forest — the tree wood stats ─────────────────────────────────────────────
+
+/**
+ * The FOREST layer of an inspected tile — the tree wood stats the
+ * plugins/forest ecology carries (plugins/forest/forestPlugin.ts). Two
+ * shapes:
+ *   the stand summary (island view) — standing trees + total wood, no card;
+ *   the tree card (scale 0) — the tree standing exactly on the inspected
+ *     fine spot: wood pool, age, maturity — the "selectable tree" stats
+ *     (the tile-forest-tree test id marks the card).
+ */
+export type TileForest = {
+    /** Standing trees in view (the tile's stand, or the one carded tree). */
+    trees: number;
+    /** Total standing wood in view. */
+    wood: number;
+    /** The tree card — present only at the scale-0 view of a treed spot. */
+    tree?: ForestTreeInfo;
+};
+
+/** Reads the forest layer of an inspected tile (undefined: no forest view). */
+export const tileForest = (island: IslandHandle, path: TilePath): TileForest | undefined => {
+    const forest = island.forest;
+    const parent = path[0];
+    if (!forest || !parent) {
+        return undefined;
+    }
+    if (path.length === 1) {
+        // The island view: the tile's stand summary (trees + total wood)
+        const stand = forest.standOf(parent);
+        return stand ? { trees: stand.trees, wood: stand.wood } : undefined;
+    }
+    if (path.length === 2) {
+        // Scale 0: the tree standing exactly on the inspected fine spot
+        const tail = tilePathTail(path) as { x: number; y: number };
+        const tree = forest.treeAt(parent, tail);
+        return tree ? { trees: 1, wood: tree.wood, tree } : undefined;
+    }
+    return undefined;
+};
+
 // ── Structures — the construction sites' footprints ──────────────────────────
 
 /**
@@ -457,8 +508,16 @@ export type TileSummary = {
     passable: boolean;
     /** The full voxel stack, bottom → top. */
     voxels: VoxelKind[];
-    /** The tile's resource deposits (tree/stone/iron/sand/dirt). */
+    /** The tile's resource deposits (tree/stone/iron/sand/dirt/grass). */
     resources: TileResourceStack[];
+    /**
+     * The tree WOOD stats at the inspected view (plugins/forest): the
+     * stand summary (trees + total standing wood) at the island view, the
+     * inspected fine spot's tree card (wood pool, age, maturity) at scale
+     * 0. Undefined when the tile holds no forest (or the ecology is
+     * unmounted).
+     */
+    forest?: TileForest;
     /**
      * The ground stock AT THE INSPECTED GRANULARITY: category aggregates
      * ("Foods ×2") at the island view (a length-1 path — every wider view
@@ -505,6 +564,7 @@ export const tileSummary = (island: IslandHandle, path: TilePath): TileSummary |
         passable: cell.passable,
         voxels: cell.voxels,
         resources: tileResources(cell.resources),
+        forest: tileForest(island, path),
         ground: tileGround(island, path),
         occupants: tileOccupants(island, path),
         structures: tileStructures(island, path),

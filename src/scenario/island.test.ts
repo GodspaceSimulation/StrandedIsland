@@ -13,6 +13,10 @@ describe('createIslandWorld', () => {
             // inventory sizes)
             'entity',
             'inventory',
+            // The forest ecology mounts right behind the inventory — its
+            // tick advances the woods and its setup mounts the wood
+            // harvest provider into the inventory
+            'forest',
             'needs',
             'relationship',
             // The task ledger advances before the behavior tick; the
@@ -341,9 +345,9 @@ describe('createIslandWorld', () => {
         expect(frame.tiles[201].glyphs).toEqual([
             { id: 'actor-1', glyph: 'A', color: '#5cb85c', elevation: 0, kind: 'sentient', type: 'human', state: 'well' },
         ]);
-        expect(frame.tiles[201].title).toBe('beach · height 3 · stone / soil / sand · sand ×∞ · Ael · well');
-        // The tile appears as the resource it carries: the beach's unlimited
-        // sand deposit paints it with the sand palette color
+        expect(frame.tiles[201].title).toBe('beach · height 3 · stone / dirt / sand · stone ×∞ · sand ×∞ · dirt ×∞ · Ael · well');
+        // The tile appears as the resource its ground is: the beach's
+        // unlimited sand surface paints it with the sand palette color
         expect(frame.tiles[201].background).toBe('#d3bd85');
         // Kiki wheels at the center (0,0): tile 8×25+12 = 212 carries the
         // flying glyph with her altitude superscript — a creature of type
@@ -352,7 +356,7 @@ describe('createIslandWorld', () => {
             { id: 'bird-1', glyph: 'K', color: '#7ec8e3bf', elevation: 2, kind: 'creature', type: 'bird', state: 'flying-2' },
         ]);
         expect(frame.tiles[212].title).toBe(
-            'highland · height 7 · stone / stone / stone / stone / stone / soil / stone · stone ×1 · Kiki · flying-2 · z 2',
+            'highland · height 7 · stone / stone / stone / stone / stone / dirt / stone · stone ×∞ · dirt ×∞ · Kiki · flying-2 · z 2',
         );
         // The highland's stone deposit surfaces the tile with the stone
         // palette color
@@ -363,7 +367,7 @@ describe('createIslandWorld', () => {
         // GREEN on the canvas — the greenery of the standing woods.
         expect(frame.tiles[65].background).toBe('#4caf50');
         expect(frame.tiles[65].title).toBe(
-            'forest · height 5 · stone / stone / stone / soil / grass / forest · tree ×2',
+            'forest · height 5 · stone / stone / stone / dirt / grass / forest · tree ×383 · stone ×∞ · dirt ×∞ · grass ×∞',
         );
     });
 
@@ -458,10 +462,10 @@ describe('createIslandWorld', () => {
             ['actor-4', 'sentient', 'human', 'Dune', 'well', 5, -1, 0],
         ]);
         // Terrain census: cell counts per SURFACE key (the tiles appear as
-        // the resources they carry — dirt/sand/tree/stone/iron — with plain
-        // water left as biome), alphabetical
+        // the resources their ground is — the meadows gained their grass
+        // identity; the sea keeps its plain biomes), alphabetical
         expect(frame.tables[1].rows).toEqual([
-            ['dirt', 38],
+            ['grass', 38],
             ['ocean', 46],
             ['sand', 160],
             ['shallows', 97],
@@ -614,7 +618,11 @@ describe('createIslandWorld', () => {
         expect(handle.inventory.of('actor-1')).toEqual({ berry: 2, flint: 1 });
     });
 
-    it('every species plans through the ledger: a 3000-minute reference run stays stale-free', () => {
+    // THE LONG MARCHES — 3000 world minutes each, the heaviest runs in the
+    // suite. The explicit timeout keeps them deterministic under parallel
+    // worker load (a 5s default has flaked on loaded machines — the march
+    // itself is pure computation, the budget is only for slow hardware).
+    it('every species plans through the ledger: a 3000-minute reference run stays stale-free', async () => {
         // The long march: every living thing plans every minute (the
         // behavior plugin's whole-world sweep), the birds roost and sleep,
         // the boars run the full survival ladder, the sharks rest — and no
@@ -669,7 +677,7 @@ describe('createIslandWorld', () => {
             'human',
         ]);
         expect(handle.predators.predators().map((boar) => boar.id)).toEqual(['boar-1', 'boar-2']);
-    });
+    }, 30000);
 
     it('the autonomous build loop: the cast completes shelter, raft, house and boat in 3000 minutes', () => {
         // THE T4 MARCH — the construction governance (plugins/construction)
@@ -683,6 +691,12 @@ describe('createIslandWorld', () => {
         // so nobody starves building. Captured from the seed-7 reference
         // run; the whole march stays deterministic.
         const handle = createIslandWorld({ seed: 7 });
+        // THE FOREST IN THE MARCH — the ecology is mounted (the default):
+        // the woods are static at the real-year pace (no recruitment, no
+        // spread, no visible wood growth over 3000 minutes), so the march's
+        // completion is a construction-pace result — the crew chops pool
+        // wood off the standing trees, the 383-tree stands never thinning
+        // enough to move the wood fetches' targets
         const alive = (id: string) =>
             handle.world.actors.has(id) || handle.world.coordinates.entryOf(id) !== undefined;
         let stale = 0;
@@ -725,7 +739,7 @@ describe('createIslandWorld', () => {
             { id: 's-2', blueprintId: 'raft', state: 'built', parent: [{ x: -7, y: 5 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 30, delivered: { wood: 4, rope: 2 } },
             { id: 's-3', blueprintId: 'house', state: 'built', parent: [{ x: -1, y: 0 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 40, delivered: { wood: 4, thatch: 4, plank: 4 } },
             { id: 's-4', blueprintId: 'boat', state: 'built', parent: [{ x: 7, y: 5 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 60, delivered: { plank: 6, rope: 4, cloth: 2 } },
-            { id: 's-5', blueprintId: 'fort', state: 'staged', parent: [{ x: 1, y: 0 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 0, delivered: { stone: 2, wood: 1 } },
+            { id: 's-5', blueprintId: 'fort', state: 'staged', parent: [{ x: 1, y: 0 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 0, delivered: { stone: 8, wood: 1 } },
         ]);
         // The staged materials cap exactly at the requirements — the shared
         // registry refuses over-staging, so the delivered ledgers never hold
@@ -769,5 +783,5 @@ describe('createIslandWorld', () => {
             'The raft is launched into the water at (-7, 5).',
             'The boat is launched into the water at (7, 5).',
         ]);
-    });
+    }, 30000);
 });

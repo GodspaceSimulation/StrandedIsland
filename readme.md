@@ -31,6 +31,10 @@ src/
 │   │                 seeds the map with the tile deposits AND the biomes'
 │   │                 living stocks (berries, mushrooms, coconuts, vines,
 │   │                 shells, flints, the sea's fish and seaweed)
+│   ├── forest/       The forest ecology — trees grow wood biologically on
+│   │                 the persistent fine-scale stands (recruitment even
+│   │                 clearcut, spread over grass only), and the wood
+│   │                 harvest provider it mounts into the inventory
 │   ├── needs/        Hunger / thirst / energy decay per minute — and the
 │   │                 HEALTH reservoir: starvation wounds, a fed body heals,
 │   │                 a predator's bite wounds — for EVERY living entity, at
@@ -122,22 +126,112 @@ work the woods.
 
 ## The richer map
 
-The survey seeds every tile from its deposits AND its biome's living
+The richer map seeds every tile from its deposits AND its biome's living
 stocks (`plugins/inventory/inventoryPlugin.ts`): meadows berry, forests
 berry AND mushroom (plus the 35%-draw vine), beaches coconut and the
-50%-draw shell, highlands stone/iron and the 30%-draw flint, and the sea
-stocks fish plus seaweed (the ocean always, the shallows on a 50% draw).
-The new foods regrow on their own rhythms; the hunger ladder gathers
-berries, mushrooms, fish, coconuts and seaweed in priority order.
+50%-draw shell, highlands the vein noise's iron lodes and the 30%-draw
+flint, and the sea stocks fish plus seaweed (the ocean always, the
+shallows on a 50% draw). The new foods regrow on their own rhythms; the
+hunger ladder gathers berries, mushrooms, fish, coconuts and seaweed in
+priority order.
 
 The canvas draws the woods: a treed tile carries the 'tree' DECORATION
 (scenario/island.ts decorationOf → @godspace/canvas frames), and the
 unicode tab paints the 🌳 emoji on every empty treed tile (entities always
 win the tile) while the SVG tab draws the vector tree — trunk + canopy.
-DENSE GROVES: forest tiles whose moisture passes
-`DENSE_FOREST_MOISTURE_THRESHOLD` carry tree ×6 instead of the base ×2 —
-some tiles hold a lot of trees, and each tile's trees scatter onto its own
-subtiles when the god zooms in.
+DENSE WOODS: every forested tile seeds its interior at 90% tree coverage —
+zoom in and the woods fill the ground (see the Forest Ecology below).
+
+## The ground supply — infinite resources by voxel name
+
+Every DRY column supplies whatever it is actually built from, forever: a
+voxel kind whose name carries a resource token stands for that resource at
+the tile, at a symbolic count of 1 mirrored onto every fine cell — stone
+voxels → stone ×∞, dirt voxels → dirt ×∞, grass voxels → grass ×∞, sand
+voxels → sand ×∞ (`engine/types.ts UNLIMITED_TILE_RESOURCES`). The match is
+by voxel NAME, not by biome, and it reads the ACTUAL column — the dirt
+under a meadow and the stone bedrock under everything supply too. Taking
+the ground is gated only by the bag's capacity and the 'mine' ability
+(stone/iron, plugins/entity) — the pile itself never depletes, and the
+oceans stay bare (submerged columns have no habitat and no access). The
+grass cover carries its OWN resource identity now (it used to read only as
+the dirt under it); the `dirt` VOXEL exists (formerly named 'soil') so the
+ground layer under every surface supplies dirt by its own name. Iron stays
+a finite vein landmark.
+
+## Forest Ecology — the living woods (plugins/forest)
+
+The woods are a population, not a pile. The terrain plugin seeds every
+forested tile with a PERSISTENT FINE-SCALE STAND: 90% of the tile's fine
+cells (`FOREST_COVERAGE` — Math.round(0.9 × 425) = 383 trees on the default
+island) hold one tree each at mixed seeded ages, and the zoomed interior
+mirrors those exact positions — trees never reshuffle after a cut. The
+tile's `tree` deposit count mirrors the standing stand.
+
+**Wood grows on the tree.** Each tree carries a wood pool that grows with
+its age toward the mature cap (8 units): a sapling gives 1 wood, an old
+tree gives more. Cutting wood (the lumber behaviour's chop →
+inventory.harvest → the forest chop) takes ONE unit per chop; the tree
+stands while wood remains and regrows from its post-cut baseline — a
+partially harvested mature tree is never dead-ended. A tree chopped to 0
+is felled away: its record and the mirrors leave, and recruitment refills
+the spot. Living trees are never bagged (`takeFromCell('tree')` refuses).
+
+**Recruitment and spread** (the ecology's own staggered per-tile
+schedules, bounded per minute):
+
+- a forest VOXEL recruits one sapling into a free fine cell on its rhythm —
+  EVEN clearcut (the seed bank stands in for the felled mothers; the
+  documented assumption);
+- a forest tile holding a LIVING MATURE tree converts ONE adjacent meadow
+  tile (grass substrate) into woods every spread slot: the forest voxel
+  stacks on the grass, the biome re-skins, a sapling seeds the new stand;
+- trees NEVER spread onto sand, stone or water — they cannot grow there,
+  regardless of the soil underlayer.
+
+**Research-backed pacing** (representative fast pioneer, DEFAULT real
+time — one year = 525,600 world minutes of 1440-minute days):
+
+| phase | default | source |
+|---|---|---|
+| maturity (full wood pool) | 8 years | UNL Extension EC3076 (~6 yr tree maturation): https://extensionpubs.unl.edu/publication/ec3076 · MSU Extension (pulpwood rotations < 10 yr): https://extension.msstate.edu/publications/forest-growth-and-yield · FAO (fast tropical rotations 5–21 yr): https://www.fao.org/4/ac121e/ac121e04.htm |
+| recruitment (one new sapling per tile) | 2 years | UNL EC3076 (germination ~2 yr): https://extensionpubs.unl.edu/publication/ec3076 · UF/IFAS (seed crops begin 1–5 yr): https://ufdcimages.uflib.ufl.edu/IR/00/00/18/15/00001/FR02400.pdf · USU Extension (seedling establishment 1–3 yr): https://extension.usu.edu/forestry/publications/utah-forest-facts/040-tree-seedling-planting-guide |
+| spread (one meadow conversion per tile) | 3 years | UNL EC3076 (natural spread is limited): https://extensionpubs.unl.edu/publication/ec3076 |
+
+Wood growth accumulates in exact integer math with a fractional carry (the
+growth accumulator) — every read and fold is deterministic. A day is a
+day: the default biology does NOT compress years into days.
+
+**Configuration** (`IslandOptions.forest`, plugins/forest/forestPlugin.ts
+`ForestPacingOptions`): `growthRateMultiplier` divides the years (1000 → a
+stand matures in ~70 world hours); `maturityYears` / `recruitYears` /
+`spreadYears` / `woodCap` reshape the biology; `maturityMinutes` /
+`recruitMinutes` / `spreadMinutes` are DIRECT world-minute overrides that
+win over the year math (accelerated deterministic tests pin exact ticks
+with these). Invalid values (zero, negative, NaN) fall back to the
+documented defaults — never a zero denominator, never a NaN pool.
+
+**Fast-forwarding without millions of ticks**: `island.forest
+.fastForward(minutes)` runs ONLY the ecology across a span of world
+minutes — an event-driven replay that jumps the clock slot to slot and
+applies exactly what per-minute stepping would apply (same minutes, same
+order, same seeded streams; verified equivalent in the tests). Needs, tasks
+and every other plugin keep their own pace. Reading the woods is lazy:
+`forest.standOf(tile)` (trees + standing wood), `forest.treeAt(tile, fine)`
+(a tree's pool, age, maturity), `forest.poolOf/ageOf/matureOf` — no
+per-tree scans of the ~30,000 seeded trees ever run.
+
+**Remounting** (the plugin-swap edge): while the ecology is unmounted, the
+inventory's biological boundary SEALS the woods — a `harvest(tree, wood)`
+on terrain carrying a persistent stand is refused before any mutation (a
+living tree harvests only through its owner). The legacy whole-tree path
+serves only stand-less terrain (old fixtures whose trees are plain tile
+deposits with no records — cutting those draws the deposit down with
+nothing able to resurrect it). No drift is ever created, so the mount-time
+mirror reconciliation has nothing to heal; the wood pool cannot be farmed
+through remove/cut/remount cycles. The ecology's clock stays monotonic
+across a remount: the records carry absolute birth/baseline minutes, so a
+reset would age recruited trees backwards.
 
 ## Time, distance and scale
 
