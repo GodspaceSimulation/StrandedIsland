@@ -6,7 +6,8 @@
 // terrain, not a resource; FINITE STONE stands only on the localized rock
 // sites (the highland peaks + the generator's peak-fallback heap); trees
 // stand in the forests' persistent fine-scale records; berries AND
-// mushrooms in the meadows and woods, fish AND seaweed in the sea,
+// mushrooms in the meadows and woods, fish AND seaweed in the water (the
+// sea AND the impassable fresh basins — R4/R5, fished from the dry shore),
 // coconuts on beaches, iron lodes in the highlands, flints, vines, the
 // sea's fish and seaweed), grows the living stocks back over time, rains
 // fresh water onto the land in scattered pools, and exposes the gathering
@@ -73,26 +74,40 @@ export type InventoryPluginOptions = {
  * no longer a regrowing stock: the standing-tree count is the MIRROR of the
  * persistent fine-scale forest records, moved only by full fells and the
  * plugins/forest ecology's recruitment (the old toy 60-minute tree clock is
- * gone — trees grow wood biologically, plugins/forest). */
+ * gone — trees grow wood biologically, plugins/forest).
+ *
+ * ABUNDANCE — these are the island's harvestible foods and materials, and
+ * the cast forages them constantly (the hunger ladder, the foraging birds,
+ * the build chains). The old caps (berry 3 / mushroom 2 / coconut 2 / fish 1
+ * / seaweed 1 / vine 1 / bush 2) left the map picked bare within a day —
+ * the caps are raised so a harvested cell refills toward a stock that READS
+ * abundant, while every rhythm, eligibility rule and finite resource stays
+ * exactly as tuned before. */
 const REGROW_CAPS: Record<string, number> = {
-    berry: 3,
-    fish: 1,
-    coconut: 2,
+    // Berries ripen in clusters — a meadow berry patch refills to a handful
+    berry: 5,
+    // The water's two stocks: a cell holds a small shoal, not a single fish,
+    // and seaweed mats the shallows. R5 — the fish cap is raised so the
+    // lakes and the sea read ABUNDANTLY stocked (the shore fishery the
+    // hunger ladder now works — plugins/behavior); the shoal refills on the
+    // fish rhythm below.
+    fish: 3,
+    seaweed: 2,
+    // Nut-bearing palms carry a small crown
+    coconut: 3,
     water: 2,
-    // The richer map's foods: mushrooms sprout back in the woods,
-    // seaweed washes back in every other tide
-    mushroom: 2,
-    seaweed: 1,
+    // Mushrooms fruit in rings on the woods' floor
+    mushroom: 4,
     // The construction materials replenish (the build projects consume
     // dozens of vines and fronds over a campaign — finite stocks would
     // starve the later blueprints): a vine re-hangs on its own rhythm,
     // a frond sheds beneath the standing trees (see the frond shed below)
-    vine: 1,
+    vine: 2,
     frond: 1,
     // R2 — the berry bush regrows the berries it bears (the stand itself is a
     // permanent meadow/forest feature; only its berry stock draws down and
-    // refills, on the bush rhythm below)
-    bush: 2,
+    // refills, on the bush rhythm below) — a laden bush carries three
+    bush: 3,
     // shell / iron / flint / STONE are finite — no regrowth (stone draws
     // down with the localized rock-site stock; the 🪨 icon drops when it
     // empties — drawDeposit deletes the entry at 0)
@@ -106,7 +121,7 @@ const REGROW_CAPS: Record<string, number> = {
  * `minute % every === offset`. (The values pin the rhythm to WORLD MINUTES,
  * so the view scale never moves it.) The vine rhythm fires late and
  * staggered so the early-game stock pins and the pre-construction runs are
- * untouched (a vine cell sits at its cap of 1 until harvested).
+ * untouched (a vine cell sits at its cap until harvested).
  */
 const REGROW_RHYTHM: Record<string, { every: number; offset: number }> = {
     berry: { every: 30, offset: 20 },
@@ -115,10 +130,10 @@ const REGROW_RHYTHM: Record<string, { every: number; offset: number }> = {
     mushroom: { every: 40, offset: 15 },
     seaweed: { every: 50, offset: 25 },
     vine: { every: 80, offset: 30 },
-    // R2 — the berry bush is NOT listed here: its stock would vanish from
-    // this sweep once plucked to zero (the depletion-vanishing the frond
-    // shed documents), so a DEDICATED pass (the BUSH_RHYTHM over the
-    // bushCells registry, below) refills it instead
+    // R2 — the berry bush is NOT listed here: it is a permanent PLANT, not
+    // a loose stock — a DEDICATED pass (the BUSH_RHYTHM over the bushCells
+    // registry, below) refills the stand off the plant registry instead of
+    // the seeded-stock registry the generic sweep uses
     // The frond shed runs on its own rhythm (FROND_RHYTHM below) — it is
     // keyed off the TREE stock, not the frond key, so it is not listed here
 };
@@ -128,10 +143,10 @@ const REGROW_RHYTHM: Record<string, { every: number; offset: number }> = {
  * rhythm (every 60 world minutes at offset 45): the thatch/cloth chains'
  * raw stock. Keyed off the cell's TREE stock (a treed cell sheds; a
  * harvested-bare one regrows its shed as long as trees stand), NOT the
- * frond key — the regrowth sweep iterates stock keys, and a frond taken to
- * zero would otherwise delete itself out of the sweep forever. The offset
- * pins the FIRST shed at minute 45, past every pre-construction stock pin
- * (the behavior and lumber plugin runs end at minutes 35/40).
+ * frond key — the shed's eligibility is "trees stand here", which the
+ * seeded-stock registry cannot express, so it keeps its dedicated pass.
+ * The offset pins the FIRST shed at minute 45, past every pre-construction
+ * stock pin (the behavior and lumber plugin runs end at minutes 35/40).
  */
 const FROND_RHYTHM = { every: 60, offset: 45 };
 const FROND_SELLER = 'tree';
@@ -152,9 +167,9 @@ const FRESH_WATER_RHYTHM = { every: 30, offset: 15 };
  * stock on this staggered cadence (keyed off the fine clock, like the other
  * rhythms). The dedicated tick pass (the BUSH_RHYTHM sweep below) runs it
  * over the bushCells registry — the standing plants — so a fully-plucked
- * bush (its `bush` stock drawn to zero and out of the generic regrowth
- * sweep) still regrows. `every` 40 with offset 25 clears the
- * pre-construction stock pins (which end at minute 35) and staggers the
+ * bush (its `bush` stock drawn to zero) still regrows: the plant stands in
+ * the registry whatever its berry count. `every` 40 with offset 25 clears
+ * the pre-construction stock pins (which end at minute 35) and staggers the
  * refills away from the berry (offset 20) and vine (offset 30) pulses.
  */
 const BUSH_RHYTHM = { every: 40, offset: 25 };
@@ -167,15 +182,20 @@ const BUSH_RHYTHM = { every: 40, offset: 25 };
  */
 const POOL_CHANCE_PER_CELL = 0.25;
 
-/** What each biome stocks when the island is surveyed — THE RICHER MAP.
- * The tile deposits (trees, stone, iron, sand, dirt) come from the cells
- * themselves — see the survey below; these are the biome's living stocks:
- * meadows berry, forests berry AND mushroom (the woods feed two ways),
- * beaches coconut. */
+/** What each biome stocks when the island is surveyed — THE RICHER MAP,
+ * ABUNDANCE-TUNED. The tile deposits (trees, stone, iron, sand, dirt) come
+ * from the cells themselves — see the survey below; these are the biome's
+ * living stocks: meadows berry, forests berry AND mushroom (the woods feed
+ * two ways), beaches coconut. The starting counts are raised so the island
+ * reads abundant from the first minute (the old berry 2 / berry 1 +
+ * mushroom 1 / coconut 1 left the foods nearly impossible to FIND — the
+ * cast spent its days foraging); every regrowth cap above bounds how far
+ * each stock refills, and the finite draws (shells, flints, stone, iron)
+ * stay exactly as sparse as they were. */
 const BIOME_STOCKS: Record<string, Inventory> = {
-    meadow: { berry: 2 },
-    forest: { berry: 1, mushroom: 1 },
-    beach: { coconut: 1 },
+    meadow: { berry: 3 },
+    forest: { berry: 2, mushroom: 2 },
+    beach: { coconut: 2 },
     // Water cells hold fish AND seaweed — the sea's two stocks (salt
     // water is never a drinking pool)
 };
@@ -283,6 +303,17 @@ export type InventoryPlugin = WorldPlugin<World> & {
     harvest(agent: InventoryAgent, depositId: string, yieldId: string): boolean;
     /** Gathers one available item from the agent's cell. Returns the item id. */
     gather(agent: InventoryAgent): string | null;
+    /**
+     * R5 — THE FISHING SHORE: takes one FISH from the water cell at (x, y)
+     * into the agent's bag WITHOUT entering the water. Legal only when the
+     * agent stands on DRY ground and the water cell is CARDINAL-adjacent to
+     * the agent's tile (the castaway works the water at its feet — never a
+     * diagonal, never at distance, never from the water itself; a body
+     * afloat gathers the fish underfoot through `gather` instead). Capacity
+     * is gated before anything moves; the behavior plugin's 'fish' effect
+     * re-validates at completion (the shoal may have been drawn down).
+     */
+    fish(agent: InventoryAgent, x: number, y: number): boolean;
     /** Removes one `itemId` from the agent's bag (eating / drinking). */
     consume(agent: InventoryAgent, itemId: string): boolean;
     /** Agent-to-agent exchange: `giver` hands `offer`, receives `request`. */
@@ -320,13 +351,44 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
 
     // R2 — the BERRY-BUSH CELLS (key "x,y"): every meadow/forest cell the
     // survey seeded a standing berry bush on. The bush is a PERMANENT stand —
-    // plucking its berries draws the `bush` stock to zero (and a zeroed stock
-    // key would fall out of the generic regrowth sweep forever — the same
-    // depletion-vanishing the frond shed documents), so the stand persists in
-    // this registry and a dedicated tick pass (the BUSH_RHYTHM, below) tops
-    // each bush's berry stock back up to the cap. Cleared + refilled by each
-    // survey (resurvey rebuilds it from the regenerated canvas).
+    // plucking its berries draws the `bush` stock to zero, and the plant is
+    // a PLANT, not a loose stock, so the stand persists in this registry
+    // whatever its berry count and a dedicated tick pass (the BUSH_RHYTHM,
+    // below) tops each bush's berry stock back up to the cap. Cleared +
+    // refilled by each survey (resurvey rebuilds it from the regenerated
+    // canvas).
     const bushCells = new Set<string>();
+
+    // RENEWABLE ELIGIBILITY REGISTRY — itemId → every cell the survey seeded
+    // that renewable item on (the generic-sweep items: berry, fish, coconut,
+    // mushroom, seaweed, vine). The regrowth sweep iterates THIS, NOT the
+    // stock keys: inventoryRemove DELETES a stock key at zero, so a
+    // stock-keyed sweep loses every fully-harvested cell forever — a picked-
+    // bare berry cell, a fished-out sea cell and a stripped vine never
+    // regrew (the exhausted-source bug; the frond shed and the bush pass
+    // were the first two sightings of it and carry their own registries).
+    // The registry is the ORIGINAL-SOURCE eligibility: only cells the survey
+    // seeded the item on ever regrow it, so mushrooms never sprout on a
+    // beach, fish never strand on land and vines never hang on bare rock —
+    // the deterministic placement map is preserved cell for cell. Rebuilt by
+    // each survey (a resurvey regenerates the canvas); bush / frond / water
+    // keep their dedicated registries (specialized ecologies).
+    const regrowCells = new Map<string, Set<string>>();
+
+    /** Register a seeded renewable cell — only for items the generic sweep
+     * owns (a REGROW_RHYTHM entry); bush/frond/water route through their
+     * dedicated passes and are deliberately skipped here. */
+    const markRegrowable = (itemId: string, x: number, y: number): void => {
+        if (!(itemId in REGROW_RHYTHM)) {
+            return;
+        }
+        const cells = regrowCells.get(itemId);
+        if (cells) {
+            cells.add(`${x},${y}`);
+        } else {
+            regrowCells.set(itemId, new Set([`${x},${y}`]));
+        }
+    };
 
     // The plugin's fine clock — one world-minute per tick hook call (the
     // world sub-steps its steps). The regrowth rhythm reads THIS, not the
@@ -401,18 +463,12 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
         return fresh;
     };
 
-    // Internal: grows a stock toward its cap on the item's regrowth rhythm.
+    // Internal: grows a stock toward its cap by one unit. The CALLER gates
+    // the rhythm (the tick's regrowth sweep fires this only on the item's
+    // minute and only on registry-eligible cells — see regrowCells).
     // Tile-deposit resources (trees) grow their tile's deposit back with the
     // stock — the forest regrows where the trees were felled.
-    const regrow = (stock: Inventory, itemId: string, tick: number, x: number, y: number) => {
-        const rhythm = REGROW_RHYTHM[itemId];
-        if (!rhythm) {
-            return;
-        }
-        // Staggered rhythms so resources don't all pulse on the same tick
-        if (tick % rhythm.every !== rhythm.offset) {
-            return;
-        }
+    const regrow = (stock: Inventory, itemId: string, x: number, y: number) => {
         const current = stock[itemId] ?? 0;
         const cap = REGROW_CAPS[itemId] ?? 0;
         if (current < cap) {
@@ -484,6 +540,9 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
         // R2 — the berry-bush registry is rebuilt from the (re)generated
         // canvas: a cleared set so a resurvey never leaves stale stands
         bushCells.clear();
+        // The renewable eligibility registry is rebuilt the same way — the
+        // regrowth sweep's source of truth for WHERE each item may regrow
+        regrowCells.clear();
         const halfX = (canvas.width - 1) / 2;
         const halfY = (canvas.height - 1) / 2;
         const basinAt = (x: number, y: number): boolean => {
@@ -508,6 +567,9 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             if (biomeStock) {
                 Object.entries(biomeStock).forEach(([item, count]) => {
                     stock[item] = (stock[item] ?? 0) + count;
+                    // The seeded cell is where the item may regrow (the
+                    // eligibility registry — see regrowCells)
+                    markRegrowable(item, cell.x, cell.y);
                 });
             }
             // R2 — the BERRY BUSH: a standing berry plant in the meadow and
@@ -537,17 +599,25 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
                 freshWaterCells.add(`${cell.x},${cell.y}`);
             }
             // The woods hang vines — a regrowing material (the trade goods
-            // a neighbour might hold; the construction chains' rope stock)
+            // a neighbour might hold; the construction chains' rope stock).
+            // Only the DRAWN cells join the eligibility registry — a wood
+            // that missed the draw never grows a vine (the deterministic
+            // vine map is preserved cell for cell)
             if (cell.biome === 'forest' && context.random() < VINE_CHANCE_PER_FOREST_CELL) {
                 stock.vine = (stock.vine ?? 0) + 1;
+                markRegrowable('vine', cell.x, cell.y);
             }
             // The shallows keep washed-ashore seaweed (regrowing); the deep
-            // sea grows its own — every open-water cell stocks one
+            // sea grows its own — every open-water cell stocks one. Each
+            // seeded cell joins the eligibility registry (the shallows'
+            // missed draws stay bare — the deterministic seaweed map)
             if (cell.biome === 'shallows' && context.random() < SHALLOW_SEAWEED_CHANCE) {
                 stock.seaweed = (stock.seaweed ?? 0) + 1;
+                markRegrowable('seaweed', cell.x, cell.y);
             }
             if (cell.biome === 'ocean') {
                 stock.seaweed = (stock.seaweed ?? 0) + 1;
+                markRegrowable('seaweed', cell.x, cell.y);
             }
             // Beaches occasionally hide a shell; highlands occasionally
             // hide flint — finite resources, no regrowth
@@ -557,9 +627,15 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             if (cell.biome === 'highland' && context.random() < 0.3) {
                 stock.flint = (stock.flint ?? 0) + 1;
             }
-            // The sea stocks fish
+            // The water stocks fish — every water cell (the sea AND the
+            // impassable fresh basins, R4/R5) joins the eligibility registry
+            // (fish regrow in the water, never on the dry land) and seeds a
+            // two-unit shoal so the lakes and shallows read abundant (the
+            // cap above bounds the refill; the shore fishery draws them from
+            // dry ground — the fish primitive below)
             if (!cell.passable) {
-                stock.fish = (stock.fish ?? 0) + 1;
+                stock.fish = (stock.fish ?? 0) + 2;
+                markRegrowable('fish', cell.x, cell.y);
             }
         });
     };
@@ -744,6 +820,41 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             return null;
         },
 
+        fish: (agent, x, y) => {
+            const active = world;
+            if (!active) {
+                return false;
+            }
+            // DRY GROUND underfoot — the shore rule: a body fishes from the
+            // land (a body afloat gathers the fish underfoot via `gather`)
+            const ground = active.cellAt(agent.position.x, agent.position.y);
+            if (!ground || !ground.passable) {
+                return false;
+            }
+            // CARDINAL ADJACENCY — the reach at the body's feet (the tile
+            // grid is the fishing granularity, like every other stock read)
+            if (Math.abs(x - agent.position.x) + Math.abs(y - agent.position.y) !== 1) {
+                return false;
+            }
+            // The water — fish stand only in the impassable cells (the
+            // survey seeds them there and only there)
+            const water = active.cellAt(x, y);
+            if (!water || water.passable) {
+                return false;
+            }
+            // THE CAPACITY GATE — checked before the shoal gives the fish up
+            if (!canHold(agent.id, { fish: 1 })) {
+                return false;
+            }
+            if (!inventoryRemove(stockOf(x, y), 'fish', 1)) {
+                return false;
+            }
+            inventoryAdd(bagOf(agent.id), 'fish', 1);
+            // No log line — fishing is a solo beat, not a story between
+            // entities (the log is a story teller)
+            return true;
+        },
+
         consume: (actor, itemId) => {
             if (!inventoryRemove(bagOf(actor.id), itemId, 1)) {
                 return false;
@@ -851,6 +962,11 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             stocks.clear();
             // R2 — the fresh-water cell set goes with the environment
             freshWaterCells.clear();
+            // The standing berry bushes and the renewable eligibility
+            // registries go too — a stale registry would let a dedicated
+            // pass refill stocks on cells of a disposed canvas
+            bushCells.clear();
+            regrowCells.clear();
             // The fine clock resets with the environment; the mounted forest
             // provider and the terrain handle go with it (both re-resolve on
             // the next setup)
@@ -866,12 +982,29 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             // One tick hook call = one world-minute — advance the fine clock
             minute = minute + 1;
 
-            // Regrowth sweep over all stocked cells (deposits grow back
-            // with their stocks — see regrow/growDeposit)
-            stocks.forEach((stock, key) => {
-                const [x, y] = key.split(',').map(Number);
-                arrayEach(Object.keys(stock), ({ value: itemId }) => {
-                    regrow(stock, itemId, minute, x, y);
+            // Regrowth sweep — per renewable item, on its staggered rhythm,
+            // every cell the survey seeded that item on regrows one unit
+            // toward its cap (deposits grow back with their stocks — see
+            // regrow/growDeposit). Registry-keyed, NOT stock-keyed (see
+            // regrowCells): inventoryRemove deletes a zeroed stock key, so
+            // the old stock-keyed sweep never saw a fully-harvested source
+            // again — picked-bare berry cells, fished-out sea cells and
+            // stripped vines stayed barren forever. The registry keeps the
+            // deterministic placement: an item never regrows on a cell the
+            // survey did not seed it on (no mushrooms on the beach, no fish
+            // on land, no vines on bare rock).
+            Object.entries(REGROW_RHYTHM).forEach(([itemId, rhythm]) => {
+                // Staggered rhythms so resources don't all pulse on the same tick
+                if (minute % rhythm.every !== rhythm.offset) {
+                    return;
+                }
+                const cells = regrowCells.get(itemId);
+                if (!cells) {
+                    return;
+                }
+                cells.forEach((key) => {
+                    const [x, y] = key.split(',').map(Number);
+                    regrow(stockOf(x, y), itemId, x, y);
                 });
             });
 
@@ -936,10 +1069,10 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             // R2 — THE BERRY-BUSH REPLENISHMENT. Every standing berry bush
             // (the surveyed meadow/forest plants, tracked in bushCells) tops
             // its berry stock back up to the cap on the BUSH_RHYTHM. Run over
-            // the registry — NOT the generic regrowth sweep — so a fully
-            // plucked bush (its `bush` stock down to zero, out of the sweep's
-            // keyed iteration) still regrows: the stand persists in the
-            // registry even when its berries are gathered away.
+            // the PLANT registry — not the seeded-stock registry — so a
+            // fully-plucked bush (its `bush` stock down to zero) still
+            // regrows: the stand persists in the registry even when its
+            // berries are gathered away.
             if (minute % BUSH_RHYTHM.every === BUSH_RHYTHM.offset) {
                 bushCells.forEach((key) => {
                     const [x, y] = key.split(',').map(Number);

@@ -225,10 +225,10 @@ describe('App', () => {
     it('the female profile reads in the inspector and draws the female emoji', () => {
         render(<App seed={7} />);
         // Cove is the cast's woman: ♀ in the Entity Inspector, 🧍‍♀️ on the
-        // unicode canvas at (1,5) — tile (5+8)×25+(1+12) = 338
+        // unicode canvas at (−2,5) — tile (5+8)×25+(−2+12) = 335
         fireEvent.click(screen.getByTestId('actor-chip-Cove'));
         expect(screen.getByTestId('actor-profile').textContent).toBe('♀ female');
-        expect(screen.getByTestId('world-grid-unicode').children[338].textContent).toBe('🧍‍♀️');
+        expect(screen.getByTestId('world-grid-unicode').children[335].textContent).toBe('🧍‍♀️');
     });
 
     it('the bonds list holds exactly one row per fellow castaway — never self, never foreign pairs', () => {
@@ -310,8 +310,9 @@ describe('App', () => {
         // Before any click the Tile Inspector waits for a pick
         expect(screen.getByTestId('tile-empty').textContent).toBe('Click a tile to inspect it.');
         // Tile (−5,−7) — a quiet beach: no glyph. It surfaces as SAND (the
-        // unlimited deposit decides the tile's look) with a coconut on the
-        // ground. Clicked on the default unicode board.
+        // unlimited deposit decides the tile's look) with TWO coconuts on
+        // the ground (the abundance tuning). Clicked on the default unicode
+        // board.
         fireEvent.click(screen.getByTestId('unicode-tile--5--7'));
         expect(screen.getByTestId('tile-position').textContent).toBe('(-5, -7) · sand');
         // The ground supply: the column is gravel/dirt/sand (R4's bedrock) —
@@ -327,7 +328,7 @@ describe('App', () => {
         // coconut is a food, the ground supply is two materials (sand, dirt)
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
-        ).toEqual(['Foods ×1', 'Materials ×2']);
+        ).toEqual(['Foods ×2', 'Materials ×2']);
         // Nobody lives here
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
@@ -351,7 +352,7 @@ describe('App', () => {
         // The fish generalizes to its category at scale 0
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
-        ).toEqual(['Foods ×1']);
+        ).toEqual(['Foods ×2']);
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['No one here.']);
@@ -359,13 +360,13 @@ describe('App', () => {
 
     it('clicking a castaway tile opens both the tile inspector and the actor inspector', () => {
         render(<App seed={7} />);
-        // Tile (−11,0) — Ael's shore landing spot, unlimited sand + a
-        // coconut on the ground
+        // Tile (−11,0) — Ael's shore landing spot, unlimited sand + TWO
+        // coconuts on the ground (the abundance tuning)
         fireEvent.click(screen.getByTestId('unicode-tile--11-0'));
         // Tile layer: terrain + stock + Ael as the resident. Scale-0
-        // granularity: the coconut generalizes to its category
+        // granularity: the coconuts generalize to their category
         expect(screen.getByTestId('tile-position').textContent).toBe('(-11, 0) · sand');
-        expect(screen.getByTestId('tile-ground').textContent).toContain('Foods ×1');
+        expect(screen.getByTestId('tile-ground').textContent).toContain('Foods ×2');
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['Ael — human · well']);
@@ -376,10 +377,12 @@ describe('App', () => {
 
     it('clicking a bird tile shows the bird as a resident but no actor card', () => {
         render(<App seed={7} />);
-        // Tile (0,0) — the canvas middle: a stone highland under Kiki the
-        // flying gull (z 2)
+        // Tile (0,0) — the canvas middle: a highland under Kiki the flying
+        // gull (z 2). R6 — the tile READS dirt: the dominant visible type is
+        // the majority of the cell's children (the stone cap sits among
+        // mostly-dirt siblings); the rock stock still rides the lines below
         fireEvent.click(screen.getByTestId('unicode-tile-0-0'));
-        expect(screen.getByTestId('tile-position').textContent).toBe('(0, 0) · stone');
+        expect(screen.getByTestId('tile-position').textContent).toBe('(0, 0) · dirt');
         // The highland carries the finite rock stock (3 units — R4: the
         // stone the old endless supply buried under the highland is now the
         // mined resource) + the unlimited dirt under it
@@ -406,9 +409,10 @@ describe('App', () => {
 
     it('the tile inspector follows every subsequent click', () => {
         render(<App seed={7} />);
-        // First inspect Dune's forest landing spot…
-        fireEvent.click(screen.getByTestId('unicode-tile-5--1'));
-        expect(screen.getByTestId('tile-position').textContent).toBe('(5, -1) · tree');
+        // First inspect Dune's landing spot (the rim-ranked pick moved with
+        // the R4 basins — (−5,−1) now)…
+        fireEvent.click(screen.getByTestId('unicode-tile--5--1'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-5, -1) · grass');
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['Dune — human · well']);
@@ -422,7 +426,7 @@ describe('App', () => {
         // The fish generalizes to its category at scale 0
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
-        ).toEqual(['Foods ×1']);
+        ).toEqual(['Foods ×2']);
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['No one here.']);
@@ -611,9 +615,9 @@ describe('App', () => {
         expect(treed.textContent).toBe('🌳');
         expect(treed.querySelector('[data-testid="tree-icon-unicode"]')).not.toBeNull();
         expect(treed.title).toContain('tree ×383');
-        // A treed tile with a castaway standing on it: Dune came ashore on
-        // the treed tile (5,−1) — the entity wins the tile, no tree icon
-        expect(screen.getByTestId('unicode-tile-5--1').textContent).toBe('🧍‍♂️');
+        // A castaway standing on his landing tile: Dune came ashore on
+        // (−5,−1) — the entity wins the tile, no tree icon
+        expect(screen.getByTestId('unicode-tile--5--1').textContent).toBe('🧍‍♂️');
         // A bare meadow tile draws nothing — terrain is color-only (the
         // no-flood rule the decorations never break; (0,−3) has no woods
         // beside it, so no ingress fringe and no tree)
@@ -628,8 +632,8 @@ describe('App', () => {
         expect(treedTile.querySelector('text')).toBeNull();
         expect(treedTile.querySelector('[data-testid="tree-icon-svg-canopy"]')).not.toBeNull();
         expect(treedTile.querySelector('[data-testid="tree-icon-svg-trunk"]')).not.toBeNull();
-        // Dune's treed tile keeps its entity text — the entity always wins
-        expect(tiles[192].querySelector('text')?.textContent).toBe('🧍‍♂️');
+        // Dune's landing tile keeps its entity text — the entity always wins
+        expect(tiles[182].querySelector('text')?.textContent).toBe('🧍‍♂️');
         // A bare sea tile draws neither icon nor text
         expect(tiles[0].querySelector('[data-testid="tree-icon-svg-canopy"]')).toBeNull();
         expect(tiles[0].querySelector('text')).toBeNull();
@@ -671,7 +675,7 @@ describe('App', () => {
         // An ENTITY glyph stands at full strength — its Marker carries no
         // opacity rule at all (the fade belongs to the decorations only)
         const entity = screen
-            .getByTestId('unicode-tile-5--1')
+            .getByTestId('unicode-tile--5--1')
             .querySelector('span') as HTMLElement;
         expect(entity.textContent).toBe('🧍‍♂️');
         expect(ruleFor(entity.className)).not.toContain('opacity');
@@ -806,10 +810,11 @@ describe('App', () => {
         expect(positions.textContent).toContain('bird-1');
         expect(positions.textContent).toContain('Ael');
         expect(positions.textContent).toContain('-11');
-        // Terrain census + canvas overview — the census counts SURFACE keys
-        // (tiles appear as the resources they carry: dirt/sand/wood/stone/iron)
+        // Terrain census + canvas overview — the census counts DOMINANT
+        // VISIBLE types (R6: dirt/grass/lake/ocean/pond/sand/shallows/tree —
+        // the rock sites and the lode read as the dirt around them)
         expect(screen.getByTestId('data-table-terrain').textContent).toContain('sand');
-        expect(screen.getByTestId('data-table-terrain').textContent).toContain('stone');
+        expect(screen.getByTestId('data-table-terrain').textContent).toContain('lake');
         expect(screen.getByTestId('data-table-canvas').textContent).toContain('425');
 
         // ── Back to Unicode — the default view ────────────────────────────
@@ -1020,7 +1025,7 @@ describe('App', () => {
         expect(screen.getByTestId('tile-resources').textContent).toBe('sand ×∞ · dirt ×∞');
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
-        ).toEqual(['Foods ×1', 'Materials ×3']);
+        ).toEqual(['Foods ×2', 'Materials ×3']);
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['Ael — human · well']);
@@ -1078,7 +1083,7 @@ describe('App', () => {
         expect(screen.getByTestId('tile-resources').textContent).toBe('sand ×∞ · dirt ×∞');
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
-        ).toEqual(['Foods ×1', 'Materials ×2']);
+        ).toEqual(['Foods ×2', 'Materials ×2']);
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['No one here.']);
@@ -1117,7 +1122,7 @@ describe('App', () => {
         // the hover never opens the entity card — no actor selection for the
         // bird (or any castaway), whatever renderer is showing
         fireEvent.mouseOver(screen.getByTestId('svg-tile-0-0'));
-        expect(screen.getByTestId('tile-position').textContent).toBe('(0, 0) · stone');
+        expect(screen.getByTestId('tile-position').textContent).toBe('(0, 0) · dirt');
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['Kiki — bird · flying-2 · z 2']);
@@ -1219,7 +1224,7 @@ describe('App', () => {
         // (0,0) tile zoomed in — hovering her fine spot lists her as the
         // resident without opening the entity card
         fireEvent.mouseOver(screen.getByTestId('unicode-tile-0-0'));
-        expect(screen.getByTestId('tile-position').textContent).toBe('(0, 0) · stone');
+        expect(screen.getByTestId('tile-position').textContent).toBe('(0, 0) · dirt');
         fireEvent.click(screen.getByTestId('zoom-toggle'));
         expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 0');
         // Her fine spot inside the (0,0) tile (the interior view's bird

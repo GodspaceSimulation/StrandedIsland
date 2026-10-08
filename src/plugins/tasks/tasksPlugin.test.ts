@@ -42,7 +42,7 @@ const buildStack = () => {
 describe('tasksPlugin — no stale tasks for departed bodies', () => {
     it('a despawned actor\u2019s queued tasks are cancelled on the despawn event', () => {
         const { world, tasks } = buildStack();
-        spawn(world, 'a', 'Ael', 6, 2);
+        spawn(world, 'a', 'Ael', 8, 2); // dry beach — (6,2) is an impassable pond now
         world.step(); // the idle wander queues
         expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 1 });
         world.despawn('a');
@@ -72,7 +72,7 @@ describe('tasksPlugin — no stale tasks for departed bodies', () => {
 
     it('the cancel passthrough wipes a queue directly (the god-side hook)', () => {
         const { world, tasks } = buildStack();
-        spawn(world, 'a', 'Ael', 6, 2);
+        spawn(world, 'a', 'Ael', 8, 2); // dry beach — (6,2) is an impassable pond now
         world.step();
         expect(tasks.taskOf('a')).toBeDefined();
         expect(tasks.cancel('a').map((task) => task.kind)).toEqual(['move']);

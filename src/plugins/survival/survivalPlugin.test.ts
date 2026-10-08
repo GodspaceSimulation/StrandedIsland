@@ -84,10 +84,10 @@ describe('survivalPlugin', () => {
 
     it('a threatened actor flees one fine step away from the beast', () => {
         const { world, needs, tasks } = buildStack();
-        spawn(world, 'a', 'Ael', 6, 2);
+        spawn(world, 'a', 'Ael', 8, 2); // dry beach — (6,2) is an impassable pond now
         // The boar closes in from the east — adjacent tile, within the
         // threat range
-        placeThreat(world, 'boar-x', 'Tusk', 7, 2);
+        placeThreat(world, 'boar-x', 'Tusk', 9, 2);
         world.step();
         // The flee outranks everything: one fine step WEST, away from the
         // beast (a 'move' task — the behavior plugin's move effect applies
@@ -106,7 +106,7 @@ describe('survivalPlugin', () => {
         world.step();
         // The step completed (interior — the coarse position holds) and
         // the boar is still adjacent: the ladder re-plans the flee
-        expect(world.subOf('a')).toEqual({ x: 10, y: -3 });
+        expect(world.subOf('a')).toEqual({ x: -5, y: 7 });
         expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'flees', payload: { dx: -1, dy: 0, flee: true }, remaining: 1 });
         // The fleeing is silent — movement is simulation plumbing
         expect(world.events.log().map((event) => event.kind)).toEqual(['spawn']);
@@ -166,9 +166,9 @@ describe('survivalPlugin', () => {
 
     it('a beast sharing the actor\u2019s tile means blind flight (any valid step)', () => {
         const { world, tasks } = buildStack();
-        spawn(world, 'a', 'Ael', 6, 2);
+        spawn(world, 'a', 'Ael', 8, 2); // dry beach — (6,2) is an impassable pond now
         // The boar stands ON Ael's tile — no away direction exists
-        placeThreat(world, 'boar-x', 'Tusk', 6, 2);
+        placeThreat(world, 'boar-x', 'Tusk', 8, 2);
         world.step();
         // Blind flight: one valid fine step drawn from the plugin's own
         // stream (the seeded pick ran north)
@@ -187,7 +187,7 @@ describe('survivalPlugin', () => {
 
     it('removing the survival plugin strands the threat: the wider ladder takes over', () => {
         const { world, inventory, needs, tasks } = buildStack();
-        spawn(world, 'a', 'Ael', 6, 2);
+        spawn(world, 'a', 'Ael', 8, 2); // dry beach — (6,2) is an impassable pond now
         placeThreat(world, 'boar-x', 'Tusk', 7, 2);
         world.step();
         expect(tasks.taskOf('a')?.behaviour).toBe('survival');

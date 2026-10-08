@@ -267,6 +267,10 @@ const SURFACE_ORDER: string[] = [
     'meadow',
     'forest',
     'highland',
+    // R4 — the interior fresh-water basins surface as their own water keys
+    // (the palette joins them in scenario/island.ts GRASS_TILE_PALETTE)
+    'lake',
+    'pond',
 ];
 
 // Board layer — the wheel-zoom wrapper around each mounted tile board

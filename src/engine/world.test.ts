@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { position3 } from '@godspace/core';
 import { createWorld, NEIGHBOR_OFFSETS, TICK_MINUTES } from './world';
+import { isFreshBasin, isSeaWater } from './types';
 import type { Actor, TerrainCell } from './types';
 
 describe('createWorld (island adapter)', () => {
@@ -269,3 +270,28 @@ const centeredCanvas = (width: number, height: number) => {
     }
     return { width, height, cells };
 };
+
+describe('the water-family predicates (engine/types)', () => {
+    it('isSeaWater reads the open salt sea alone', () => {
+        expect(isSeaWater('ocean')).toBe(true);
+        expect(isSeaWater('shallows')).toBe(true);
+        // The fresh basins are water, but never the vessels' element
+        expect(isSeaWater('lake')).toBe(false);
+        expect(isSeaWater('pond')).toBe(false);
+        // Dry biomes and the undefined edge are not water
+        expect(isSeaWater('beach')).toBe(false);
+        expect(isSeaWater('meadow')).toBe(false);
+        expect(isSeaWater('forest')).toBe(false);
+        expect(isSeaWater('highland')).toBe(false);
+        expect(isSeaWater(undefined)).toBe(false);
+    });
+
+    it('isFreshBasin reads the interior lake/pond family', () => {
+        expect(isFreshBasin('lake')).toBe(true);
+        expect(isFreshBasin('pond')).toBe(true);
+        expect(isFreshBasin('ocean')).toBe(false);
+        expect(isFreshBasin('shallows')).toBe(false);
+        expect(isFreshBasin('beach')).toBe(false);
+        expect(isFreshBasin(undefined)).toBe(false);
+    });
+});

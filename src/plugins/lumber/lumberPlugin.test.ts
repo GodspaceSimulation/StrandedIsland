@@ -99,8 +99,9 @@ describe('lumberPlugin', () => {
         expect(inventory.of('a')).toEqual({ wood: 1 });
         // R4: the (−7,0) column is a meadow shore — the finite stone is gone
         // (stone stands only on the highland rock sites); the tree mirror
-        // keeps its felled 424 band
-        expect(inventory.cellStock(-7, 0)).toEqual({ dirt: 1, grass: 1, tree: 424, berry: 1, mushroom: 2, water: 2 });
+        // keeps its felled 424 band. The abundance tuning seeds berry 2 +
+        // mushroom 2; the minute-15 mushroom pulse adds the third mushroom
+        expect(inventory.cellStock(-7, 0)).toEqual({ dirt: 1, grass: 1, tree: 424, berry: 2, mushroom: 3, water: 2 });
         expect(world.cellAt(-7, 0)?.resources).toEqual({ dirt: 1, grass: 1, tree: 424 });
         // The felling is silent — a solo beat, not a story between entities
         expect(world.events.log().map((event) => event.kind)).toEqual(['spawn']);
@@ -159,13 +160,15 @@ describe('lumberPlugin', () => {
         // The step west onto the treed (1,5) short-circuits the trek (a tree
         // underfoot chops): by minute 40 the wood is in the bag and the
         // grove's tree mirror holds 425 (T2's densified pure stand; the chop
-        // cut a pool wood — the 425-tree stand stands; the berry/mushroom
-        // regrow on their rhythms; R4: the meadow is no stone-bearing)
+        // cut a pool wood — the 425-tree stand stands; the abundance-tuned
+        // berry/mushroom stocks (seeded 2 + 2) regrow on their rhythms —
+        // the minute-15 mushroom and minute-20 berry pulses add a unit
+        // each; R4: the meadow is no stone-bearing)
         for (let index = 0; index < 40; index++) {
             world.step();
         }
         expect(inventory.of('a')).toEqual({ wood: 1 });
-        expect(inventory.cellStock(1, 5)).toEqual({ dirt: 1, grass: 1, tree: 425, berry: 2, mushroom: 2 });
+        expect(inventory.cellStock(1, 5)).toEqual({ dirt: 1, grass: 1, tree: 425, berry: 3, mushroom: 3 });
         expect(world.cellAt(1, 5)?.biome).toBe('forest');
     });
 

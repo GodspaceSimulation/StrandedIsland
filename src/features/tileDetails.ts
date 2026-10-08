@@ -69,7 +69,7 @@
 
 import type { CoordinateEntry, TilePath } from '@godspace/core';
 import { randomKeyed, tilePathKey, tilePathParent, tilePathTail } from '@godspace/core';
-import type { Canvas, TileResource, TileResources, VoxelKind } from '../engine/types';
+import type { Canvas, TerrainCell, TileResource, TileResources, VoxelKind } from '../engine/types';
 import { TILE_RESOURCES, UNLIMITED_TILE_RESOURCES } from '../engine/types';
 import type { IslandHandle } from '../scenario/island';
 import type { ForestTreeInfo } from '../plugins/forest/forestPlugin';
@@ -79,7 +79,7 @@ import {
     itemDef,
     type ItemCategoryStack,
 } from '../plugins/inventory/items';
-import { tileSurfaceKey } from '../plugins/terrain/islandTerrain';
+import { tileSurfaceKey, type SurfaceKeyCount } from '../plugins/terrain/islandTerrain';
 import type { SiteCell, SiteState } from '@godspace/blueprint';
 
 // ── Voxel stack ──────────────────────────────────────────────────────────────
@@ -536,9 +536,12 @@ export type TileSummary = {
     y: number;
     biome: string;
     /**
-     * The surface key the canvas paints the tile with — the tile's
-     * top-priority deposit, falling back to the plain biome
-     * (plugins/terrain/islandTerrain.ts tileSurfaceKey).
+     * The surface key the canvas paints the tile with — at a tile WITH
+     * generated children that is the MAJORITY visible type of those
+     * children (dominantVisibleType, see the rule above the helper); at a
+     * leaf tile the tile's own key (deposits → ground → plain biome, see
+     * plugins/terrain/islandTerrain.ts tileSurfaceKey). The inspector and
+     * the board always agree.
      */
     surface: string;
     /** Dry ground height in voxels. */
@@ -599,7 +602,10 @@ export const tileSummary = (island: IslandHandle, path: TilePath): TileSummary |
         x: cell.x,
         y: cell.y,
         biome: cell.biome,
-        surface: tileSurfaceKey(cell) ?? cell.biome,
+        // R6 — the coarse view reads the children's majority (the leaf
+        // tiles fall back to their own key inside the helper — the same
+        // read the canvas adapters make, board and inspector agreeing)
+        surface: dominantVisibleType(island, path) ?? tileSurfaceKey(cell) ?? cell.biome,
         height: cell.height,
         waterLevel: cell.waterLevel,
         passable: cell.passable,
@@ -819,4 +825,220 @@ export const treeIconOpacity = (treeUnits: number, subGridCells: number): number
     const coverage = treeUnits / subGridCells;
     const opacity = coverage / TREE_ICON_FULL_COVERAGE;
     return Math.min(1, Math.max(TREE_ICON_MIN_OPACITY, opacity));
+};
+
+// ── Dominant visible type — the coarse-scale majority rule ───────────────────
+
+/**
+ * A tile's visible identity at a COARSE scale is what its children LOOK
+ * like: the Scale-1 tile shows the MAJORITY visible type of its Scale-0
+ * children (a mostly-wooded tile reads 'tree', a mostly-water tile reads
+ * 'lake', a rock site whose crowns are a handful among dirt floors reads
+ * 'dirt' — the 🪨 decoration keeps it findable), and a Scale-2 tile shows
+ * the majority of its Scale-1 children — recursively down the generated
+ * ladder. The rule:
+ *
+ *   dominantVisibleType(path) = the majority `tileSurfaceKey` over the
+ *     IMMEDIATE CHILDREN of the tile at `path` — each child read as its
+ *     OWN dominant type (recursive; a child with no generated sub-grid
+ *     falls back to its own tileSurfaceKey), counted in CHILD CELLS (every
+ *     child cell counts exactly once — resource units never outvote cells),
+ *     ties resolved to the key that REACHED its winning count first in the
+ *     row-major scan (the canvas scan order — deterministic; the strict
+ *     `>` in the fold and the histogram's `last` index encode one rule).
+ *
+ * A pure RENDER-side read: the simulation keeps the parent's own identity
+ * (deposits, stocks, surface key untouched) — only the canvas adapters and
+ * the Tile Inspector consult this (scenario/island.ts surfaceOfCell applies
+ * it to ROOT cells only — the identity check tells a root cell from a
+ * zoomed subtile — and the zoomed views already show the true children
+ * cell-for-cell, so they never need the majority).
+ *
+ * MEMOIZED per cell object against the cell's generation fingerprint — the
+ * same stamp the terrain plugin caches its sub-grids with (fingerprintOf,
+ * plugins/terrain/islandTerrain.ts: deposits + height + water line + biome
+ * + voxels + carve; the sub-canvas is a deterministic function of exactly
+ * that, the forest stands riding along through the tree-deposit mirror).
+ * A frame re-reads every tile cheaply: unchanged cells answer from the
+ * memo, changed ones (gathering, felling, spread) rebuild once.
+ *
+ * The fold itself is CACHED and SHORTCUTTED (the R6 depth-2 performance
+ * fix — at configured depth 2 a naive recursive fold materialized 425
+ * sub-grids per root and thrashed the FIFO grid cache):
+ *   • the deepest generated level never materializes its grids — the
+ *     children of a cell AT the generated depth are leaves, and their keys
+ *     come from the terrain plugin's exact surfaceKeyCounts histogram
+ *     (identical scatter, no cell objects — see plugins/terrain);
+ *   • every intermediate node's answer rides a per-terrain-instance cache
+ *     keyed by grid size + path + fingerprint stamp — the same
+ *     invalidation contract as the memo above (the instance scoping keeps
+ *     two worlds from sharing entries; the size catches a resize).
+ * The result is bit-identical to the naive fold — the cache and histogram
+ * only skip work the naive fold would redo.
+ */
+const dominantMemo = new WeakMap<object, { stamp: string; key: string | undefined }>();
+
+/** The memo stamp — the fingerprintOf mirror (keep in step with
+ * plugins/terrain/islandTerrain.ts fingerprintOf: same fields, same order). */
+const dominantStamp = (cell: TerrainCell): string =>
+    `${TILE_RESOURCES.map((resource) => cell.resources[resource] ?? 0).join(',')}|${cell.height}|${cell.waterLevel}|${cell.biome}|${cell.voxels.join('+')}|${cell.carving ? cell.carving.rock.join(';') : 'none'}`;
+
+/**
+ * The intermediate-node cache, one Map per terrain plugin INSTANCE (a
+ * WeakMap — the cache dies with the world). Keyed by
+ * `size|pathKey|fingerprint`: the seed and stands ride the instance, the
+ * grid shape rides the size, the parent's state rides the stamp — the same
+ * determinism contract the terrain plugin caches its sub-grids with. A
+ * `null` value caches a computed `undefined` (a leaf-less unresolvable
+ * node) so misses are never recomputed either.
+ */
+const DOMINANT_PATH_CACHE = 4096;
+const dominantPathCaches = new WeakMap<object, Map<string, string | null>>();
+
+const dominantCacheFor = (terrain: object): Map<string, string | null> => {
+    let cache = dominantPathCaches.get(terrain);
+    if (!cache) {
+        cache = new Map();
+        dominantPathCaches.set(terrain, cache);
+    }
+    return cache;
+};
+
+/**
+ * The majority of an exact histogram — reproducing the row-major strict-`>`
+ * scan fold EXACTLY: the winner is the key with the highest count, ties
+ * going to the key that REACHED that count first, i.e. the earliest LAST
+ * occurrence in row-major order (a key hits its final count exactly at its
+ * last cell — the scan's strict `>` keeps whoever got there first).
+ */
+const majorityFromCounts = (counts: SurfaceKeyCount[]): string | undefined => {
+    let best: string | undefined;
+    let bestCount = 0;
+    let bestLast = Number.POSITIVE_INFINITY;
+    counts.forEach((entry) => {
+        if (entry.count > bestCount || (entry.count === bestCount && entry.last < bestLast)) {
+            best = entry.key;
+            bestCount = entry.count;
+            bestLast = entry.last;
+        }
+    });
+    return best;
+};
+
+/** The fold over one cell's children (the recursive majority — see the rule). */
+const foldDominant = (
+    island: Pick<IslandHandle, 'terrain'>,
+    path: TilePath,
+    cell: TerrainCell,
+    cache: Map<string, string | null>,
+    sizeKey: string,
+): string | undefined => {
+    // The children of a cell AT the generated depth are leaves — their
+    // surface keys histogram EXACTLY without materializing the grid (the
+    // fold's fast path; beyond the depth no grid exists and the cell's own
+    // key IS its visible type)
+    if (path.length >= island.terrain.depth()) {
+        const counts = island.terrain.surfaceKeyCounts(path);
+        if (counts) {
+            return majorityFromCounts(counts);
+        }
+        return tileSurfaceKey(cell);
+    }
+    // The immediate children's grid — beyond the generated depth there are
+    // no children: the tile's own surface key IS its visible type
+    const children = island.terrain.canvasFor(path);
+    if (!children || children.cells.length === 0) {
+        return tileSurfaceKey(cell);
+    }
+    // Majority over the children's visible types, counted in cells; the
+    // strict `>` keeps the FIRST key on ties (row-major scan order)
+    const counts = new Map<string, number>();
+    let best: string | undefined;
+    let bestCount = 0;
+    children.cells.forEach((child) => {
+        const key =
+            dominantChild(island, [...path, { x: child.x, y: child.y }], child, cache, sizeKey) ??
+            tileSurfaceKey(child);
+        if (key === undefined) {
+            return;
+        }
+        const count = (counts.get(key) ?? 0) + 1;
+        counts.set(key, count);
+        if (count > bestCount) {
+            best = key;
+            bestCount = count;
+        }
+    });
+    return best;
+};
+
+/**
+ * The cached dominant of a CHILD cell (an intermediate fold node). A child
+ * deeper than the generated depth has no grid — the caller falls back to
+ * the child's own surface key (the leaf rule).
+ */
+const dominantChild = (
+    island: Pick<IslandHandle, 'terrain'>,
+    childPath: TilePath,
+    child: TerrainCell,
+    cache: Map<string, string | null>,
+    sizeKey: string,
+): string | undefined => {
+    if (childPath.length > island.terrain.depth()) {
+        return undefined;
+    }
+    const cacheKey = `${sizeKey}|${tilePathKey(childPath)}|${dominantStamp(child)}`;
+    const hit = cache.get(cacheKey);
+    if (hit !== undefined) {
+        return hit ?? undefined;
+    }
+    const key = foldDominant(island, childPath, child, cache, sizeKey);
+    cache.set(cacheKey, key ?? null);
+    // FIFO eviction — the freshly inserted entry sorts last, the oldest
+    // answers drop first (bounded memory; a miss only recomputes)
+    while (cache.size > DOMINANT_PATH_CACHE) {
+        const oldest = cache.keys().next().value;
+        if (oldest === undefined) {
+            break;
+        }
+        cache.delete(oldest);
+    }
+    return key;
+};
+
+/**
+ * The visible type the coarse view paints the tile at `path` with — the
+ * majority of its children's visible types, recursively (see the rule
+ * above). Undefined for empty paths and unresolvable addresses (the caller
+ * falls back to the tile's own surface key).
+ */
+export const dominantVisibleType = (
+    island: Pick<IslandHandle, 'terrain'>,
+    path: TilePath,
+): string | undefined => {
+    if (path.length === 0) {
+        return undefined;
+    }
+    const cell = island.terrain.cellFor(path);
+    if (!cell) {
+        return undefined;
+    }
+    const stamp = dominantStamp(cell);
+    const cached = dominantMemo.get(cell);
+    if (cached && cached.stamp === stamp) {
+        return cached.key;
+    }
+    // The grid size rides the intermediate cache key — a resize reshapes
+    // every grid, so no cached answer may outlive the board it was folded
+    // from (the terrain plugin clears its own grid cache on resize)
+    const size = island.terrain.size();
+    const key = foldDominant(
+        island,
+        path,
+        cell,
+        dominantCacheFor(island.terrain),
+        `${size.width}x${size.height}`,
+    );
+    dominantMemo.set(cell, { stamp, key });
+    return key;
 };

@@ -105,8 +105,9 @@ describe('behaviorPlugin — every living thing plans through the ladder', () =>
 
     it('a perched gull plans through the ladder: the idle filler fine-wanders its tile', () => {
         const { world, tasks } = buildStack();
-        // The gull perches on the forest (6,2) — grounded on dry land
-        place(world, 'bird-1', 'Kiki', 'bird', 6, 2);
+        // The gull perches on the dry beach (8,2) — the 0.85-era forest (6,2)
+        // is an impassable pond now
+        place(world, 'bird-1', 'Kiki', 'bird', 8, 2);
         world.step();
         // The behavior tick planned her: the idle wander queued — the same
         // 1-minute move task a castaway gets, keyed by her creature id
@@ -124,9 +125,9 @@ describe('behaviorPlugin — every living thing plans through the ladder', () =>
         world.step();
         // The wander completed: the gull fine-stepped north INSIDE the tile
         // (the coarse position holds, the fine spot moved from the derived
-        // {12,1} to {12,0})
-        expect(world.coordinates.positionOf('bird-1')).toEqual({ x: 6, y: 2, z: 0 });
-        expect(world.subOf('bird-1')).toEqual({ x: 12, y: 0 });
+        // {-7,8} to {-7,7} — the seeded pick ran north, an interior step)
+        expect(world.coordinates.positionOf('bird-1')).toEqual({ x: 8, y: 2, z: 0 });
+        expect(world.subOf('bird-1')).toEqual({ x: -7, y: 7 });
         // The wander is silent — simulation plumbing, not story
         expect(world.events.log().filter((event) => event.kind === 'move')).toEqual([]);
     });
@@ -167,8 +168,10 @@ describe('behaviorPlugin — every living thing plans through the ladder', () =>
         expect(needs.of('bird-1').hunger).toBe(51);
         // The tile's own food went with the forage (the gather takes the
         // first food in stock order — the berry; the standing berry bush is a
-        // material, not food, so the forage leaves it in place)
-        expect(inventory.cellStock(0, 3)).toEqual({ tree: 8, dirt: 1, grass: 1, berry: 1, bush: 1 });
+        // material, not food, so the forage leaves it in place). The
+        // grassland seeds THREE berries now (the abundance tuning) — one was
+        // foraged, two stand
+        expect(inventory.cellStock(0, 3)).toEqual({ tree: 8, dirt: 1, grass: 1, berry: 2, bush: 1 });
         // Foraging is a solo beat — silent
         expect(world.events.log().filter((event) => event.kind === 'gather' || event.kind === 'consume')).toEqual([]);
     });
@@ -449,7 +452,7 @@ describe('behaviorPlugin — every living thing plans through the ladder', () =>
         // needs frozen); the point is the free-mix: creatures planned
         // through the ladder keep their own plugin hooks intact
         const { world, needs, tasks } = buildStack();
-        place(world, 'boar-1', 'Tusk', 'boar', 6, 2, 0, 'roaming');
+        place(world, 'boar-1', 'Tusk', 'boar', 8, 2, 0, 'roaming'); // dry beach — (6,2) is a pond now
         world.step();
         // The grounded boar plans like any dry-land creature — the idle
         // wander fills its minute
@@ -587,12 +590,13 @@ describe('behaviorPlugin', () => {
         }
         expect(world.ticker.elapsed()).toBe(30);
         // The pooled water is carried now — the bag holds it, the cell is
-        // dry. The cell's own stocks ran their rhythms (the berries grew to
-        // three by the collect)
+        // dry. The cell's own stocks ran their rhythms (the seeded three
+        // berries grew to four on the minute-20 pulse — the abundance cap
+        // of 5 leaves room)
         expect(inventory.of('a')).toEqual({ water: 1 });
-        // The standing berry bush refilled to its cap of two on the bush
-        // rhythm (minute 25) — it is the standing plant, not the gathered food
-        expect(inventory.cellStock(2, 3)).toEqual({ tree: 11, dirt: 1, grass: 1, berry: 3, bush: 2 });
+        // The standing berry bush refilled to two on the bush rhythm
+        // (minute 25) — it is the standing plant, not the gathered food
+        expect(inventory.cellStock(2, 3)).toEqual({ tree: 11, dirt: 1, grass: 1, berry: 4, bush: 2 });
         // The same minute re-plans the 2-minute drink from the bag,
         // completing at minute 32 (−35 thirst relief, the bag empties)
         for (let index = 0; index < 2; index++) {
@@ -689,11 +693,12 @@ describe('behaviorPlugin', () => {
         }
         expect(world.ticker.elapsed()).toBe(33);
         // The pooled water is carried now — the bag holds it, the cell is
-        // dry. The cell's own stocks ran their rhythms (the berries grew to
-        // three by the collect; the standing berry bush stays in place — it
-        // is a material plant, not the gathered food)
+        // dry. The cell's own stocks ran their rhythms (the seeded three
+        // berries grew to four on the minute-20 pulse by the collect; the
+        // standing berry bush stays in place — it is a material plant, not
+        // the gathered food)
         expect(inventory.of('a')).toEqual({ water: 1 });
-        expect(inventory.cellStock(2, 3)).toEqual({ tree: 11, dirt: 1, grass: 1, berry: 3, bush: 2 });
+        expect(inventory.cellStock(2, 3)).toEqual({ tree: 11, dirt: 1, grass: 1, berry: 4, bush: 2 });
         // The same minute re-plans the 2-minute drink from the bag,
         // completing at minute 35 (−35 thirst relief, the bag empties)
         for (let index = 0; index < 2; index++) {
@@ -772,17 +777,18 @@ describe('behaviorPlugin', () => {
 
     it('the idle filler fine-wanders: one Scale-0 tile per completed task', () => {
         const { world, needs, tasks } = buildStack({});
-        spawn(world, 'a', 'Ael', 6, 2);
+        spawn(world, 'a', 'Ael', 8, 2); // dry beach — (6,2) is an impassable pond now
         for (let index = 0; index < 4; index++) {
             world.step();
         }
-        // Three wander tasks completed (minutes 2-4): the seeded picks step
-        // north, then south, then south — all INTERIOR fine steps, so the
-        // island view's coarse position never moves and no energy is charged.
+        // Three wander tasks completed (minutes 2-4): the seeded picks land
+        // the fine spot on {-4,8} (derived {-4,7} + the net of three picks) —
+        // all fine steps inside the tile, so the island view's coarse
+        // position never moves and no energy is charged.
         // Wandering is silent — the log never narrates the filler.
         expect(world.events.log().filter((event) => event.kind === 'move')).toEqual([]);
-        expect(world.actors.get('a')).toMatchObject({ position: { x: 6, y: 2, z: 0 } });
-        expect(world.subOf('a')).toEqual({ x: 11, y: -2 });
+        expect(world.actors.get('a')).toMatchObject({ position: { x: 8, y: 2, z: 0 } });
+        expect(world.subOf('a')).toEqual({ x: -4, y: 8 });
         // The 0.1/min hunger decay ran through all four minutes; no move
         // charge (no tile crossing). Health stays full
         expect(needs.of('a')).toEqual({ hunger: 20.400000000000006, thirst: 20, energy: 100, health: 100 });
@@ -806,9 +812,10 @@ describe('behaviorPlugin', () => {
         // Hunger: 60 at plan time + 0.1/min decay through minute 13, −14 on the eat
         expect(needs.of('a').hunger).toBe(47.30000000000002);
         // The start cell (0,3): the gathered berry is gone (the gather takes
-        // the first food in stock order); the grassland's few trees stand and
+        // the first food in stock order); the grassland seeds three berries
+        // now (the abundance tuning) — two stand beside its few trees, and
         // the standing berry bush stays (a material plant, not the food)
-        expect(inventory.cellStock(0, 3)).toEqual({ tree: 8, dirt: 1, grass: 1, berry: 1, bush: 1 });
+        expect(inventory.cellStock(0, 3)).toEqual({ tree: 8, dirt: 1, grass: 1, berry: 2, bush: 1 });
         // The gather + the eat are silent solo beats
         expect(world.events.log().filter((event) => event.kind === 'gather' || event.kind === 'consume')).toEqual([]);
     });
@@ -829,7 +836,7 @@ describe('behaviorPlugin', () => {
         // water, the cell is dry
         expect(tasks.taskOf('a')).toMatchObject({ kind: 'drink', remaining: 2 });
         expect(inventory.of('a')).toEqual({ water: 1 });
-        expect(inventory.cellStock(1, -2)).toEqual({ tree: 14, dirt: 1, grass: 1, berry: 2 });
+        expect(inventory.cellStock(1, -2)).toEqual({ tree: 14, dirt: 1, grass: 1, berry: 3 });
         world.step();
         world.step();
         // −35 thirst relief on the completing minute 6, drunk OUT OF THE
@@ -869,10 +876,15 @@ describe('behaviorPlugin', () => {
         expect(inventory.of('a')).toEqual({});
     });
 
-    it('a starving actor travels toward the nearest stocked cell, tile by tile', () => {
+    it('a starving actor travels toward the nearest stocked cell — the regrown shore beats the long trek', () => {
         const { world, inventory, needs, tasks } = buildStack({});
-        // Drain EVERY stock (sea fish included), leave a single stocked
-        // forest at (8,2) — the only food-bearing cell on the island
+        // Drain EVERY stock (sea fish included), leave a forest berry patch
+        // at (8,2) — the only food LEFT ON THE SURVEY. THE EXHAUSTED-SOURCE
+        // FIX means the drain does NOT sterilize the island: every cell the
+        // survey seeded stays REGROW-ELIGIBLE (the registry outlives the
+        // deleted stock keys), so the shore under the trek refills on its
+        // own rhythm and the hunger ladder re-targets. (The old pin — a
+        // permanently barren island — was the bug.)
         world.canvas.cells.forEach((cell) => {
             const stock = inventory.cellStock(cell.x, cell.y);
             Object.keys(stock).forEach((item) => {
@@ -883,38 +895,55 @@ describe('behaviorPlugin', () => {
         spawn(world, 'a', 'Ael', 10, 3);
         inventory.spawnKit('a', { flint: 1 });
         needs.satisfy('a', { hunger: 40 }); // hunger 60 ≥ the trigger
-        for (let index = 0; index < 56; index++) {
+        // Minutes 1-10: the Scale-0 journey fine-steps west across tile
+        // (10,3) — 8 interior steps from the derived spot {−4,0} then the
+        // wrapping step onto (9,3) at minute 10 (the crossing charge).
+        for (let index = 0; index < 10; index++) {
             world.step();
         }
-        // The Scale-0 journey: fine steps west across tile (10,3) — 24
-        // interior steps from the derived spot {−4,0} then the wrapping step
-        // onto (9,3) at minute 10 — then the same walk across (9,3) (wrap at
-        // minute 35 onto (8,3)), then north across (8,3) (wrap at minute 44
-        // onto (8,2)), the 10-minute gather, and the berry eaten at minute 56.
-        // The whole trek is silent — 43 fine steps, the gather and the eat,
-        // without a single log line.
-        expect(world.events.log().filter((event) => event.kind === 'move' || event.kind === 'gather' || event.kind === 'consume')).toEqual([]);
-        expect(world.actors.get('a')).toMatchObject({ position: { x: 8, y: 2, z: 0 } });
-        expect(world.subOf('a')).toEqual({ x: 12, y: 8 });
-        // Three tile crossings (one per walked tile); hunger 60 at plan
-        // time + 0.1/min decay through minute 56, −14 on the eat
-        expect(needs.of('a').energy).toBe(97);
+        expect(world.actors.get('a')).toMatchObject({ position: { x: 9, y: 3, z: 0 } });
+        // THE FIX IN ACTION: minute 10 is the coconut rhythm's offset — the
+        // beach cell (9,3) the survey seeded regrows its coconut even
+        // though the drain deleted the stock key. The nearest stocked cell
+        // is now the one UNDERFOOT: the trek to (8,2) gives way to the
+        // 10-minute gather (planned minute 10, completing at minute 20)…
+        expect(tasks.taskOf('a')).toMatchObject({ behaviour: 'hunger', kind: 'gather', label: 'gathers' });
+        // …and the distant berry patch is never touched
+        expect(inventory.cellStock(8, 2).berry).toBe(3);
+        // …and the 2-minute eat of the coconut (−18 nutrition) at minute 22
+        for (let index = 0; index < 12; index++) {
+            world.step();
+        }
+        expect(needs.of('a').hunger).toBe(44.20000000000003);
         expect(inventory.of('a')).toEqual({ flint: 1 });
-        expect(needs.of('a').hunger).toBe(51.599999999999966);
-        // Sated (51.6 < 60) — the actor re-plans a wander
+        // Minute 56: the sated wander drifts the shore — three tile
+        // crossings in all (minutes 10, 26 and 48). Hunger 60 + 0.1/min
+        // through minute 56, −18 on the eat. The whole story is silent —
+        // not a single move/gather/consume log line.
+        for (let index = 0; index < 34; index++) {
+            world.step();
+        }
+        expect(world.events.log().filter((event) => event.kind === 'move' || event.kind === 'gather' || event.kind === 'consume')).toEqual([]);
+        expect(world.actors.get('a')).toMatchObject({ position: { x: 9, y: 3, z: 0 } });
+        expect(world.subOf('a')).toEqual({ x: 10, y: -4 });
+        expect(needs.of('a').energy).toBe(97);
+        expect(needs.of('a').hunger).toBe(47.60000000000008);
+        // Sated (47.6 < 60) — the actor re-plans a wander
         expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 1 });
     });
 
-    it('the hunger targets are PASSABLE: a hungry beachgoer treks to land food, never to the sea fish', () => {
+    it('the hunger targets are PASSABLE: a hungry beachgoer treks to the fishing shore, never onto the sea fish', () => {
         const { world, inventory, needs, tasks } = buildStack({});
         // Ael stands on the southern waterline (6,5) — dry beach sand
         // (the 25×17 seed-7 island's ring: every cell beyond the passable
         // land is open sea). The only fish live in the shallows just SOUTH
-        // of her (6,7) — impassable. If the hunger rung targets by distance
-        // alone, the fish win (two tiles) and the beachgoer mills at the
-        // waterline, facing the sea, for the rest of her life. The land
-        // food sits in the meadow at (0,3) — the same grassland the gather
-        // test above forages.
+        // of her (6,7) — impassable. If the hunger rung targeted the fish
+        // CELL, the body would mill at the waterline aiming at water it can
+        // never stand on. R5 turns the fish into a reachable source through
+        // its FISHING SHORES: the dry tile (6,6) between her and the shoal
+        // is now a food target — one tile south, nearer than the meadow
+        // berry at (0,3). The greedy step therefore leads SOUTH to the
+        // shore, never INTO (6,7).
         spawn(world, 'a', 'Ael', 6, 5);
         expect(world.cellAt(6, 5).passable).toBe(true);
         expect(world.cellAt(6, 7).passable).toBe(false);
@@ -933,30 +962,91 @@ describe('behaviorPlugin', () => {
         inventory.cellStock(0, 3).berry = 2;
         needs.satisfy('a', { hunger: 40 }); // hunger 60 ≥ the 60 trigger
         world.step();
-        // The hunger rung prunes the impassable fish from its targets: the
-        // sole reachable food cell is the meadow (0,3) — the greedy fine
-        // step from the (6,5) spawn walks WEST first (the x axis leads),
-        // one world-minute per Scale-0 step. Without the passability filter
-        // the same minute plans a step SOUTH toward (6,7) — the sea the
-        // body can never step into.
+        // The hunger rung prunes the impassable fish CELL from its targets
+        // and adds its fishing shore (6,6) instead — the nearest reachable
+        // food position, one tile south. The greedy fine step from the
+        // (6,5) spawn walks SOUTH toward the shore, one world-minute per
+        // Scale-0 step. Without the passability filter the same minute
+        // would aim at (6,7) itself — the sea the body can never step into.
         expect(tasks.taskOf('a')).toMatchObject({
             behaviour: 'hunger',
             kind: 'move',
             label: 'travels to food',
             minutes: 1,
-            payload: { dx: -1, dy: 0 },
+            payload: { dx: 0, dy: 1 },
             total: 1,
             remaining: 1,
         });
-        // The shallows' fish are untouched — the body treks past them
+        // The shallows' fish are untouched — the body works the shore, not the water
         expect(inventory.cellStock(6, 7).fish).toBe(2);
-        // The meadow still holds its pair (not yet reached)
+        // The meadow still holds its pair (not needed — the shore is nearer)
         expect(inventory.cellStock(0, 3).berry).toBe(2);
+    });
+
+    it('the fishing shore: a hungry actor beside the water fishes the shoal at its feet', () => {
+        const { world, inventory, needs, tasks } = buildStack({});
+        // Ael stands on the dry beach (6,6) — the fishing shore CARDINAL to
+        // the impassable shallows (6,7). R5: dry ground + cardinal-adjacent
+        // water stocking fish = the fishery; the body never enters the sea.
+        spawn(world, 'a', 'Ael', 6, 6);
+        expect(world.cellAt(6, 6).passable).toBe(true);
+        expect(world.cellAt(6, 7).passable).toBe(false);
+        // Drain EVERY loose food + berry bush from every cell
+        world.canvas.cells.forEach((cell) => {
+            const stock = inventory.cellStock(cell.x, cell.y);
+            ['berry', 'mushroom', 'fish', 'coconut', 'seaweed', 'bush'].forEach((item) => {
+                delete stock[item];
+            });
+        });
+        // The shoal at her feet
+        inventory.cellStock(6, 7).fish = 2;
+        needs.satisfy('a', { hunger: 40 }); // hunger 60 ≥ the 60 trigger
+        world.step();
+        // The fishing rung beats the trek — the water here already feeds
+        expect(tasks.taskOf('a')).toMatchObject({
+            behaviour: 'hunger',
+            kind: 'fish',
+            label: 'fishes',
+            minutes: 3,
+            payload: { x: 6, y: 7 },
+            total: 3,
+            remaining: 3,
+        });
+        // The cast lands at minute 3: one fish in the bag, the shoal down to one
+        for (let index = 0; index < 3; index++) {
+            world.step();
+        }
+        expect(inventory.of('a')).toEqual({ fish: 1 });
+        expect(inventory.cellStock(6, 7).fish).toBe(1);
+        // The body never entered the water — still standing on the shore
+        expect(world.actors.get('a')).toMatchObject({ position: { x: 6, y: 6, z: 0 } });
+    });
+
+    it('the thirst trek never aims at an impassable basin: water behind a wall is no pool (R4)', () => {
+        const { world, inventory, needs, tasks } = buildStack({});
+        // Ael stands on the dry forest shoulder (7,2) of the drowned pond
+        // (6,2) — the pond stocks a drinking pool, but nobody can stand IN
+        // the pond to collect it
+        spawn(world, 'a', 'Ael', 7, 2);
+        // Drain EVERY water stock from every PASSABLE cell; the impassable
+        // pond keeps its pool (and the sea's cells hold no drinking water)
+        world.canvas.cells.forEach((cell) => {
+            if (cell.passable) {
+                delete inventory.cellStock(cell.x, cell.y).water;
+            }
+        });
+        inventory.cellStock(6, 2).water = 3;
+        needs.satisfy('a', { thirst: 40 }); // thirst 60 ≥ the trigger
+        world.step();
+        // The pond is pruned from the pool targets: with no reachable pool
+        // the thirst rung DECLINES — the idle wander fills the minute rather
+        // than a trek aimed at water behind a wall
+        expect(tasks.taskOf('a')).toMatchObject({ behaviour: 'wander', kind: 'move', label: 'wanders', remaining: 1 });
     });
 
     it('an exhausted actor rests: the recovery applies once, on completion', () => {
         const { world, needs, tasks } = buildStack({});
-        spawn(world, 'a', 'Ael', 6, 2);
+        spawn(world, 'a', 'Ael', 8, 2); // dry beach — (6,2) is an impassable pond now
         needs.satisfy('a', { energy: -80 }); // energy 20 ≤ 22 → the 10-minute rest task
         for (let index = 0; index < 12; index++) {
             world.step();
@@ -974,7 +1064,7 @@ describe('behaviorPlugin', () => {
 
     it('dropping the wander behaviour mid-run strands idle actors (task list empties)', () => {
         const { world, tasks } = buildStack({});
-        spawn(world, 'a', 'Ael', 6, 2);
+        spawn(world, 'a', 'Ael', 2, 3); // dry meadow — (6,2) is an impassable pond now
         spawn(world, 'b', 'Bram', 8, 2);
         world.step();
         // Both castaways queued 1-minute wander tasks

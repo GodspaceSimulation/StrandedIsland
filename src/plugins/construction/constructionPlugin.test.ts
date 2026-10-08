@@ -205,7 +205,7 @@ describe('constructionPlugin — the shared registries', () => {
         // STARTING_KIT (berry + flint), no injected tool inputs. The crew
         // must gather the axe's STONE itself (the demand the R4 fix folds
         // into the early fetches) and craft BOTH tools, each ONCE, well
-        // inside 400 minutes. Pinned from the run: hammer@262, axe@375, and
+        // inside 700 minutes. Pinned from the run: hammer@325, axe@305, and
         // each tool's crew total peaks at EXACTLY one (the once-gate plus
         // the deterministic lead gate end the craft after a single output).
         // The finite-stone shift moved the axe late in the window (stone
@@ -213,7 +213,14 @@ describe('constructionPlugin — the shared registries', () => {
         // them instead of gathering stone underfoot, and the stone/wood
         // combo must land in ONE bag for the 5-minute craft; the tool-lead
         // hold in the construction plugin keeps the lead actor's input bag
-        // intact while the ladder commits it — see owedToolInputsOf).
+        // intact while the ladder commits it — see owedToolInputsOf). The
+        // abundance tuning moved the axe further (657): the crew's needs
+        // schedule now rides the richer food map (fuller bellies re-plan
+        // the fetch order), so the stone trek lands later — the hammer
+        // minute is untouched and both once-gates still clamp at one.
+        // R4/R5 moved both (325/305): the impassable ponds reroute the treks
+        // and the fishing shores feed the crew earlier, re-ordering the
+        // fetches once more.
         const handle = island();
         const crewTotal = (tool: string): number =>
             [...handle.world.actors.values()].reduce(
@@ -224,7 +231,7 @@ describe('constructionPlugin — the shared registries', () => {
         let hammerAt = -1;
         let axeMax = 0;
         let hammerMax = 0;
-        for (let minute = 0; minute < 400; minute++) {
+        for (let minute = 0; minute < 700; minute++) {
             handle.world.step();
             const a = crewTotal('axe');
             const h = crewTotal('hammer');
@@ -237,8 +244,8 @@ describe('constructionPlugin — the shared registries', () => {
                 hammerAt = minute;
             }
         }
-        expect(axeAt).toBe(375);
-        expect(hammerAt).toBe(262);
+        expect(axeAt).toBe(305);
+        expect(hammerAt).toBe(325);
         expect(axeMax).toBe(1);
         expect(hammerMax).toBe(1);
     });
@@ -349,6 +356,52 @@ describe('constructionPlugin — placement and the scale-0 footprint', () => {
             return cell !== undefined && !cell.passable;
         });
         expect(hasWater).toBe(true);
+    });
+
+    it('the mooring is SEA — no hull stands on a lake beach and no site on a drowned column (R4)', () => {
+        const handle = island();
+        for (let minute = 0; minute < 1000; minute++) {
+            handle.world.step();
+        }
+        // The cardinal water beside a tile (impassable columns only)
+        const waterBeside = (x: number, y: number) =>
+            [
+                { x: x - 1, y },
+                { x: x + 1, y },
+                { x, y: y - 1 },
+                { x, y: y + 1 },
+            ]
+                .map((spot) => handle.world.cellAt(spot.x, spot.y))
+                .filter((cell): cell is NonNullable<typeof cell> => cell !== undefined && !cell.passable);
+        // Beaches whose ONLY water neighbours are fresh basins — the mooring
+        // gate accepts sea water alone, so a hull is never placed here
+        const basinOnlyShores = handle.world.canvas.cells
+            .filter((cell) => cell.biome === 'beach')
+            .filter((cell) => {
+                const water = waterBeside(cell.x, cell.y);
+                return water.length > 0 && water.every((n) => n.biome === 'lake' || n.biome === 'pond');
+            })
+            .map((cell) => ({ x: cell.x, y: cell.y }));
+        const hulls = sites(handle)
+            .sites()
+            .filter((site) => site.blueprintId === 'raft' || site.blueprintId === 'boat');
+        expect(hulls.length).toBeGreaterThan(0);
+        hulls.forEach((site) => {
+            const anchor = site.parent[0];
+            expect(basinOnlyShores).not.toContainEqual(anchor);
+            // The mooring beside the hull is SALT — the placement gate and
+            // the launch read the same isSeaWater rule
+            const sea = waterBeside(anchor.x, anchor.y).some(
+                (n) => n.biome === 'ocean' || n.biome === 'shallows',
+            );
+            expect(sea).toBe(true);
+        });
+        // No site of any kind stands on an impassable column — the build
+        // scans walk the passable land set only
+        sites(handle).sites().forEach((site) => {
+            const anchor = handle.world.cellAt(site.parent[0].x, site.parent[0].y);
+            expect(anchor?.passable).toBe(true);
+        });
     });
 });
 

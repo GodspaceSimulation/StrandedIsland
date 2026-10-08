@@ -62,7 +62,7 @@ describe('sleepPlugin', () => {
 
     it('a drained actor sleeps: +1.2 energy per minute, silently', () => {
         const { world, needs, tasks } = buildStack();
-        spawn(world, 'a', 'Ael', 6, 2);
+        spawn(world, 'a', 'Ael', 8, 2); // dry beach — (6,2) is an impassable pond now
         needs.satisfy('a', { energy: -80 }); // energy 20 ≤ 22 → sleep shadows rest
         for (let index = 0; index < 5; index++) {
             world.step();
@@ -101,7 +101,7 @@ describe('sleepPlugin', () => {
 
     it('a drained actor keeps sleeping minute after minute until the slumber ends', () => {
         const { world, needs, tasks } = buildStack();
-        spawn(world, 'a', 'Ael', 6, 2);
+        spawn(world, 'a', 'Ael', 8, 2); // dry beach — (6,2) is an impassable pond now
         needs.satisfy('a', { energy: -80 });
         world.step();
         // One minute of sleep: −0.06 decay + 1.2 restore
@@ -119,7 +119,7 @@ describe('sleepPlugin', () => {
 
     it('removing the sleep plugin falls back to the instant-rest ladder', () => {
         const { world, needs, tasks } = buildStack();
-        spawn(world, 'a', 'Ael', 6, 2);
+        spawn(world, 'a', 'Ael', 8, 2); // dry beach — (6,2) is an impassable pond now
         needs.satisfy('a', { energy: -80 }); // energy 20 ≤ 22
         world.plugins.remove('sleep');
         // The update-on-remove rule: the behaviour is gone AND its queued
@@ -141,7 +141,7 @@ describe('sleepPlugin', () => {
 
     it('removing sleep mid-slumber cancels the task silently', () => {
         const { world, needs, tasks } = buildStack();
-        spawn(world, 'a', 'Ael', 6, 2);
+        spawn(world, 'a', 'Ael', 8, 2); // dry beach — (6,2) is an impassable pond now
         needs.satisfy('a', { energy: -80 });
         world.step();
         // One minute slept: the restore applied, the task queued

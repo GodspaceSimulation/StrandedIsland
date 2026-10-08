@@ -64,9 +64,9 @@ describe('createIslandWorld', () => {
             sex: actor.profile.sex,
         }))).toEqual([
             { id: 'actor-1', name: 'Ael', position: { x: -11, y: 0, z: 0 }, sex: 'male' },
-            { id: 'actor-2', name: 'Bram', position: { x: 9, y: -1, z: 0 }, sex: 'male' },
-            { id: 'actor-3', name: 'Cove', position: { x: 1, y: 5, z: 0 }, sex: 'female' },
-            { id: 'actor-4', name: 'Dune', position: { x: 5, y: -1, z: 0 }, sex: 'male' },
+            { id: 'actor-2', name: 'Bram', position: { x: -9, y: -2, z: 0 }, sex: 'male' },
+            { id: 'actor-3', name: 'Cove', position: { x: -2, y: 5, z: 0 }, sex: 'female' },
+            { id: 'actor-4', name: 'Dune', position: { x: -5, y: -1, z: 0 }, sex: 'male' },
         ]);
         // Every landing spot is dry land, ranked from the outermost dry ring
         // inward (Ael's pick — edge[0] — IS the outermost land cell: no dry
@@ -160,9 +160,9 @@ describe('createIslandWorld', () => {
         ]);
         expect(Array.from(handle.world.actors.values()).map((actor) => ({ ...actor.position }))).toEqual([
             { x: -11, y: 0, z: 0 },
-            { x: 9, y: -1, z: 0 },
-            { x: 1, y: 5, z: 0 },
-            { x: 5, y: -1, z: 0 },
+            { x: -9, y: -2, z: 0 },
+            { x: -2, y: 5, z: 0 },
+            { x: -5, y: -1, z: 0 },
         ]);
         expect(handle.tasks.tasks().map((task) => ({ actorId: task.actorId, kind: task.kind, label: task.label, remaining: task.remaining }))).toEqual([
             { actorId: 'actor-1', kind: 'move', label: 'travels to trees', remaining: 1 },
@@ -185,15 +185,15 @@ describe('createIslandWorld', () => {
         ]);
         expect(Array.from(handle.world.actors.values()).map((actor) => ({ ...actor.position }))).toEqual([
             { x: -11, y: 0, z: 0 },
-            { x: 9, y: -1, z: 0 },
-            { x: 1, y: 5, z: 0 },
-            { x: 5, y: -1, z: 0 },
+            { x: -9, y: -2, z: 0 },
+            { x: -2, y: 5, z: 0 },
+            { x: -5, y: -1, z: 0 },
         ]);
         expect(Array.from(handle.world.actors.keys()).map((id) => handle.world.subOf(id))).toEqual([
             { x: -7, y: 0 },
-            { x: -10, y: -5 },
-            { x: -2, y: 3 },
-            { x: -11, y: 8 },
+            { x: -9, y: -8 },
+            { x: -3, y: -2 },
+            { x: -8, y: 2 },
         ]);
         // Eighteen more minutes: Ael keeps trekking east toward the woods
         // (19 interior fine steps — the wrap onto the next tile is still
@@ -226,15 +226,15 @@ describe('createIslandWorld', () => {
         ]);
         expect(Array.from(handle.world.actors.values()).map((actor) => ({ ...actor.position }))).toEqual([
             { x: -11, y: 0, z: 0 },
-            { x: 8, y: -1, z: 0 },
-            { x: 1, y: 5, z: 0 },
-            { x: 5, y: 0, z: 0 },
+            { x: -9, y: -2, z: 0 },
+            { x: -2, y: 5, z: 0 },
+            { x: -5, y: -1, z: 0 },
         ]);
         expect(Array.from(handle.world.actors.keys()).map((id) => handle.world.subOf(id))).toEqual([
             { x: 11, y: 0 },
-            { x: 12, y: -5 },
-            { x: -3, y: 2 },
-            { x: -10, y: -8 },
+            { x: 9, y: -8 },
+            { x: -4, y: -3 },
+            { x: -7, y: 3 },
         ]);
     });
 
@@ -364,9 +364,11 @@ describe('createIslandWorld', () => {
         expect(frame.tiles[212].title).toBe(
             'highland · height 7 · gravel / gravel / gravel / gravel / gravel / dirt / gravel · stone ×3 · dirt ×∞ · Kiki · flying-2 · z 2',
         );
-        // The highland's stone deposit surfaces the tile with the stone
-        // palette color
-        expect(frame.tiles[212].background).toBe('#8d939e');
+        // R6 — the highland cell PAINTS as its dominant visible type: the
+        // stone-capped column sits among mostly-dirt children, so the coarse
+        // tile wears the dirt palette color (the rock stock still rides the
+        // title above)
+        expect(frame.tiles[212].background).toBe('#5d4425');
         // A treed tile: (4,−5) → tile 3×25+16 = 91 surfaces as tree, the
         // forest's deposit (no iron lode fits the 25×17 seed-7 island —
         // every vein sample stays below the lode threshold; the 0.85-era
@@ -395,8 +397,8 @@ describe('createIslandWorld', () => {
         expect(frame.tiles[201].glyphs).toEqual([
             { id: 'actor-1', glyph: '🧍‍♂️', color: '#5cb85c', elevation: 0, kind: 'sentient', type: 'human', state: 'well' },
         ]);
-        // Cove stands at (1,5): tile 13×25+13 = 338 — the FEMALE emoji
-        expect(frame.tiles[338].glyphs).toEqual([
+        // Cove stands at (−2,5): tile 13×25+10 = 335 — the FEMALE emoji
+        expect(frame.tiles[335].glyphs).toEqual([
             { id: 'actor-3', glyph: '🧍‍♀️', color: '#5cb85c', elevation: 0, kind: 'sentient', type: 'human', state: 'well' },
         ]);
         // Kiki renders as the bird emoji with her altitude superscript —
@@ -409,8 +411,8 @@ describe('createIslandWorld', () => {
         // per-tile emoji flood (the unicode fix)
         expect(frame.tiles[0].glyphs).toEqual([]);
         // The unicode tab paints the SAME resource-driven surfaces: the
-        // highland under Kiki is a stone tile, Ael's shore a sand tile
-        expect(frame.tiles[212].background).toBe('#8d939e');
+        // highland under Kiki is a dominant-dirt tile (R6), Ael's shore a sand tile
+        expect(frame.tiles[212].background).toBe('#5d4425');
         expect(frame.tiles[201].background).toBe('#d3bd85');
         // The emoji palettes resolve through the legend source: types carry
         // the species glyphs, kinds the coarse fallbacks — and the ground
@@ -488,8 +490,8 @@ describe('createIslandWorld', () => {
         expect(frame.tiles[201].glyphs).toEqual([
             { id: 'actor-1', glyph: '🧍‍♂️', color: '#5cb85c', elevation: 0, kind: 'sentient', type: 'human', state: 'well' },
         ]);
-        // Cove — the FEMALE emoji at her spot (1,5) → tile 338
-        expect(frame.tiles[338].glyphs).toEqual([
+        // Cove — the FEMALE emoji at her spot (−2,5) → tile 335
+        expect(frame.tiles[335].glyphs).toEqual([
             { id: 'actor-3', glyph: '🧍‍♀️', color: '#5cb85c', elevation: 0, kind: 'sentient', type: 'human', state: 'well' },
         ]);
         // Kiki renders as the bird emoji with her altitude superscript
@@ -514,30 +516,26 @@ describe('createIslandWorld', () => {
         expect(frame.tables[0].rows).toEqual([
             ['bird-1', 'creature', 'bird', 'Kiki', 'flying-2', 0, 0, 2],
             ['actor-1', 'sentient', 'human', 'Ael', 'well', -11, 0, 0],
-            ['actor-2', 'sentient', 'human', 'Bram', 'well', 9, -1, 0],
-            ['actor-3', 'sentient', 'human', 'Cove', 'well', 1, 5, 0],
-            ['actor-4', 'sentient', 'human', 'Dune', 'well', 5, -1, 0],
+            ['actor-2', 'sentient', 'human', 'Bram', 'well', -9, -2, 0],
+            ['actor-3', 'sentient', 'human', 'Cove', 'well', -2, 5, 0],
+            ['actor-4', 'sentient', 'human', 'Dune', 'well', -5, -1, 0],
         ]);
-        // Terrain census: cell counts per SURFACE key (the tiles appear as
-        // the resources their ground is — most meadows beside woods surface
-        // as their tree ingress, a few bare meadows keep the grass identity
-        // (29 bare cells at the 0.8 threshold); the lowered 0.8 basins grow
-        // five lakes and eight ponds — the R2 water-surface read ranks the
-        // lake/pond wetland ABOVE the tree stand that seeded beneath it, so
-        // every basin paints water (11 of the 13 basin tiles that carried a
-        // tree ingress now count here, not under tree), and one iron lode
-        // sits below the surface; the sea keeps its plain biomes),
-        // alphabetical
+        // Terrain census: cell counts per DOMINANT VISIBLE type (R6 — each
+        // coarse tile reads the majority of its children: the tree-fringed
+        // meadows surface as grass (29 → 63), the rock sites and the lone
+        // iron lode read as the dirt around them (stone 8 → 0, iron 1 → 0,
+        // dirt 0 → 9), and the tree census drops to the true canopy (59);
+        // the 0.8-threshold basins grow five lakes and eight ponds — every
+        // basin paints water), alphabetical
         expect(frame.tables[1].rows).toEqual([
-            ['grass', 29],
-            ['iron', 1],
+            ['dirt', 9],
+            ['grass', 63],
             ['lake', 5],
             ['ocean', 46],
             ['pond', 8],
             ['sand', 138],
             ['shallows', 97],
-            ['stone', 8],
-            ['tree', 93],
+            ['tree', 59],
         ]);
         // Canvas overview: the 25×17 frame
         expect(frame.tables[2].rows).toEqual([

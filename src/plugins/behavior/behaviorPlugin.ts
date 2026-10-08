@@ -43,8 +43,13 @@
 //                                    (3 min); no pool underfoot → travel one
 //                                    fine step toward the nearest pool (1 min)
 //   hunger  40 — hunger ≥ 60       → eat from the bag (2 min), gather the
-//                                    cell's food (10 min), or travel toward
-//                                    the nearest food stock (1 min)
+//                                    cell's food (10 min), fish the water at
+//                                    the body's feet when standing on a dry
+//                                    fishing shore (3 min — R5: cardinal-
+//                                    adjacent water stocking fish, the body
+//                                    never enters it), or travel toward the
+//                                    nearest food stock or fishing shore
+//                                    (1 min)
 //   roost   33 — a FLY-ABILITY creature (a seabird) with energy ≤ 22 not
 //                                    standing on a treed tile travels one
 //                                    strict fine step toward the nearest
@@ -108,6 +113,9 @@
 //   eat     — consumes the planned item from the bag (re-validated), restores
 //             nutrition/hydration from the item catalog.
 //   gather  — gathers from the cell (the inventory re-validates the stock).
+//   fish    — R5 — takes the planned fish from the adjacent water cell into
+//             the bag (the inventory's fish primitive re-validates the dry
+//             ground, the cardinal shore reach, the stock and the capacity).
 //   rest    — restores energy (the instant-rest recovery, once per completed
 //             rest). The sleep plugin restores its own tasks per-minute and
 //             does NOT go through here.
@@ -320,6 +328,39 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
     const onDryGround = (actor: TaskEntity): boolean => {
         const cell = worldOf()?.cellAt(actor.position.x, actor.position.y);
         return cell !== undefined && cell.passable;
+    };
+
+    /**
+     * R5 — THE FISHING SHORE read: the water cell CARDINAL-adjacent to the
+     * actor's DRY tile that currently stocks fish, or undefined. The shore
+     * rule in one look — dry ground underfoot, water at the body's feet
+     * (cardinal only: no diagonals, no distance, no fishing from afloat),
+     * fish in its live stock. Deterministic: the fixed cardinal ladder. The
+     * inventory's fish primitive re-validates everything at completion.
+     */
+    const adjacentFishWater = (
+        active: World,
+        actor: TaskEntity,
+    ): { x: number; y: number } | undefined => {
+        const here = active.cellAt(actor.position.x, actor.position.y);
+        if (!here || !here.passable) {
+            return undefined;
+        }
+        const reach = [
+            { dx: 1, dy: 0 },
+            { dx: -1, dy: 0 },
+            { dx: 0, dy: 1 },
+            { dx: 0, dy: -1 },
+        ];
+        const spot = reach.find(({ dx, dy }) => {
+            const neighbor = active.cellAt(actor.position.x + dx, actor.position.y + dy);
+            return neighbor !== undefined && !neighbor.passable &&
+                (inventory.cellStock(neighbor.x, neighbor.y).fish ?? 0) > 0;
+        });
+        if (!spot) {
+            return undefined;
+        }
+        return { x: actor.position.x + spot.dx, y: actor.position.y + spot.dy };
     };
 
     /**
@@ -538,12 +579,20 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                         };
                     }
                     // 4) Go and find a pool — travel one fine step toward
-                    //    the nearest stocked cell. WATER REALM: a body on
-                    //    an impassable cell has no ground travel (its wrap
-                    //    needs dry land) — decline and let the realm's own
-                    //    script (the birds plugin's drift, the sharks
-                    //    plugin's swim) carry it.
-                    const pool = nearestCell(actor, inventory.cellsWithItem('water'));
+                    //    the nearest stocked cell. R4 — the pool targets are
+                    //    the PASSABLE water carriers (rain pools + the dry
+                    //    shore ring beside the basins): the impassable lake
+                    //    cells stock water nobody can stand in to collect,
+                    //    and the shore ring beside them stocks it too, so
+                    //    the trek never aims at water behind a wall. WATER
+                    //    REALM: a body on an impassable cell has no ground
+                    //    travel (its wrap needs dry land) — decline and let
+                    //    the realm's own script (the birds plugin's drift,
+                    //    the sharks plugin's swim) carry it.
+                    const pool = nearestCell(
+                        actor,
+                        inventory.cellsWithItem('water').filter((cell) => cell.passable),
+                    );
                     if (!pool || !onDryGround(actor)) {
                         return undefined;
                     }
@@ -616,14 +665,34 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                     if (gatherable !== undefined) {
                         return { kind: 'gather', label: 'gathers', minutes: gatherMinutes };
                     }
+                    // R5 — THE FISHING SHORE: dry ground underfoot and fish
+                    // in the water AT THE BODY'S FEET (a cardinal-adjacent
+                    // water cell stocking fish) → fish. The take lands in
+                    // the bag through the inventory's fish primitive (dry
+                    // ground, cardinal reach, live stock and capacity all
+                    // re-validated at completion). Ranks BELOW the underfoot
+                    // forage (a berry forages faster than a fish lands) and
+                    // ABOVE the trek (the water here already feeds — no use
+                    // walking away from the shoal at hand). The body never
+                    // enters the water: the shore is the fishery.
+                    const shoal = adjacentFishWater(world, actor);
+                    if (shoal) {
+                        return {
+                            kind: 'fish',
+                            label: 'fishes',
+                            minutes: collectMinutes,
+                            payload: { x: shoal.x, y: shoal.y },
+                        };
+                    }
                     // Walk toward the nearest REACHABLE food-bearing cell. The
                     // targets are the loose food items PLUS the berry bushes
                     // (a bush is a food source at a distance too), filtered to
                     // PASSABLE cells: a land body can never stand in the open
-                    // sea, so the sea's foods (fish in the shallows, seaweed in
-                    // the deep) are unreachable for it — a hungry beachgoer must
-                    // trek to a land food (a meadow bush, a forest berry), never
-                    // mill at the waterline aiming at the fish it can't reach.
+                    // sea, so the water's foods (fish, seaweed) are not travel
+                    // targets ON the water itself — a hungry beachgoer must
+                    // trek to a land food (a meadow bush, a forest berry) or
+                    // to a FISHING SHORE (below), never mill at the waterline
+                    // aiming at the fish it cannot stand on.
                     // The filter is LOCAL to the hunger rung: the thirst rung
                     // legitimately targets the water cells (drinking pools sit in
                     // the wetlands/sea), so the shared nearestCell stays
@@ -631,6 +700,25 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                     const targets = [...FOOD_PRIORITY, 'bush']
                         .flatMap((item) => inventory.cellsWithItem(item))
                         .filter((cell) => cell.passable);
+                    // R5 — the FISHING SHORES join the food targets at a
+                    // distance: every DRY tile whose cardinal water stocks
+                    // fish is a food source the body can work (the trek ends
+                    // on the shore, then the fishing rung above takes the
+                    // minute). Deterministic: cellsWithItem's insertion order
+                    // (the row-major survey) × the fixed cardinal ladder.
+                    inventory.cellsWithItem('fish').forEach((water) => {
+                        [
+                            { x: water.x + 1, y: water.y },
+                            { x: water.x - 1, y: water.y },
+                            { x: water.x, y: water.y + 1 },
+                            { x: water.x, y: water.y - 1 },
+                        ].forEach((spot) => {
+                            const dry = world.cellAt(spot.x, spot.y);
+                            if (dry && dry.passable) {
+                                targets.push(dry);
+                            }
+                        });
+                    });
                     const target = nearestCell(actor, targets);
                     if (!target || !onDryGround(actor)) {
                         return undefined;
@@ -892,6 +980,19 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                         // stock and emits its own gather event; a depleted
                         // cell is a no-op
                         inventory.gather(actor);
+                        return;
+                    }
+                    case 'fish': {
+                        // R5 — the planned water cell (the fishing shore):
+                        // the inventory primitive re-validates everything at
+                        // completion — dry ground underfoot, the cardinal
+                        // reach, the live shoal, the bag's room. A failed
+                        // cast is a no-op; the actor re-plans next minute.
+                        const x = task.payload?.x;
+                        const y = task.payload?.y;
+                        if (typeof x === 'number' && typeof y === 'number') {
+                            inventory.fish(actor, x, y);
+                        }
                         return;
                     }
                     case 'rest': {

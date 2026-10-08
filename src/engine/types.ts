@@ -45,17 +45,36 @@ export type VoxelKind = 'air' | 'water' | 'sand' | 'dirt' | 'grass' | 'forest' |
  * meadow         — surface is grass
  * forest         — surface is grass with forest voxels on top
  * highland       — surface is gravel (the rock terrain — formerly 'stone')
- * lake/pond      — PASSABLE INTERIOR FRESH-WATER BASINS (R2): inset lowland
- *                  wetlands the generator carves below the meadow tier,
- *                  distinct from the open-ocean sea (the only impassable
- *                  water, which rims the canvas). The wetland is walkable
- *                  ground (only the open sea is impassable) — a land actor
- *                  gathers fresh water by standing ON the basin or its DRY
- *                  SHORE ring, never by crossing the open sea.
+ * lake/pond      — IMPASSABLE INTERIOR FRESH-WATER BASINS (R4): inset
+ *                  lowland wetlands the generator drowns below the water
+ *                  line (the seabed-sand + water column shape the sea
+ *                  columns get). A basin is WATER — nothing walks, stands
+ *                  or builds on it; land actors drink and fish from its DRY
+ *                  SHORE ring (the behavior plugin's cardinal-adjacent
+ *                  fishing shore), never by crossing the water. The sea
+ *                  stays the only SALT water (the vessels' element — see
+ *                  isSeaWater).
  */
 export type Biome = 'ocean' | 'shallows' | 'beach' | 'meadow' | 'forest' | 'highland' | 'lake' | 'pond';
 // (biome vocabulary note: 'highland' now derives from the 'gravel' surface
 //  — formerly 'stone'; see the VoxelKind note above)
+
+/**
+ * Whether a biome is the open SALT sea — the vessels' element. The fresh
+ * basins (lake/pond) are water too, but a hull built beside a landlocked
+ * lake has no sea to launch into (the construction plugin's mooring +
+ * launch read this, plugins/construction). Widened to string so cell
+ * slices typed with a loose biome can consult it too.
+ */
+export const isSeaWater = (biome: string | undefined): boolean =>
+    biome === 'ocean' || biome === 'shallows';
+
+/**
+ * Whether a biome is an interior fresh-water basin (the lake/pond family).
+ * Widened to string like isSeaWater.
+ */
+export const isFreshBasin = (biome: string | undefined): boolean =>
+    biome === 'lake' || biome === 'pond';
 
 // ── Tile resources ───────────────────────────────────────────────────────────
 // Every tile carries RESOURCE DEPOSITS — the natural features standing on it

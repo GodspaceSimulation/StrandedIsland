@@ -108,7 +108,7 @@
 import { arrayEach } from '@presource/core';
 import { NEIGHBOR_OFFSETS, randomCreate, randomKeyed, type RandomSource } from '@godspace/core';
 import type { Biome, Canvas, TerrainCell, TileCarving, TileResource, TileResources, VoxelKind } from '../../engine/types';
-import { TILE_RESOURCES, UNLIMITED_TILE_RESOURCES } from '../../engine/types';
+import { isFreshBasin, TILE_RESOURCES, UNLIMITED_TILE_RESOURCES } from '../../engine/types';
 import type { PluginContext, WorldPlugin } from '@godspace/core';
 import type { World } from '../../engine/world';
 import { tilePathKey, type TilePath } from '@godspace/core';
@@ -925,19 +925,21 @@ export const generateIsland = (
         }
     });
 
-    // ── THE INTERIOR FRESH-WATER BASINS (R2) — lakes and ponds ──────────────
-    // The island's single global water line sits at the coast, so an
-    // impassable inland basin (ground below the sea) cannot exist without
-    // surgery on the heightmap. R2's fresh water is therefore a PASSABLE
-    // interior wetland: an inset lowland (the low dry tier the coastal-sand
-    // rule R3 just pulled inland) whose grass surface reads as open fresh
-    // water. A land actor gathers the water by standing on the wetland (or
-    // its dry shore ring) — never by crossing the open sea. Component
-    // sizing splits the two names: a connected wetland of LAKE_MIN_CELLS
-    // (8-neighborhood, row-major components) is a 'lake', a smaller pocket a
-    // 'pond'. Deterministic: the candidate read reuses the existing moisture
-    // map (no new random draws — the noise stream above is untouched) and the
-    // components are a pure flood of the finished candidate mask.
+    // ── THE INTERIOR FRESH-WATER BASINS (R2, impassable since R4) ───────────
+    // lakes and ponds. The candidate mask is R2's: an inset lowland (the low
+    // dry tier the coastal-sand rule R3 just pulled inland) where the local
+    // bump map runs high — a wet hollow. R4 made the hollow REAL water: the
+    // drowned tier is lowered just under the global water line and flooded
+    // (the seabed-sand + water column shape the sea columns get), so a basin
+    // is IMPASSABLE like the sea — nothing walks, stands, builds or fishes
+    // ON it. Land actors reach its water from the DRY SHORE ring beside it
+    // (the inventory's fresh-water seeding + the behavior plugin's fishing
+    // shore). Component sizing splits the two names: a connected wetland of
+    // LAKE_MIN_CELLS (8-neighborhood, row-major components) is a 'lake', a
+    // smaller pocket a 'pond'. Deterministic: the candidate read reuses the
+    // existing moisture map (no new random draws — the noise stream above is
+    // untouched) and the components are a pure flood of the finished
+    // candidate mask.
     // A basin pockets where the LOCAL BUMP map (`fine` — already sampled, so
     // the coarse/moisture streams above are untouched) runs high on an inset
     // lowland: high local moisture = a wet hollow. The 0.8 fine-threshold
@@ -995,9 +997,43 @@ export const generateIsland = (
         }
         const isLake = (sizes[component[index]] ?? 0) >= LAKE_MIN_CELLS;
         cell.biome = isLake ? 'lake' : 'pond';
-        // The wetland is walkable ground (the low meadow tier) — it stays
-        // passable; only the OPEN SEA is impassable. Its fresh-water stock
-        // is the inventory plugin's job (plugins/inventory).
+        // R4 — the basin is REAL water now: impassable, like the sea. The
+        // drowned wetland tier is rebuilt as a shallow water column — the
+        // seabed-sand shape the sea columns get, ground lowered one voxel
+        // under the water line with the water filling up to it — and its
+        // ground supply, tree stand and rock carve are washed away (the
+        // submerged-supplies-nothing rule: no habitat and no landmark on
+        // open water; the forest ecology can never spread onto it either —
+        // its gate wants PASSABLE meadow ground, plugins/forest). The
+        // census moves the cell from land to water (and off the forest
+        // count when the drowned tile was wooded — the census above ran
+        // before this pass). The basin's fresh water + fish stock is the
+        // inventory plugin's job (plugins/inventory).
+        const wasForested = cell.voxels.includes('forest');
+        const ground = seaLevel - 1;
+        const stack: VoxelKind[] = [];
+        if (ground >= 3) {
+            for (let bedrock = 0; bedrock < ground - 2; bedrock++) {
+                stack.push('gravel');
+            }
+        }
+        if (ground >= 2) {
+            stack.push('dirt');
+        }
+        stack.push('sand');
+        for (let water = 0; water < seaLevel - ground; water++) {
+            stack.push('water');
+        }
+        cell.voxels = stack;
+        cell.height = ground;
+        cell.passable = false;
+        cell.resources = {};
+        delete cell.carving;
+        stats.land = stats.land - 1;
+        stats.water = stats.water + 1;
+        if (wasForested) {
+            stats.forest = stats.forest - 1;
+        }
     });
 
     // ── THE IRON GUARANTEE (R5) ─────────────────────────────────────────────
@@ -1123,13 +1159,12 @@ export type TileSurfaceCell = {
 export const tileSurfaceKey = (cell: TileSurfaceCell): string | undefined => {
     const resources = cell.resources ?? {};
     // R2 — an interior fresh-water basin reads as its WATER, and water wins
-    // over EVERY decoration (the standing tree the meadow-ingress seeded
-    // beneath the carved basin, and the highland iron that never co-locates
-    // with a lowland wetland): most basins still carry a tree deposit from
-    // the pre-basin meadow stand, so water must outrank the tree landmark or
-    // the canopy obscures the fresh-water body (only the treeless basins
-    // would paint water). A basin is its wetland surface, never its trees.
-    if (cell.biome === 'lake' || cell.biome === 'pond') {
+    // over EVERY decoration (a standing tree landmark and the highland iron
+    // that never co-locates with a lowland wetland). Since R4 the drowned
+    // basin carries no deposits at all (the basin pass washes them away), so
+    // this is the belt to the pass's braces: a basin is its water surface,
+    // never a canopy or a mine over it.
+    if (isFreshBasin(cell.biome)) {
         return cell.biome;
     }
     if ((resources.iron ?? 0) > 0) {
@@ -1172,6 +1207,17 @@ export const tileSurfaceKey = (cell: TileSurfaceCell): string | undefined => {
     }
     return cell.biome;
 };
+
+/**
+ * One surface key's census inside a generated grid — the histogram entry
+ * the terrain plugin's surfaceKeyCounts returns. `first`/`last` are the
+ * row-major indices of the key's first and last child cell (the coarse
+ * majority fold resolves ties by the key that REACHED its winning count
+ * first — the row-major strict-`>` scan semantics — and that is exactly
+ * the winner with the EARLIEST last occurrence among the max-count keys,
+ * so `last` alone carries the tie-break).
+ */
+export type SurfaceKeyCount = { key: string; count: number; first: number; last: number };
 
 /** One "tree ×2" / "sand ×∞" fragment for hover titles and inspectors. */
 const depositFragment = (resource: TileResource, count: number): string =>
@@ -1223,6 +1269,12 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
     tilesAt(scale: number): number;
     /** The grid at a tile address — the root canvas for the empty path. */
     canvasFor(path: TilePath): Canvas | undefined;
+    /**
+     * The EXACT surface-key histogram of the grid at a tile address without
+     * materializing it (the coarse majority fold's fast path). Undefined
+     * when no grid exists at the address (empty path, beyond the depth).
+     */
+    surfaceKeyCounts(path: TilePath): SurfaceKeyCount[] | undefined;
     /** One tile at a tile address (the parent path resolves its grid). */
     cellFor(path: TilePath): TerrainCell | undefined;
     /** The persistent forest stand of a parent tile (undefined: none). */
@@ -1417,12 +1469,21 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
         `${TILE_RESOURCES.map((resource) => cell.resources[resource] ?? 0).join(',')}|${cell.height}|${cell.waterLevel}|${cell.biome}|${cell.voxels.join('+')}|${cell.carving ? cell.carving.rock.join(';') : 'none'}`;
 
     /**
-     * Generates one tile's sub-grid from its parent cell — the microscopic
-     * zoom. The sub-grid has the ROOT grid's dimensions (the recursion rule:
-     * zooming in never changes the board shape), and every subtile inherits
-     * the parent column (voxels, height, water line, passability, biome):
-     * the tile's interior ground IS the tile's ground. The parent's deposits
-     * distribute across the subtiles — the zoom reveals WHERE they stand:
+     * The scatter PREPARATION of one tile's sub-grid — the single source of
+     * truth shared by generateSubCanvas (which materializes the cells) and
+     * surfaceKeyCounts (which histograms the children's surface keys without
+     * materializing). Both readers MUST scatter identically — the histogram
+     * is exact only while it mirrors the materializer's distribution
+     * position-for-position (the R6 depth-2 performance fix; the
+     * surfaceKeyCounts test pins the agreement).
+     *
+     * The scatter rules — how one tile's sub-grid forms from its parent
+     * cell, the microscopic zoom. The sub-grid has the ROOT grid's
+     * dimensions (the recursion rule: zooming in never changes the board
+     * shape), and every subtile inherits the parent column (voxels, height,
+     * water line, passability, biome): the tile's interior ground IS the
+     * tile's ground. The parent's deposits distribute across the subtiles —
+     * the zoom reveals WHERE they stand:
      *   the INFINITE ground supply (dirt/grass/sand — NOT stone: gravel is
      *     terrain, and the finite-stone rule keeps it a non-supplier) IS
      *     the ground — every subtile carries the symbolic deposit so the
@@ -1454,7 +1515,18 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
      *   remaining finite deposits (an iron lode) scatter one unit per
      *     seeded subtile.
      */
-    const generateSubCanvas = (parent: TerrainCell, pathKey: string): Canvas => {
+    type SubPrep = {
+        /** The parent's persistent stand (undefined: seeded scatter fallback). */
+        stand: ForestStand | undefined;
+        /** The spillover band's fine spots (the boulder crowns). */
+        rocks: Set<string>;
+        /** The crowns whose stone unit the parent's live stock still covers. */
+        visibleCrowns: Set<string>;
+        /** The pre-scattered finite deposits, keyed by "x,y". */
+        deposits: Map<string, TileResources>;
+    };
+
+    const subPrep = (parent: TerrainCell, pathKey: string): SubPrep => {
         const width = dims.width;
         const height = dims.height;
         const halfX = (width - 1) / 2;
@@ -1530,6 +1602,21 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
                 deposits.set(`${x},${y}`, record);
             }
         });
+
+        return { stand, rocks, visibleCrowns, deposits };
+    };
+
+    /**
+     * Generates one tile's sub-grid — the materializer half of the scatter
+     * (the preparation is the shared subPrep above; the long rule comment
+     * lives there).
+     */
+    const generateSubCanvas = (parent: TerrainCell, pathKey: string): Canvas => {
+        const width = dims.width;
+        const height = dims.height;
+        const halfX = (width - 1) / 2;
+        const halfY = (height - 1) / 2;
+        const { stand, rocks, visibleCrowns, deposits } = subPrep(parent, pathKey);
 
         const cells: TerrainCell[] = [];
         for (let row = 0; row < height; row++) {
@@ -1625,8 +1712,135 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
         return canvas;
     };
 
-    // ── The persistent forest stand registry ─────────────────────────────────
-    // The terrain plugin OWNS the stands (its sub-grid generation mirrors
+    /**
+     * The EXACT surface-key histogram of the grid at `path` — the children's
+     * visible keys counted WITHOUT materializing the sub-grid (the R6
+     * depth-2 performance fix: the coarse majority fold asks this instead
+     * of generating 425 cell objects per parent, which at depth 2 meant
+     * ~180k cells per root and thrashed the FIFO sub-grid cache).
+     *
+     * Exactness: the scan reproduces generateSubCanvas position-for-position
+     * from the SAME subPrep — an ordinary cell carries only the inherited
+     * column + the unlimited ground supply (one base key computed once),
+     * and only the SPECIAL fine cells (deposit landing, stand tree, visible
+     * crown, boulder gravel) re-derive a key through tileSurfaceKey, memoized
+     * per distinct shape signature (identical deposits + flags ⇒ identical
+     * key). Undefined when no grid exists at `path` (empty path, beyond the
+     * configured depth, unresolvable parent, unbound plugin).
+     */
+    const surfaceKeyCounts = (path: TilePath): SurfaceKeyCount[] | undefined => {
+        if (!bound || path.length === 0 || path.length > subtileDepth) {
+            return undefined;
+        }
+        // The parent cell whose scatter authors the grid at `path` — its own
+        // grid resolves through the cache (the caller's fold just walked it)
+        const parentCanvas = canvasAtPath(path.slice(0, -1));
+        const tail = path[path.length - 1];
+        const parent = parentCanvas ? cellOn(parentCanvas, tail.x, tail.y) : undefined;
+        if (!parent) {
+            return undefined;
+        }
+        const prep = subPrep(parent, tilePathKey(path));
+        const width = dims.width;
+        const height = dims.height;
+        const halfX = (width - 1) / 2;
+        const halfY = (height - 1) / 2;
+        const total = width * height;
+        // Index the special fine cells by row-major cell index (the "x,y"
+        // keys parse ONCE; the 425-cell scan below stays string-free)
+        const depositAt: Array<TileResources | undefined> = new Array(total);
+        prep.deposits.forEach((record, spot) => {
+            const [x, y] = spot.split(',').map(Number);
+            depositAt[(y + halfY) * width + (x + halfX)] = record;
+        });
+        const treeAt = new Uint8Array(total);
+        prep.stand?.trees.forEach((_record, spot) => {
+            const [x, y] = spot.split(',').map(Number);
+            treeAt[(y + halfY) * width + (x + halfX)] = 1;
+        });
+        const crownAt = new Uint8Array(total);
+        prep.visibleCrowns.forEach((spot) => {
+            const [x, y] = spot.split(',').map(Number);
+            crownAt[(y + halfY) * width + (x + halfX)] = 1;
+        });
+        const rockAt = new Uint8Array(total);
+        prep.rocks.forEach((spot) => {
+            const [x, y] = spot.split(',').map(Number);
+            rockAt[(y + halfY) * width + (x + halfX)] = 1;
+        });
+        // The ORDINARY cell's key — the inherited column carrying only the
+        // unlimited ground supply (the materializer's per-cell loop sets
+        // exactly these on a special-less cell): computed once per grid
+        const baseResources: TileResources = {};
+        TILE_RESOURCES.forEach((resource) => {
+            if (UNLIMITED_TILE_RESOURCES.includes(resource) && (parent.resources[resource] ?? 0) > 0) {
+                baseResources[resource] = 1;
+            }
+        });
+        const baseKey = tileSurfaceKey({
+            biome: parent.biome,
+            resources: baseResources,
+            voxels: parent.voxels,
+        });
+        // Special cells share keys by SHAPE (same deposit record + tree/
+        // crown/gravel flags ⇒ same surface key) — tileSurfaceKey runs once
+        // per distinct signature, not once per cell
+        const specialKeys = new Map<string, string | undefined>();
+        const counts = new Map<string, SurfaceKeyCount>();
+        const bump = (key: string | undefined, index: number): void => {
+            if (key === undefined) {
+                return;
+            }
+            const record = counts.get(key);
+            if (record) {
+                record.count = record.count + 1;
+                record.last = index;
+                return;
+            }
+            counts.set(key, { key, count: 1, first: index, last: index });
+        };
+        for (let index = 0; index < total; index++) {
+            const deposit = depositAt[index];
+            const tree = treeAt[index] === 1;
+            const crown = crownAt[index] === 1;
+            const rock = rockAt[index] === 1;
+            if (!deposit && !tree && !crown && !rock) {
+                bump(baseKey, index);
+                continue;
+            }
+            // The shape signature — deposit counts + the three flags
+            const signature = `${TILE_RESOURCES.map((resource) => deposit?.[resource] ?? 0).join(
+                ',',
+            )}|${tree ? 1 : 0}${crown ? 1 : 0}${rock ? 1 : 0}`;
+            if (!specialKeys.has(signature)) {
+                // Rebuild the materializer's exact cell slice for this shape:
+                // deposit spread, then the tree/crown units, then the
+                // unlimited ground, then the boulder's gravel stack (the
+                // same order generateSubCanvas's loop applies)
+                const resources: TileResources = { ...(deposit ?? {}) };
+                if (tree) {
+                    resources.tree = 1;
+                }
+                if (crown) {
+                    resources.stone = 1;
+                }
+                TILE_RESOURCES.forEach((resource) => {
+                    if (UNLIMITED_TILE_RESOURCES.includes(resource) && (parent.resources[resource] ?? 0) > 0) {
+                        resources[resource] = 1;
+                    }
+                });
+                const voxels = rock ? [...parent.voxels, 'gravel' as VoxelKind] : parent.voxels;
+                specialKeys.set(
+                    signature,
+                    tileSurfaceKey({ biome: parent.biome, resources, voxels }),
+                );
+            }
+            bump(specialKeys.get(signature), index);
+        }
+        return [...counts.values()];
+    };
+
+    // ── The persistent forest stand registry ─────────────────────────────────    // The terrain plugin OWNS the stands (its sub-grid generation mirrors
     // them); the plugins/forest ecology mutates them through this pair.
 
     /** A tile's persistent stand (undefined: the tile holds no forest). */
@@ -1706,6 +1920,10 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
         tilesAt: (scale) =>
             Math.pow(dims.width * dims.height, Math.max(0, subtileDepth + 1 - scale)),
         canvasFor: (path) => canvasAtPath(path),
+        // The children's EXACT surface-key histogram at `path` (no cell
+        // materialization) — the coarse majority fold's fast path; undefined
+        // when no grid exists there (see surfaceKeyCounts above)
+        surfaceKeyCounts: (path) => surfaceKeyCounts(path),
         cellFor: (path) => {
             if (path.length === 0) {
                 return undefined;

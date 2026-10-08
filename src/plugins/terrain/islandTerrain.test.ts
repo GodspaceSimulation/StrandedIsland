@@ -161,8 +161,13 @@ describe('generateIsland', () => {
         // R5's finite mineable guarantee: the default island carries exactly
         // 1 iron lode (stamped on the first highland) — census iron 1; the
         // finite-stone census reads 27 units (the 9 highlands ×
-        // STONE_PER_HIGHLAND 3 — at/above the guarantee floor, untouched)
-        expect(island.stats).toEqual({ land: 282, water: 143, forest: 68, iron: 1, stone: 27 });
+        // STONE_PER_HIGHLAND 3 — at/above the guarantee floor, untouched).
+        // R4 — the 13 basin cells are WATER now: the census moves them from
+        // land to water (282−13 = 269 land, 143+13 = 156 water), and the 9
+        // of them that were forested leave the forest count (68−9 = 59 —
+        // exactly the 59 forest-biome tiles the biome map shows; the drowned
+        // woods no longer stand).
+        expect(island.stats).toEqual({ land: 269, water: 156, forest: 59, iron: 1, stone: 27 });
     });
 
     it('carries resource deposits: the voxel ground supply, the neighborhood tree stands, bare sea', () => {
@@ -228,34 +233,34 @@ describe('generateIsland', () => {
             '-3,3:0 -2,3:0 -1,3:3 0,3:8 1,3:6 2,3:11 3,3:25 -5,4:0 -4,4:0 -3,4:0 ' +
             '-2,4:3 -1,4:19 1,4:19 2,4:3 3,4:11 -5,5:0 -4,5:0 -3,5:0 -2,5:8 2,5:8 3,5:3',
         );
-        // The treed-tile census: 59 woods + the 35 ingressed meadows + the 13
-        // wetland tiles that keep their pre-basin fringe deposits — 107
-        // (T2's denser COUNTS fill the same tiles — the census count is
-        // topology-driven, the unit counts are denser)
-        expect(island.cells.filter((cell) => (cell.resources.tree ?? 0) > 0).length).toBe(107);
+        // The treed-tile census: 59 woods + the 35 ingressed meadows — 94
+        // (R4 washes the 13 basin cells clean: the drowned fringe deposits
+        // are gone with the ground supply — no trees stand on open water)
+        expect(island.cells.filter((cell) => (cell.resources.tree ?? 0) > 0).length).toBe(94);
         // Beach (−4,−7): the column is dirt/sand — the unlimited ground
         // supply (the gravel bedrock supplies no stone anymore)
         expect(island.cells.find((cell) => cell.x === -4 && cell.y === -7)?.resources).toEqual({
             dirt: 1,
             sand: 1,
         });
-        // Lake (1,−4): the R2 fresh-water basin KEPT its pre-basin meadow
-        // deposits — the dirt/grass ground + its cardinal+diagonal forest
-        // edges' 14-spot ingress fringe (T2's densified fringe; the lake
-        // surface ranks above the canopy in the surface derivation)
-        expect(island.cells.find((cell) => cell.x === 1 && cell.y === -4)?.resources).toEqual({
-            dirt: 1,
-            grass: 1,
-            tree: 14,
-        });
+        // Lake (1,−4): the R4 fresh-water basin is DROWNED — impassable water
+        // (the dirt+sand+water column) carrying NO deposits: the ground
+        // supply, the meadow-ingress fringe and the carve are all washed
+        // away (the submerged-supplies-nothing rule — the water surface is
+        // all the tile is)
+        const lake = island.cells.find((cell) => cell.x === 1 && cell.y === -4)!;
+        expect(lake.passable).toBe(false);
+        expect(lake.voxels).toEqual(['dirt', 'sand', 'water']);
+        expect(lake.resources).toEqual({});
         // The ground-supply censuses: every dry land cell carries dirt;
-        // grass covers meadows AND woods (135 = 59 forests + the
-        // grass-tiled meadows; R2's 13 lake/pond wetlands lose their grass
-        // — the wetland reads as water, not meadow); sand only the beaches
-        // — R3's 2-tile coastal band shrank the sands from 160 to 138.
+        // grass covers meadows AND woods (122 = 59 forests + the
+        // grass-tiled meadows; R4's 13 lake/pond basins lose their grass
+        // — the drowned basin reads as water, not meadow); sand only the
+        // beaches — R3's 2-tile coastal band shrank the sands from 160 to
+        // 138 (the basins sit inland, so the sand census stands).
         // STONE is FINITE now: it blankets the 9 highland rock sites (the
         // localized rock terrain — 3 units each, 27 units in all), never the
-        // 282-cell dry land (the old bedrock-stone mirror is gone — the
+        // 269-cell dry land (the old bedrock-stone mirror is gone — the
         // finite-stone rule)
         expect(island.cells.filter((cell) => (cell.resources.stone ?? 0) > 0).length).toBe(9);
         expect(
@@ -268,8 +273,8 @@ describe('generateIsland', () => {
             [1, 0, 3], [-1, 1, 3], [0, 1, 3], [1, 1, 3],
         ]);
         expect(island.cells.reduce((sum, cell) => sum + (cell.resources.stone ?? 0), 0)).toBe(27);
-        expect(island.cells.filter((cell) => (cell.resources.dirt ?? 0) > 0).length).toBe(282);
-        expect(island.cells.filter((cell) => (cell.resources.grass ?? 0) > 0).length).toBe(135);
+        expect(island.cells.filter((cell) => (cell.resources.dirt ?? 0) > 0).length).toBe(269);
+        expect(island.cells.filter((cell) => (cell.resources.grass ?? 0) > 0).length).toBe(122);
         expect(island.cells.filter((cell) => (cell.resources.sand ?? 0) > 0).length).toBe(138);
         // Sea (−12,−8): no deposits — submerged columns supply nothing
         expect(island.cells.find((cell) => cell.x === -12 && cell.y === -8)?.resources).toEqual({});
@@ -584,6 +589,29 @@ describe('generateIsland', () => {
         // No walkable column's surface is water
         expect(landCells.every((cell) => cell.voxels[cell.voxels.length - 1] !== 'water')).toBe(true);
     });
+
+    it('the fresh basins are drowned: impassable, water-topped, deposit-free (R4)', () => {
+        const island = generateIsland({ seed: 7 });
+        const basins = island.cells.filter((cell) => cell.biome === 'lake' || cell.biome === 'pond');
+        // The seed-7 island's 5 lakes + 8 ponds
+        expect(basins.length).toBe(13);
+        basins.forEach((cell) => {
+            // Impassable water columns — the ground sits a step under the
+            // sea line and the column tops with water
+            expect(cell.passable).toBe(false);
+            expect(cell.voxels[cell.voxels.length - 1]).toBe('water');
+            // The drowned column keeps NO deposits — no tree stand, no rock,
+            // no ground supply (the basin pass clears them whole)
+            expect(cell.resources).toEqual({});
+            expect(cell.carving).toBeUndefined();
+        });
+        // The land set the spawn and build scans walk never carries a basin
+        expect(
+            island.cells
+                .filter((cell) => cell.passable)
+                .some((cell) => cell.biome === 'lake' || cell.biome === 'pond'),
+        ).toBe(false);
+    });
 });
 
 describe('islandTerrainPlugin', () => {
@@ -630,8 +658,10 @@ describe('islandTerrainPlugin', () => {
         expect(plugin.size()).toEqual({ width: 21, height: 13 });
         // R1's meadow-feed re-grew the 21×13 woods slightly (40 vs 44);
         // R4's finite stone adds the guarantee heap (21×13 has no highland →
-        // the floor 12 lands on its peak — stats stone 12)
-        expect(plugin.stats()).toEqual({ land: 162, water: 111, forest: 40, iron: 0, stone: 12 });
+        // the floor 12 lands on its peak — stats stone 12); R4's impassable
+        // basins move 3 drowned cells from land to water (162−3 = 159 land,
+        // 111+3 = 114 water — none of them was forested, forest holds 40)
+        expect(plugin.stats()).toEqual({ land: 159, water: 114, forest: 40, iron: 0, stone: 12 });
         // The redraw is announced on the story feed (a world-scale
         // happening — the god reshaped the world)
         expect(world.events.log()[events]).toEqual({
@@ -931,5 +961,135 @@ describe('islandTerrainPlugin', () => {
         const second = islandTerrainPlugin({ width: 7, height: 5 });
         createWorld({ seed: 7, plugins: [second] });
         expect(second.canvasFor([{ x: 0, y: 0 }])).toEqual(first.canvasFor([{ x: 0, y: 0 }]));
+    });
+});
+
+// ── surfaceKeyCounts — the exact histogram without materializing ─────────────
+// The R6 depth-2 performance fix: the coarse majority fold reads the
+// children's surface-key histogram straight from the parent cell instead of
+// generating 425 cell objects per parent. The contract is EXACTNESS — the
+// histogram must equal the naive census over the MATERIALIZED grid, cell for
+// cell, including the row-major first/last indices that carry the majority
+// tie-break. The naive census below is the independent reference: it walks
+// canvasFor(path).cells and runs tileSurfaceKey on every real child.
+describe('surfaceKeyCounts — the exact children histogram (R6 perf fix)', () => {
+    /** The independent reference: census of the MATERIALIZED grid's keys. */
+    const naiveCounts = (
+        plugin: Pick<ReturnType<typeof islandTerrainPlugin>, 'canvasFor'>,
+        path: Array<{ x: number; y: number }>,
+    ) => {
+        const grid = plugin.canvasFor(path);
+        if (!grid) {
+            return undefined;
+        }
+        const counts = new Map<string, { key: string; count: number; first: number; last: number }>();
+        grid.cells.forEach((cell, index) => {
+            const key = tileSurfaceKey(cell);
+            if (key === undefined) {
+                return;
+            }
+            const record = counts.get(key);
+            if (record) {
+                record.count = record.count + 1;
+                record.last = index;
+                return;
+            }
+            counts.set(key, { key, count: 1, first: index, last: index });
+        });
+        return [...counts.values()];
+    };
+
+    it('matches the materialized grid exactly on the default island (every landmark)', () => {
+        const plugin = islandTerrainPlugin();
+        createWorld({ seed: 7, plugins: [plugin] });
+        // One address per landmark shape: the rock site (gravel column +
+        // finite stock), the iron lode, the tree-fringed ingress meadow, the
+        // full-canopy wood, the lake basin, the sand coast, the shallows rim
+        // and a bare sea column
+        const addresses = [
+            { x: 0, y: 0 },
+            { x: -1, y: -1 },
+            { x: 1, y: -2 },
+            { x: 4, y: -5 },
+            { x: 1, y: -4 },
+            { x: -5, y: -1 },
+            { x: -12, y: -8 },
+            { x: 12, y: 8 },
+        ];
+        addresses.forEach((address) => {
+            const path = [address];
+            expect(plugin.surfaceKeyCounts(path)).toEqual(naiveCounts(plugin, path));
+        });
+    });
+
+    it('counts the crowns exactly — gravel tops and the live-stock split', () => {
+        const plugin = islandTerrainPlugin();
+        const world = createWorld({ seed: 7, plugins: [plugin] });
+        // The highland (0,0): a 3-unit stock, FOUR carved crowns — the
+        // fourth stays a bare boulder (the crown-first rule), and every
+        // crown stacks a gravel voxel on the inherited dirt column
+        const peak = world.cellAt(0, 0)!;
+        peak.carving = { rock: ['-12,-8', '0,-8', '12,8', '5,5'] };
+        // The exact expected census (row-major 25×17 indices): the three
+        // visible crowns read 'stone' (gravel top + stock), the fourth
+        // crown and every ordinary cell read the highland's 'dirt' ground
+        expect(plugin.surfaceKeyCounts([{ x: 0, y: 0 }])).toEqual([
+            { key: 'stone', count: 3, first: 0, last: 424 },
+            { key: 'dirt', count: 422, first: 1, last: 423 },
+        ]);
+        // …and the materialized grid agrees exactly
+        expect(plugin.surfaceKeyCounts([{ x: 0, y: 0 }])).toEqual(
+            naiveCounts(plugin, [{ x: 0, y: 0 }]),
+        );
+        // Mine to ONE unit — the census tracks the LIVE stock (the two
+        // spent crowns fall through to their dirt ground)
+        peak.resources.stone = 1;
+        expect(plugin.surfaceKeyCounts([{ x: 0, y: 0 }])).toEqual([
+            { key: 'stone', count: 1, first: 0, last: 0 },
+            { key: 'dirt', count: 424, first: 1, last: 424 },
+        ]);
+        expect(plugin.surfaceKeyCounts([{ x: 0, y: 0 }])).toEqual(
+            naiveCounts(plugin, [{ x: 0, y: 0 }]),
+        );
+    });
+
+    it('matches the materialized grid at BOTH levels of a depth-2 world', () => {
+        const plugin = islandTerrainPlugin({ width: 7, height: 5, subtiles: 2, seed: 11 });
+        createWorld({ seed: 11, plugins: [plugin] });
+        // Level 1: the histogram of a root tile's children (the grid the
+        // fold materializes to recurse through)
+        const level1 = [{ x: 0, y: 0 }, { x: -3, y: -2 }, { x: 2, y: 2 }, { x: -3, y: 2 }];
+        level1.forEach((address) => {
+            const path = [address];
+            expect(plugin.surfaceKeyCounts(path)).toEqual(naiveCounts(plugin, path));
+        });
+        // Level 2: the histogram of a SUBTILE's children — the deepest
+        // generated level, the fold's fast path (never materialized before
+        // the fix — this is where the 425-grids-per-root cost lived)
+        level1.forEach((address) => {
+            const inner = [
+                { x: 0, y: 0 },
+                { x: 1, y: -1 },
+                { x: -3, y: 2 },
+            ];
+            inner.forEach((spot) => {
+                const path = [address, spot];
+                expect(plugin.surfaceKeyCounts(path)).toEqual(naiveCounts(plugin, path));
+            });
+        });
+    });
+
+    it('answers undefined where no grid exists', () => {
+        const plugin = islandTerrainPlugin({ width: 7, height: 5 });
+        createWorld({ seed: 7, plugins: [plugin] });
+        // The empty path is the ROOT grid — its census is the trivial fold
+        // over world.canvas, not this helper's job
+        expect(plugin.surfaceKeyCounts([])).toBeUndefined();
+        // Beyond the configured depth there is no grid to histogram
+        expect(plugin.surfaceKeyCounts([{ x: 0, y: 0 }, { x: 0, y: 0 }])).toBeUndefined();
+        // Unresolvable parents answer undefined too
+        expect(plugin.surfaceKeyCounts([{ x: 99, y: 0 }])).toBeUndefined();
+        // An UNBOUND plugin (never set up) has no grid to read
+        expect(islandTerrainPlugin().surfaceKeyCounts([{ x: 0, y: 0 }])).toBeUndefined();
     });
 });

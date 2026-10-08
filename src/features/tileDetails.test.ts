@@ -4,7 +4,7 @@
 // centered coordinates — see scenario/island.test.ts). The cast comes ashore
 // at the island edge (shipwreck rule):
 //   (−11,0)   sand tile (beach)   h3  voxels [stone, dirt, sand]   ground supply
-//             {stone, dirt, sand} ×∞  stock {stone:1, dirt:1, sand:1, coconut:1}  Ael stands here
+//             {stone, dirt, sand} ×∞  stock {stone:1, dirt:1, sand:1, coconut:2}  Ael stands here
 //   (−4,−7)   sand tile (beach)   h3  ground supply + shell draw
 //   (−12,−8)  shallows           h2  voxels [dirt, sand, water]  deposits {}         stock {fish:1}
 //   (0,0)     stone tile (highland) h7  voxels [stone ×5, dirt, stone]  supply
@@ -12,7 +12,7 @@
 //   (1,−2)    tree tile (meadow with its localized ingress) h5  voxels
 //             [stone ×3, dirt, grass]  supply
 //             {stone:1, dirt:1, grass:1, tree:10}  stock
-//             {tree:10, stone:1, dirt:1, grass:1, berry:2} — the meadow
+//             {tree:10, stone:1, dirt:1, grass:1, berry:3} — the meadow
 //             beside the woods carries its 10-spot edge fringe (the
 //             neighborhood model's localized tree ingress) — the 0.85-era
 //             (1,−4) meadow became a lake at the lowered 0.8 threshold
@@ -45,7 +45,9 @@ import {
     treeIconOpacity,
     TREE_ICON_FULL_COVERAGE,
     TREE_ICON_MIN_OPACITY,
+    dominantVisibleType,
 } from './tileDetails';
+import { tileSurfaceKey } from '../plugins/terrain/islandTerrain';
 
 const island = createIslandWorld({ seed: 7 });
 // The 37×25 reference board — the pre-shrink default island, kept for the
@@ -180,26 +182,27 @@ describe('occupantLine', () => {
 
 describe('tileGround', () => {
     it('generalizes the island-view stock into its item categories', () => {
-        // Sea: one fish → Foods ×1
+        // Sea: the shoal seeds two fish → Foods ×2 (R5 abundance)
         expect(tileGround(island, [{ x: -12, y: -8 }])).toEqual([
-            { category: 'food', label: 'Foods', count: 1 },
-        ]);
-        // The meadow (1,−2): 2 berries (food) + the ground supply (dirt,
-        // grass — R4: the stone that the old endless ground supply buried
-        // under the meadow stands only on the highland rock sites) + its
-        // localized 14-tree ingress fringe (T2's densified counts; each tree
-        // a material unit) — sixteen materials in all; the categories list
-        // in ITEM_KINDS order (food before material)
-        expect(tileGround(island, [{ x: 1, y: -2 }])).toEqual([
             { category: 'food', label: 'Foods', count: 2 },
+        ]);
+        // The meadow (1,−2): 3 berries (food — the abundance tuning) + the
+        // ground supply (dirt, grass — R4: the stone that the old endless
+        // ground supply buried under the meadow stands only on the highland
+        // rock sites) + its localized 14-tree ingress fringe (T2's densified
+        // counts; each tree a material unit) — sixteen materials in all; the
+        // categories list in ITEM_KINDS order (food before material)
+        expect(tileGround(island, [{ x: 1, y: -2 }])).toEqual([
+            { category: 'food', label: 'Foods', count: 3 },
             { category: 'material', label: 'Materials', count: 16 },
         ]);
-        // Ael's beach: coconut (food) + the ground supply — shell, sand and
-        // dirt (three materials; R4: the meadow-style stone that the old
-        // endless ground supply buried under the beach stands only on the
-        // highland rock sites; the 0.85-era beach had no shell)
+        // Ael's beach: TWO coconuts (food — the abundance tuning) + the
+        // ground supply — shell, sand and dirt (three materials; R4: the
+        // meadow-style stone that the old endless ground supply buried under
+        // the beach stands only on the highland rock sites; the 0.85-era
+        // beach had no shell)
         expect(tileGround(island, [{ x: -11, y: 0 }])).toEqual([
-            { category: 'food', label: 'Foods', count: 1 },
+            { category: 'food', label: 'Foods', count: 2 },
             { category: 'material', label: 'Materials', count: 3 },
         ]);
     });
@@ -221,13 +224,16 @@ describe('tileGround', () => {
     it('scatters the parent ground across the parent sub-grid at scale 1', () => {
         // Each non-resource unit lands on ONE seeded subtile of the parent
         // tile's 425-tile sub-grid (pinned by the world seed):
-        //   coconut on (−11,0) → subtile (−11,5)
+        //   coconuts on (−11,0) → subtiles (−11,5) and (7,−4)
         //   fish on (−12,−8) → subtile (9,5)
-        //   berries on (1,−2) → subtiles (1,−3) and (11,0)
+        //   berries on (1,−2) → subtiles (1,−3), (11,0) and (2,8)
         // Tile-resource stock (the mirrors — ground supply, trees) never
         // scatters — those units stand as the subtile deposits the terrain
         // distributed (trees at their persistent stand positions)
         expect(tileGround(island, [{ x: -11, y: 0 }, { x: -11, y: 5 }])).toEqual([
+            { item: 'coconut', count: 1 },
+        ]);
+        expect(tileGround(island, [{ x: -11, y: 0 }, { x: 7, y: -4 }])).toEqual([
             { item: 'coconut', count: 1 },
         ]);
         expect(tileGround(island, [{ x: -11, y: 0 }, { x: 0, y: 0 }])).toEqual([]);
@@ -238,6 +244,9 @@ describe('tileGround', () => {
             { item: 'berry', count: 1 },
         ]);
         expect(tileGround(island, [{ x: 1, y: -2 }, { x: 11, y: 0 }])).toEqual([
+            { item: 'berry', count: 1 },
+        ]);
+        expect(tileGround(island, [{ x: 1, y: -2 }, { x: 2, y: 8 }])).toEqual([
             { item: 'berry', count: 1 },
         ]);
     });
@@ -433,10 +442,11 @@ describe('tileSummary', () => {
                 { resource: 'dirt', count: 1, unlimited: true },
             ],
             // Scale-0 granularity: the ground lists its categories (the
-            // beach carries a shell draw too — three materials in all; R4:
-            // the meadow-style stone is gone from the beach's supply)
+            // beach carries TWO coconuts now — the abundance tuning — plus a
+            // shell draw: three materials in all; R4: the meadow-style stone
+            // is gone from the beach's supply)
             ground: [
-                { category: 'food', label: 'Foods', count: 1 },
+                { category: 'food', label: 'Foods', count: 2 },
                 { category: 'material', label: 'Materials', count: 3 },
             ],
             occupants: [
@@ -468,7 +478,7 @@ describe('tileSummary', () => {
             passable: false,
             voxels: ['dirt', 'sand', 'water'],
             resources: [],
-            ground: [{ category: 'food', label: 'Foods', count: 1 }],
+            ground: [{ category: 'food', label: 'Foods', count: 2 }],
             occupants: [],
             structures: [],
         });
@@ -498,9 +508,11 @@ describe('tileSummary', () => {
     it('assembles an iron lode column with its deposits', () => {
         // The 37×25 reference board — the default island holds no lodes
         const summary = tileSummary(reference, [{ x: -5, y: 3 }]);
-        // The lode surfaces as iron even though stone surrounds it —
-        // landmark priority puts the rare resource first
-        expect(summary?.surface).toBe('iron');
+        // R6 — the lode reads DIRT at this scale: the dominant visible type
+        // is the majority of the cell's children, and the single iron child
+        // sits among dirt/sand siblings. The landmark itself still rides
+        // the resources and ground lines below
+        expect(summary?.surface).toBe('dirt');
         expect(summary?.biome).toBe('highland');
         // R4: the lode's rock stock is the FINITE highland stock (3 units,
         // not the endless ×∞ ground supply) — the iron ore stays finite
@@ -570,8 +582,9 @@ describe('scaleView', () => {
         expect(slice?.canvas.cells.length).toBe(425);
         // Ael is the only resident of tile (−11,0) — drawn at his fine
         // spot, altitude preserved. The tile's ground items JOIN the slice
-        // as canvas objects: the coconut stands at its scattered subtile
-        // (−11,5), typed with the item id so the canvases draw its emoji.
+        // as canvas objects: the TWO coconuts (the abundance tuning) stand
+        // at their scattered subtiles (−11,5) and (7,−4), typed with the
+        // item id so the canvases draw its emoji.
         expect(slice?.coordinates.all()).toEqual([
             {
                 id: 'actor-1',
@@ -592,9 +605,16 @@ describe('scaleView', () => {
                 type: 'coconut',
                 name: 'Coconut',
             },
+            {
+                id: 'ground:coconut:1',
+                position: { x: 7, y: -4, z: 0 },
+                kind: 'item',
+                type: 'coconut',
+                name: 'Coconut',
+            },
             // The beach's shell draw scatters to its own seeded subtile
             {
-                id: 'ground:shell:1',
+                id: 'ground:shell:2',
                 position: { x: -6, y: 6, z: 0 },
                 kind: 'item',
                 type: 'shell',
@@ -612,11 +632,15 @@ describe('scaleView', () => {
         expect(berries?.map((entry) => [entry.position.x, entry.position.y])).toEqual([
             [1, -3],
             [11, 0],
+            [2, 8],
         ]);
         expect(tileGround(island, [{ x: 1, y: -2 }, { x: 1, y: -3 }])).toEqual([
             { item: 'berry', count: 1 },
         ]);
         expect(tileGround(island, [{ x: 1, y: -2 }, { x: 11, y: 0 }])).toEqual([
+            { item: 'berry', count: 1 },
+        ]);
+        expect(tileGround(island, [{ x: 1, y: -2 }, { x: 2, y: 8 }])).toEqual([
             { item: 'berry', count: 1 },
         ]);
         // …and subtile (0,0) holds nothing — the inspector and board agree
@@ -690,5 +714,177 @@ describe('treeIconOpacity (the scale-1 coverage fade)', () => {
         // wood (383/425/0.9 ≈ 1.0013) clamps to full strength
         expect(treeIconOpacity(14, 425)).toBe(TREE_ICON_MIN_OPACITY);
         expect(treeIconOpacity(383, 425)).toBe(1);
+    });
+});
+
+describe('dominantVisibleType — the coarse-scale majority read (R6)', () => {
+    it('paints each coarse tile with the majority visible type of its children', () => {
+        // The tree-fringed meadow (1,−2): its OWN key is 'tree' (the 14-spot
+        // ingress deposit) but the fringe is 14 spots among 425 children —
+        // at the coarse scale the tile READS grass
+        expect(tileSurfaceKey(island.world.canvas.cells.find((cell) => cell.x === 1 && cell.y === -2)!)).toBe('tree');
+        expect(dominantVisibleType(island, [{ x: 1, y: -2 }])).toBe('grass');
+        // The rock site (0,0): own 'stone', dominant 'dirt' — the cap is a
+        // handful among dirt floors (the 🪨 decoration keeps it findable)
+        expect(tileSurfaceKey(island.world.canvas.cells.find((cell) => cell.x === 0 && cell.y === 0)!)).toBe('stone');
+        expect(dominantVisibleType(island, [{ x: 0, y: 0 }])).toBe('dirt');
+        // The iron lode (−1,−1): own 'iron', dominant 'dirt' — the rare
+        // landmark still rides the resources lines, the canvas reads ground
+        expect(dominantVisibleType(island, [{ x: -1, y: -1 }])).toBe('dirt');
+        // The lake keeps its water identity (every child is the drowned
+        // column); the true canopy reads tree; the sea keeps its plain biome
+        expect(dominantVisibleType(island, [{ x: 1, y: -4 }])).toBe('lake');
+        expect(dominantVisibleType(island, [{ x: 4, y: -5 }])).toBe('tree');
+        expect(dominantVisibleType(island, [{ x: -7, y: 0 }])).toBe('tree');
+        expect(dominantVisibleType(island, [{ x: -12, y: -8 }])).toBe('shallows');
+    });
+
+    it('falls back to the tile\u2019s own key at the leaf level and undefined for dead addresses', () => {
+        // A scale-0 child has no generated sub-grid: its own surface key IS
+        // its visible type (the zoomed views show children cell-for-cell,
+        // so they never need the majority)
+        expect(dominantVisibleType(island, [{ x: 0, y: 0 }, { x: -1, y: -4 }])).toBe('stone');
+        expect(dominantVisibleType(island, [{ x: 0, y: 0 }, { x: 0, y: 0 }])).toBe('dirt');
+        // Empty paths and unresolvable addresses answer undefined — the
+        // caller falls back to the tile's own key
+        expect(dominantVisibleType(island, [])).toBeUndefined();
+        expect(dominantVisibleType(island, [{ x: 99, y: 99 }])).toBeUndefined();
+    });
+});
+
+// ── The depth-2 fold under the caching fast paths (R6 performance fix) ───────
+// At configured depth 2 the fold reads the deepest level through the terrain
+// plugin's surfaceKeyCounts histogram and caches every intermediate node —
+// both must answer EXACTLY what the naive recursive fold computes. The
+// reference below is that naive fold, written straight off the rule and
+// independent of the caches (it only materializes grids and keys cells).
+describe('dominantVisibleType — the depth-2 fold is exact and invalidates (R6)', () => {
+    type DeepWorld = ReturnType<typeof createIslandWorld>;
+
+    /** The independent reference: naive recursive majority over MATERIALIZED children. */
+    const naiveDominant = (world: DeepWorld, path: Array<{ x: number; y: number }>): string | undefined => {
+        const grid = world.terrain.canvasFor(path);
+        if (!grid || grid.cells.length === 0) {
+            return tileSurfaceKey(world.terrain.cellFor(path));
+        }
+        const counts = new Map<string, number>();
+        let best: string | undefined;
+        let bestCount = 0;
+        grid.cells.forEach((child) => {
+            const key =
+                naiveDominant(world, [...path, { x: child.x, y: child.y }]) ??
+                tileSurfaceKey(child);
+            if (key === undefined) {
+                return;
+            }
+            const count = (counts.get(key) ?? 0) + 1;
+            counts.set(key, count);
+            if (count > bestCount) {
+                best = key;
+                bestCount = count;
+            }
+        });
+        return best;
+    };
+
+    it('matches the naive fold on EVERY root of a small depth-2 world', () => {
+        // A 5×3 depth-2 world: 15 roots, each folding 15 children whose own
+        // children are leaves — every fold path (recursion, histogram,
+        // cache) exercised against the reference at trivial cost
+        const small = createIslandWorld({ seed: 11, terrain: { subtiles: 2, width: 5, height: 3 } });
+        small.world.canvas.cells.forEach((cell) => {
+            const path = [{ x: cell.x, y: cell.y }];
+            expect(dominantVisibleType(small, path)).toBe(naiveDominant(small, path));
+        });
+    });
+
+    it('matches the naive fold on the T5 repro world (seed 11, subtiles 2)', { timeout: 120_000 }, () => {
+        // The exact world from the performance report — the cached fold must
+        // agree with the naive one on land, forest, coast and sea alike
+        const deep = createIslandWorld({ seed: 11, terrain: { subtiles: 2 } });
+        const cells = deep.world.canvas.cells;
+        const samples = [
+            cells[0],
+            cells[106],
+            cells[212],
+            cells[318],
+            cells[424],
+            // …plus one canopy and one water column (cheap landmark picks)
+            cells.find((cell) => cell.biome === 'forest'),
+            cells.find((cell) => !cell.passable),
+        ].filter((cell): cell is (typeof cells)[number] => !!cell);
+        samples.forEach((cell) => {
+            const path = [{ x: cell.x, y: cell.y }];
+            expect(dominantVisibleType(deep, path)).toBe(naiveDominant(deep, path));
+        });
+    });
+
+    it('invalidates every cached node when the parent changes', () => {
+        const small = createIslandWorld({ seed: 11, terrain: { subtiles: 2, width: 5, height: 3 } });
+        const cell = small.world.canvas.cells.find((candidate) => candidate.passable)!;
+        const path = [{ x: cell.x, y: cell.y }];
+        const before = dominantVisibleType(small, path);
+        expect(before).toBe(naiveDominant(small, path));
+        // Warm reads answer from the caches (memo + path cache), unchanged
+        expect(dominantVisibleType(small, path)).toBe(before);
+        // Drown the column — the biome rides EVERY child (the inherited
+        // column), so the memo AND every cached intermediate are stale at
+        // once; the fingerprint moves, the fold rebuilds
+        cell.biome = 'lake';
+        cell.passable = false;
+        expect(dominantVisibleType(small, path)).toBe(naiveDominant(small, path));
+        // A basin is its WATER over every decoration — the fresh answer,
+        // not the cached one (a stale cache would keep reading `before`)
+        expect(dominantVisibleType(small, path)).toBe('lake');
+    });
+
+    it('resolves histogram ties by the key that reached the count first', () => {
+        // The tie rule of the row-major strict-`>` scan, pinned against a
+        // crafted histogram: 'b' hit its count of 2 at index 2, 'a' only at
+        // index 3 — the sequence a,b,b,a scans to 'b'
+        const counts = [
+            { key: 'a', count: 2, first: 0, last: 3 },
+            { key: 'b', count: 2, first: 1, last: 2 },
+        ];
+        // The scan reference over the matching row-major sequence
+        const sequence = ['a', 'b', 'b', 'a'];
+        const scan = new Map<string, number>();
+        let best: string | undefined;
+        let bestCount = 0;
+        sequence.forEach((key) => {
+            const count = (scan.get(key) ?? 0) + 1;
+            scan.set(key, count);
+            if (count > bestCount) {
+                best = key;
+                bestCount = count;
+            }
+        });
+        // The stub terrain serves the histogram at the deepest level (the
+        // fold's fast path) — its answer must equal the scan's
+        const cell = {
+            x: 0,
+            y: 0,
+            biome: 'meadow',
+            height: 5,
+            waterLevel: 3,
+            passable: true,
+            voxels: ['dirt'],
+            resources: {},
+        };
+        const stub = {
+            terrain: {
+                depth: () => 1,
+                size: () => ({ width: 3, height: 3 }),
+                cellFor: (stubPath: Array<{ x: number; y: number }>) =>
+                    stubPath.length === 1 && stubPath[0].x === 0 && stubPath[0].y === 0
+                        ? (cell as never)
+                        : undefined,
+                canvasFor: () => undefined,
+                surfaceKeyCounts: (stubPath: Array<{ x: number; y: number }>) =>
+                    stubPath.length === 1 ? counts : undefined,
+            },
+        } as unknown as Parameters<typeof dominantVisibleType>[0];
+        expect(best).toBe('b');
+        expect(dominantVisibleType(stub, [{ x: 0, y: 0 }])).toBe('b');
     });
 });

@@ -85,7 +85,8 @@ import {
     BOAR_TYPE_GLYPH,
     type PredatorsPlugin,
 } from '../plugins/predators/predatorsPlugin';
-import type { Actor, Sex, TileResources } from '../engine/types';
+import type { Actor, Sex, TerrainCell, TileResources } from '../engine/types';
+import { dominantVisibleType } from '../features/tileDetails';
 
 export type IslandOptions = {
     /** Simulation seed — drives terrain, resources and all agent randomness. */
@@ -420,8 +421,28 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     // back to the plain biome when the tile carries no resources (sea, or
     // finite deposits gathered away). Hover text keeps the biome/voxel
     // summary and appends the deposit line ("tree ×2 · sand ×∞").
-    const surfaceOfCell = (cell: unknown): string | undefined =>
-        tileSurfaceKey(cell as { biome?: string; resources?: TileResources });
+    // R6 — at the ISLAND view the tile's visible type is the MAJORITY of
+    // its Scale-0 children's visible types (features/tileDetails.ts
+    // dominantVisibleType — recursive down the generated ladder, counted in
+    // child cells, row-major tie-break): a Scale-1 tile shows what its
+    // zoomed interior actually looks like, not its parent-level deposit.
+    // The identity check (the cell IS the terrain's root cell at these
+    // coordinates) scopes the majority to ROOT cells — the adapter cannot
+    // otherwise tell a root cell from a zoomed subtile, and the zoomed
+    // views already show the true children cell-for-cell.
+    const surfaceOfCell = (cell: unknown): string | undefined => {
+        const slice = cell as { x?: number; y?: number; biome?: string; resources?: TileResources };
+        if (
+            slice.x !== undefined &&
+            slice.y !== undefined &&
+            terrain.cellFor([{ x: slice.x, y: slice.y }]) === (cell as TerrainCell)
+        ) {
+            // The terrain resolver the dominant-type read runs through
+            // (the helper only needs the terrain plugin's grid resolution)
+            return dominantVisibleType({ terrain }, [{ x: slice.x, y: slice.y }]) ?? tileSurfaceKey(slice);
+        }
+        return tileSurfaceKey(slice);
+    };
     const titleOfCell = (cell: unknown): string => {
         const column = cell as { biome?: string; height?: number; voxels?: string[]; resources?: TileResources };
         const ground = `${column.biome} · height ${column.height} · ${(column.voxels ?? []).join(' / ')}`;

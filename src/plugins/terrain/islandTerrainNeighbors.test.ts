@@ -593,10 +593,10 @@ describe('the neighborhood fallout in the zoomed interior (sub-grids, stands, ca
         // carries one tree unit on exactly the stand's positions
         const treedTiles = canvas.cells.filter((cell) => (cell.resources.tree ?? 0) > 0);
         // The plugin canvas (post seedStands) prices each stand from its
-        // boulder-free pool: 104 carry a living stand (the pure
-        // generateIsland reads 107 before seedStands refuses the 3 spots
-        // that fall inside a spillover band)
-        expect(treedTiles.length).toBe(104);
+        // boulder-free pool: 93 carry a living stand (R4 washed the 13
+        // basin tiles clean — the pure generateIsland reads 94 — and
+        // seedStands refuses the spots that fall inside a spillover band)
+        expect(treedTiles.length).toBe(93);
         treedTiles.forEach((tile) => {
             const stand = plugin.forestOf(tile.x, tile.y);
             expect(stand).toBeDefined();

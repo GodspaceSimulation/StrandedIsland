@@ -97,6 +97,7 @@ import {
 } from '@godspace/material';
 import type { World } from '../../engine/world';
 import type { Actor } from '../../engine/types';
+import { isSeaWater } from '../../engine/types';
 import type { InventoryPlugin } from '../inventory/inventoryPlugin';
 import type { NeedsPlugin } from '../needs/needsPlugin';
 import type { EntityProfiles } from '../entity/entityPlugin';
@@ -761,7 +762,12 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                 { x: cell.x, y: cell.y + 1 },
             ].some((neighbor) => {
                 const neighborCell = active.cellAt(neighbor.x, neighbor.y);
-                return neighborCell !== undefined && !neighborCell.passable;
+                // R4 — the mooring is SEA water: since the fresh basins went
+                // impassable too, a bare `!passable` read would let a hull
+                // be built on a lake beach and "launched" into a landlocked
+                // pond. Only the salt (ocean/shallows) carries a vessel.
+                return neighborCell !== undefined && !neighborCell.passable &&
+                    isSeaWater(neighborCell.biome);
             });
         const ranked = cells
             .filter((cell) => !shoreOnly || (cell.biome === 'beach' && mooring(cell)))
@@ -872,8 +878,10 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
             if (!site || site.state !== 'built' || !VESSEL_BLUEPRINTS.includes(site.blueprintId)) {
                 return undefined;
             }
-            // THE MOORING — the launch needs water beside the shore tile the
-            // vessel was built on; a hull built inland cannot reach the sea
+            // THE MOORING — the launch needs SEA water beside the shore tile
+            // the vessel was built on; a hull built inland cannot reach the
+            // sea, and a hull built beside a fresh basin has no sea to sail
+            // (R4 — the impassable lakes are water but not the sea)
             const anchor = site.parent[0];
             const waterNeighbors: Array<{ x: number; y: number }> = [];
             arrayEach(
@@ -885,7 +893,7 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                 ],
                 ({ value: neighbor }) => {
                     const cell = active.cellAt(neighbor.x, neighbor.y);
-                    if (cell && !cell.passable) {
+                    if (cell && !cell.passable && isSeaWater(cell.biome)) {
                         waterNeighbors.push(neighbor);
                     }
                 },

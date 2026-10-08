@@ -127,13 +127,33 @@ work the woods.
 ## The richer map
 
 The richer map seeds every tile from its deposits AND its biome's living
-stocks (`plugins/inventory/inventoryPlugin.ts`): meadows berry, forests
-berry AND mushroom (plus the 35%-draw vine), beaches coconut and the
-50%-draw shell, highlands the vein noise's iron lodes and the 30%-draw
-flint, and the sea stocks fish plus seaweed (the ocean always, the
-shallows on a 50% draw). The new foods regrow on their own rhythms; the
-hunger ladder gathers berries, mushrooms, fish, coconuts and seaweed in
-priority order.
+stocks (`plugins/inventory/inventoryPlugin.ts`): meadows berry ×3, forests
+berry ×2 AND mushroom ×2 (plus the 35%-draw vine), beaches coconut ×2 and
+the 50%-draw shell, highlands the vein noise's iron lodes and the 30%-draw
+flint, and EVERY water column stocks a fish shoal — the sea (the ocean
+always, the shallows on a 50% draw) AND the impassable fresh basins — with
+seaweed matting the salt beside them. The harvestible foods and materials are ABUNDANT
+by design — the starting stocks above are the survey floor and the regrowth
+caps run generous (berry 5, mushroom 4, coconut 3, fish 3, seaweed 2, vine
+2, bush 3) so a harvested cell refills toward a stock that reads abundant.
+Regrowth is ELIGIBILITY-GATED: the survey records every cell it seeded each
+renewable on, and the rhythm sweep refills exactly those cells — a fully
+harvested source (its stock key deleted by the take) still regrows, and an
+item never spreads to a cell it was not seeded on (no mushrooms on the
+beach, no fish on land). The finite resources (shell, flint, stone, iron)
+never regrow. The hunger ladder gathers berries, mushrooms, fish, coconuts
+and seaweed in priority order — and THE FISHING SHORE (R5) joins it: a
+hungry body on dry ground with fish in the CARDINAL-adjacent water fishes
+it (the inventory's `fish` primitive — dry ground, cardinal reach, live
+shoal and bag room all re-validated at completion), and at a distance the
+fishing shores join the hunger trek's targets, so a beachgoer walks to the
+water's edge instead of milling at it. The bodies never enter the water:
+the shore is the fishery.
+
+The wetland cutoff drowns the fresh basins (R4): lake and pond tiles are
+IMPASSABLE water columns — ground a step under the sea line, every deposit
+cleared — so the land set the spawn, build and trek scans walk curves
+around them, and only the salt carries vessels.
 
 The canvas draws the woods: a treed tile carries the 'tree' DECORATION
 (scenario/island.ts decorationOf → @godspace/canvas frames), and the
@@ -280,6 +300,19 @@ reset would age recruited trees backwards.
   src/scale): scale 0 the tile interior (the simulation ground), scale 1 the
   island — THE DEFAULT VIEW, which shows where the Scale-0 entities stand.
   The ladder is a PURE VIEW ladder: zooming never re-times the clock.
+- **The dominant visible type** — at the coarse scale a tile PAINTS as the
+  majority visible type of its children (`features/tileDetails.ts`
+  dominantVisibleType, counted in child cells, ties to the key that reached
+  its winning count first in the row-major scan, recursive down the
+  generated ladder): fringed meadows read grass, rock sites and lodes read
+  dirt (the 🪨 decoration keeps them findable), the canopy reads tree. A
+  pure RENDER-side read — the simulation keeps the tile's own identity.
+  The fold is CACHED without changing its answer: the deepest generated
+  level histograms its children's keys straight from the parent cell
+  (`plugins/terrain` surfaceKeyCounts — the exact scatter, no cell objects)
+  and intermediate nodes ride a per-world fingerprint-keyed cache, so a
+  configured depth-2 board stays interactive (the naive fold materialized
+  ~180k cells per root).
 
 ## Plugins
 
@@ -313,7 +346,8 @@ the island's BUILD and CRAFT governance, planned through the shared
 **The plan** — one stock structure at a time, cooperative and
 deterministic: `shelter → raft → house → boat → fort`. The tick places the
 current project on the island interior (land cells ranked by centrality;
-vessels require a beach tile WITH a water neighbour — the launch mooring)
+vessels require a beach tile WITH a SEA-water neighbour — the launch
+mooring; a lake beach never hosts a hull)
 when nothing is live, and advances when the project's site stands built.
 
 **The rungs** (the ledger's planning order — needs always win):
@@ -352,8 +386,9 @@ world minute on top of the sleep restore (`SHELTER_REST_PER_MINUTE`, the
 construction tick sweep). The sheltered night is the safe night.
 
 **The vessels** — a built raft or boat is a concrete output:
-`construction.launch(siteId)` requires a water neighbour beside the shore
-tile (the mooring), frees the site (no refund — the materials sail with
+`construction.launch(siteId)` requires a SEA-water neighbour beside the
+shore tile (ocean/shallows — the fresh basins are impassable AND landlocked,
+so only the salt carries a vessel), frees the site (no refund — the materials sail with
 the hull), records the moored vessel (`construction.vessels()`, ids
 `v-1`, …) and logs the launch. The map resources replenish for the
 campaign: vines re-hang on an 80-minute rhythm and palm fronds shed
