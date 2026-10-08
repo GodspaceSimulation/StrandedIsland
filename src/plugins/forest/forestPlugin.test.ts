@@ -53,11 +53,12 @@ const woodTotal = (world: ReturnType<typeof createWorld>, ecology: ReturnType<ty
 describe('forestPlugin — the seeded stands (neighborhood density)', () => {
     it('seeds every forest tile at its NEIGHBORHOOD coverage: the reference wood (−7,0) clamps to a full 425', () => {
         const { world, ecology } = buildEcology(undefined, 25, 17);
-        // The pinned rounding choice of the ISOLATED base:
-        // Math.round(0.45 × 425) = 191 — the neighborhood model moves every
+        // The pinned rounding choice of the ISOLATED base (T2's densified
+        // 60% — the 45% uniform seeding is retired):
+        // Math.round(0.6 × 425) = 255 — the neighborhood model moves every
         // forested tile from there (8-forest rings clamp to 425, edge woods
         // land below, rocky edges lower still)
-        expect(forestTreeCount(25, 17)).toBe(191);
+        expect(forestTreeCount(25, 17)).toBe(255);
         // The reference wood (−7,0): a deep interior ring of eight forest
         // neighbours clamps to the FULL stand — the captured wood (425
         // trees, 1688 wood across their pools)
@@ -70,49 +71,61 @@ describe('forestPlugin — the seeded stands (neighborhood density)', () => {
         forests.forEach((cell) => {
             expect(ecology.standOf(cell)?.trees).toBe(cell.resources.tree);
         });
-        // The captured distribution at the 0.8 wetland cutoff: 35 full 425
-        // interiors, 7 partial 319 edges, 1 isolated 298 wood (the exact
-        // counts the islandTerrainNeighbors regression pins model-side)
-        expect(forests.filter((cell) => cell.resources.tree === 425).length).toBe(35);
-        expect(forests.filter((cell) => cell.resources.tree === 319).length).toBe(7);
-        expect(forests.filter((cell) => cell.resources.tree === 298).length).toBe(1);
+        // The captured distribution at the 0.8 wetland cutoff under T2's
+        // densified base: 41 full 425 interiors (up from 35), 4 woods that
+        // would clamp but hold a 1-spot boulder band (424), 6 × 404 edges,
+        // 5 × 383, 2 × 382, and 1 isolated 361 wood (the exact counts the
+        // islandTerrainNeighbors regression pins model-side)
+        expect(forests.filter((cell) => cell.resources.tree === 425).length).toBe(41);
+        expect(forests.filter((cell) => cell.resources.tree === 424).length).toBe(4);
+        expect(forests.filter((cell) => cell.resources.tree === 404).length).toBe(6);
+        expect(forests.filter((cell) => cell.resources.tree === 383).length).toBe(5);
+        expect(forests.filter((cell) => cell.resources.tree === 382).length).toBe(2);
+        expect(forests.filter((cell) => cell.resources.tree === 361).length).toBe(1);
         // The mixed seeded ages read as standing wood immediately (the
         // seeded woods hold mature trees and saplings side by side)
         expect(ecology.standOf({ x: -7, y: 0 })?.wood).toBe(1688);
         // The INGRESS MEADOWS carry real persistent stands too — the
-        // meadow (1,−2) beside the woods seeds its 10-spot edge fringe
-        // (44 wood); the bare meadow (0,−3) carries none
-        expect(ecology.standOf({ x: 1, y: -2 })).toEqual({ trees: 10, wood: 44 });
+        // meadow (1,−2) beside the woods seeds its 14-spot edge fringe
+        // (T2's densified 8/3 rule, 61 wood); the bare meadow (0,−3)
+        // carries none
+        expect(ecology.standOf({ x: 1, y: -2 })).toEqual({ trees: 14, wood: 61 });
         expect(ecology.standOf({ x: 0, y: -3 })).toBeUndefined();
     });
 
-    it('seeds the 15×9 island\u2019s woods at their neighborhood counts (isolated base 61)', () => {
+    it('seeds the 15×9 island\u2019s woods at their neighborhood counts (isolated base 81)', () => {
         const { world, ecology } = buildEcology(undefined, 15, 9);
-        expect(forestTreeCount(15, 9)).toBe(61);
+        // T2's densified base: Math.round(0.60 × 135) = 81 (the 45% base's
+        // 61 is retired); most of the 14 woods now clamp at the grid size
+        expect(forestTreeCount(15, 9)).toBe(81);
         // The 15×9 island's woods (14 forests, no wetlands — the compact
         // multi-wood fixture the 0.8 tiny-board collapse retired 7×5 for):
-        // (0,0) a wide forest ring → 128 trees / 456 wood; (−2,0) an edge
-        // wood → 74; (1,0) a full ring → 135 (captured stand sums per tile)
-        expect(ecology.standOf({ x: 0, y: 0 })).toEqual({ trees: 128, wood: 456 });
-        expect(ecology.standOf({ x: -2, y: 0 })).toEqual({ trees: 74, wood: 275 });
+        // (0,0) a wide forest ring → now the FULL 135 clamp (488 wood);
+        // (−2,0) an edge wood → 95; (1,0) a full ring → 135 (captured stand
+        // sums per tile)
+        expect(ecology.standOf({ x: 0, y: 0 })).toEqual({ trees: 135, wood: 488 });
+        expect(ecology.standOf({ x: -2, y: 0 })).toEqual({ trees: 95, wood: 353 });
         expect(ecology.standOf({ x: 1, y: 0 })).toEqual({ trees: 135, wood: 531 });
         // The mirrors moved with the stands
-        expect(world.cellAt(0, 0)?.resources.tree).toBe(128);
-        expect(world.cellAt(-2, 0)?.resources.tree).toBe(74);
+        expect(world.cellAt(0, 0)?.resources.tree).toBe(135);
+        expect(world.cellAt(-2, 0)?.resources.tree).toBe(95);
         expect(world.cellAt(1, 0)?.resources.tree).toBe(135);
     });
 
-    it('the zoom mirrors the stand exactly — 319 treed subtiles at persistent positions', () => {
+    it('the zoom mirrors the stand exactly — 383 treed subtiles at persistent positions', () => {
         const { world, terrain, ecology, inventory } = buildEcology(undefined, 25, 17);
         const sub = terrain.canvasFor([{ x: 2, y: 0 }]);
-        // (2,0) is a boulder-spilled wood: 319 fine cells carry a tree; the
-        // boulder band + bare remainder (106 fine cells) hold none
-        expect(sub?.cells.filter((cell) => (cell.resources.tree ?? 0) === 1).length).toBe(319);
-        expect(sub?.cells.filter((cell) => cell.resources.tree === undefined).length).toBe(106);
+        // (2,0) is a boulder-spilled wood: T2's densified 0.9 coverage →
+        // 383 fine cells carry a tree; the 9-spot boulder band + the bare
+        // remainder (42 fine cells) hold none
+        expect(sub?.cells.filter((cell) => (cell.resources.tree ?? 0) === 1).length).toBe(383);
+        expect(sub?.cells.filter((cell) => cell.resources.tree === undefined).length).toBe(42);
         // Every treed subtile carries ONE tree + the ground supply (the
-        // zoom reveals the woods' interior without reshuffling anything)
+        // zoom reveals the woods' interior without reshuffling anything);
+        // R4: the ground supply is dirt/grass only — the (2,0) wood is no
+        // longer a stone-bearing site (stone lives on the highland peaks)
         const treed = sub?.cells.find((cell) => (cell.resources.tree ?? 0) === 1);
-        expect(treed?.resources).toEqual({ tree: 1, stone: 1, dirt: 1, grass: 1 });
+        expect(treed?.resources).toEqual({ tree: 1, dirt: 1, grass: 1 });
         // PERSISTENCE — cut one wood off the stand (the harvest path) and
         // re-zoom: the cut tree STANDS (the tree at Ael's fine spot (10,−2)
         // holds 6 woods), so the stand's size and every treed position hold
@@ -126,7 +139,7 @@ describe('forestPlugin — the seeded stands (neighborhood density)', () => {
         // The chop cuts ONE wood — the tree stands
         expect(inventory.harvest(ael, 'tree', 'wood')).toBe(true);
         const after = terrain.canvasFor([{ x: 2, y: 0 }])!.cells.map((cell) => cell.resources.tree ?? 0);
-        expect(after.filter((count) => count === 1).length).toBe(319);
+        expect(after.filter((count) => count === 1).length).toBe(383);
         after.forEach((count, index) => {
             expect(count).toBe(before[index]);
         });
@@ -134,7 +147,9 @@ describe('forestPlugin — the seeded stands (neighborhood density)', () => {
         // stands are untouched by any zoom (the mirror held — the deposit
         // didn't move, so the fingerprint still matches the cached grid)
         expect(terrain.canvasFor([{ x: 2, y: 0 }])).toBe(terrain.canvasFor([{ x: 2, y: 0 }]));
-        expect(ecology.standOf({ x: 2, y: 0 })).toEqual({ trees: 319, wood: 1218 });
+        // T2's densified 383-tree stand with its mixed seeded ages (the
+        // captured wood sum)
+        expect(ecology.standOf({ x: 2, y: 0 })).toEqual({ trees: 383, wood: 1452 });
     });
 });
 
@@ -142,25 +157,27 @@ describe('forestPlugin — the chop (wood off the pool)', () => {
     it('cuts ONE wood off the exact fine spot\u2019s tree, folding its growth first', () => {
         const { terrain, ecology, world, inventory } = buildEcology(undefined, 15, 9);
         const stand = terrain.forestOf(-1, 0)!;
-        const bare = { x: 0, y: -3 };
-        expect(stand.trees.has('0,-3')).toBe(false);
+        // T2's densified 15×9 stand now TREES the old (0,−3) bare spot —
+        // the first row-major bare fine cell moved to (−3,−4)
+        const bare = { x: -3, y: -4 };
+        expect(stand.trees.has('-3,-4')).toBe(false);
         // A planted pool-5 tree (born −100 — past the virgin marker)
         terrain.forestPlant(-1, 0, bare, { born: -100, base: 5, baseMinute: -100, carry: 0 });
         const size = stand.trees.size;
         expect(ecology.chop({ x: -1, y: 0 }, bare)).toEqual({ felled: false });
         // The tree STANDS: one wood off the pool, the record alive
-        const record = stand.trees.get('0,-3')!;
+        const record = stand.trees.get('-3,-4')!;
         expect(record.base).toBe(4);
         expect(stand.trees.size).toBe(size);
         // Three more chops leave ONE wood standing; the fifth fells it
         ecology.chop({ x: -1, y: 0 }, bare);
         ecology.chop({ x: -1, y: 0 }, bare);
         ecology.chop({ x: -1, y: 0 }, bare);
-        expect(stand.trees.get('0,-3')?.base).toBe(1);
+        expect(stand.trees.get('-3,-4')?.base).toBe(1);
         expect(ecology.chop({ x: -1, y: 0 }, bare)).toEqual({ felled: true });
         // FELLED COMPLETE — the record leaves the stand and the mirrors
         // drop with it (deposit + gatherable stock read the stand size)
-        expect(stand.trees.has('0,-3')).toBe(false);
+        expect(stand.trees.has('-3,-4')).toBe(false);
         expect(stand.trees.size).toBe(size - 1);
         expect(world.cellAt(-1, 0)?.resources.tree).toBe(size - 1);
         expect(inventory.cellStock(-1, 0).tree).toBe(size - 1);
@@ -171,9 +188,10 @@ describe('forestPlugin — the chop (wood off the pool)', () => {
         const stand = terrain.forestOf(-1, 0)!;
         // Chopping the bare tile heart falls back to the deterministic
         // NEAREST tree in the stand (its pool) — the tree STANDS at a
-        // healthy pool, so the stand's size is intact
+        // healthy pool, so the stand's size is intact (T2's densified 15×9
+        // stand: 122 trees, up from 101)
         expect(ecology.chop({ x: -1, y: 0 })).toEqual({ felled: false });
-        expect(stand.trees.size).toBe(101);
+        expect(stand.trees.size).toBe(122);
         // A tree-less tile declines the chop entirely (the (−7,4) corner is
         // bare ground on the 15×9 island)
         expect(terrain.forestOf(-7, 4)).toBeUndefined();
@@ -200,7 +218,9 @@ describe('forestPlugin — the wood growth (lazy, deterministic)', () => {
         // Accelerated maturity: 100 world minutes to the full pool of 5
         const { terrain, ecology } = buildEcology({ maturityMinutes: 100, woodCap: 5 }, 15, 9);
         const stand = terrain.forestOf(-1, 0)!;
-        const bare = { x: -1, y: -2 };
+        // T2's densified 15×9 stand treed the old (−1,−2) bare spot —
+        // (0,0) is a bare fine cell of the (−1,0) stand (captured)
+        const bare = { x: 0, y: 0 };
         const sapling = { born: 0, base: 1, baseMinute: 0, carry: 0 };
         terrain.forestPlant(-1, 0, bare, sapling);
         expect(ecology.poolOf(sapling)).toBe(1);
@@ -218,7 +238,9 @@ describe('forestPlugin — the wood growth (lazy, deterministic)', () => {
     it('a mature PARTIALLY harvested tree regrows — never dead-ended at cap-minus-harvest', () => {
         const { terrain, ecology } = buildEcology({ maturityMinutes: 100, woodCap: 5 }, 15, 9);
         const stand = terrain.forestOf(-1, 0)!;
-        const bare = { x: -1, y: -2 };
+        // T2's densified 15×9 stand treed the old (−1,−2) bare spot —
+        // (0,0) is a bare fine cell of the (−1,0) stand (captured)
+        const bare = { x: 0, y: 0 };
         const mature = { born: -1000, base: 5, baseMinute: -1000, carry: 0 };
         terrain.forestPlant(-1, 0, bare, mature);
         expect(ecology.poolOf(mature)).toBe(5);
@@ -241,16 +263,18 @@ describe('forestPlugin — the wood growth (lazy, deterministic)', () => {
     it('a felled tree\u2019s record is removed; growth never resurrects it', () => {
         const { terrain, ecology } = buildEcology({ maturityMinutes: 100, woodCap: 5 }, 15, 9);
         const stand = terrain.forestOf(-1, 0)!;
-        const bare = { x: -1, y: -2 };
+        // T2's densified 15×9 stand treed the old (−1,−2) bare spot —
+        // (0,0) is a bare fine cell of the (−1,0) stand (captured)
+        const bare = { x: 0, y: 0 };
         const sapling = { born: 0, base: 1, baseMinute: 0, carry: 0 };
         terrain.forestPlant(-1, 0, bare, sapling);
         // The sapling's whole pool is one wood — the first chop fells it
         expect(ecology.chop({ x: -1, y: 0 }, bare)).toEqual({ felled: true });
-        expect(stand.trees.has('-1,-2')).toBe(false);
+        expect(stand.trees.has('0,0')).toBe(false);
         // Growth works on the ecology clock — a year later the spot stays
         // bare (only recruitment replants a felled spot)
         ecology.fastForward(500);
-        expect(stand.trees.has('-1,-2')).toBe(false);
+        expect(stand.trees.has('0,0')).toBe(false);
     });
 });
 
@@ -313,10 +337,12 @@ describe('forestPlugin — recruitment (the seed bank)', () => {
         // 9-spot band, so its capacity is the boulder-penalty cap 416
         // (425 − 9), NOT the full 425
         const stand = terrain.forestOf(2, 0)!;
-        expect(stand.trees.size).toBe(319);
-        // Fill all but ONE of the 106 bare fine cells (row-major probe)
+        // T2's densified 0.9-coverage stand: 383 trees (up from 319), leaving
+        // 42 bare fine cells (425 − 383)
+        expect(stand.trees.size).toBe(383);
+        // Fill all but ONE of the 42 bare fine cells (row-major probe)
         const bare: Array<{ x: number; y: number }> = [];
-        for (let row = 0; row < 17 && bare.length < 106; row++) {
+        for (let row = 0; row < 17 && bare.length < 42; row++) {
             for (let col = 0; col < 25; col++) {
                 const spot = { x: col - 12, y: row - 8 };
                 if (!stand.trees.has(`${spot.x},${spot.y}`)) {
@@ -324,8 +350,8 @@ describe('forestPlugin — recruitment (the seed bank)', () => {
                 }
             }
         }
-        expect(bare.length).toBe(106);
-        bare.slice(0, 105).forEach((spot) => {
+        expect(bare.length).toBe(42);
+        bare.slice(0, 41).forEach((spot) => {
             terrain.forestPlant(2, 0, spot, { born: 1, base: 1, baseMinute: 1, carry: 0 });
         });
         // One recruit cycle: the random probe OR the bounded row-major
@@ -337,7 +363,7 @@ describe('forestPlugin — recruitment (the seed bank)', () => {
         // The mirrors read the capped stand (the rock penalty already priced
         // the band out — the deposit IS the stand)
         expect(world.cellAt(2, 0)?.resources.tree).toBe(416);
-        expect(ecology.standOf({ x: 2, y: 0 })).toEqual({ trees: 416, wood: 1316 });
+        expect(ecology.standOf({ x: 2, y: 0 })).toEqual({ trees: 416, wood: 1486 });
     });
 
     // ── THE BOULDER BOUNDARY (the T5 fix's regression pins) ────────────────
@@ -360,7 +386,9 @@ describe('forestPlugin — recruitment (the seed bank)', () => {
         const band = world.cellAt(2, 0)!.carving!.rock;
         expect(band.length).toBe(9);
         const stand = terrain.forestOf(2, 0)!;
-        expect(stand.trees.size).toBe(319);
+        // T2's densified 383-tree stand (the seeded size is irrelevant to
+        // the boundary — the clearcut below starts the refill from zero)
+        expect(stand.trees.size).toBe(383);
         // Clearcut the whole stand — the mirrors drop with it (the boulders
         // stay; the forest voxel keeps its seed-bank recruitment alive)
         while (stand.trees.size > 0) {
@@ -397,7 +425,7 @@ describe('forestPlugin — recruitment (the seed bank)', () => {
         const bouldered = sub.cells.filter(
             (cell) =>
                 cell.voxels.length === (world.cellAt(2, 0)?.voxels.length ?? 0) + 1 &&
-                cell.voxels[cell.voxels.length - 1] === 'stone',
+                cell.voxels[cell.voxels.length - 1] === 'gravel',
         );
         expect(bouldered.length).toBe(9);
         expect(bouldered.filter((cell) => (cell.resources.tree ?? 0) > 0)).toEqual([]);
@@ -463,18 +491,19 @@ describe('forestPlugin — the spread (grass substrate only)', () => {
         // carries the forest voxel, the forest biome, and a stand of
         // INGRESS + ONE sapling (the ingressed meadows already held their
         // localized edge fringe — the spread's sapling JOINS that stand;
-        // the bare meadows seed a one-sapling stand)
+        // the bare meadows seed a one-sapling stand). T2's densified 8/3
+        // fringe lifts every conversion count from the 6/2-era capture
         const converted = world.canvas.cells.filter(
             (cell) =>
                 cell.biome === 'forest' &&
                 meadowSet.includes(`${cell.x},${cell.y}`),
         );
         expect(converted.map((cell) => `${cell.x},${cell.y}:${cell.resources.tree}`)).toEqual([
-            '-7,-3:1', '-6,-3:1', '-5,-3:1', '-2,-3:7', '1,-3:9', '-7,-2:9', '-6,-2:3', '-5,-2:1',
-            '-1,-2:7', '0,-2:1', '1,-2:11', '-6,-1:11', '-5,-1:9', '-4,-1:15', '-2,-1:13',
-            '1,-1:11', '-3,0:15', '-3,1:9', '-2,1:1', '6,1:19', '7,1:23', '-4,2:9', '-3,2:3',
-            '1,2:9', '-5,3:3', '-4,3:1', '0,3:7', '1,3:5', '2,3:9', '3,3:19', '-1,4:15',
-            '1,4:15', '2,4:3', '3,4:9', '3,5:3',
+            '-7,-3:1', '-6,-3:1', '-5,-3:1', '-2,-3:9', '1,-3:12', '-7,-2:12', '-6,-2:4', '-5,-2:1',
+            '-1,-2:9', '0,-2:1', '1,-2:15', '-6,-1:15', '-5,-1:12', '-4,-1:20', '-2,-1:17',
+            '1,-1:15', '-3,0:20', '-3,1:12', '-2,1:1', '6,1:26', '7,1:31', '-4,2:12', '-3,2:4',
+            '1,2:12', '-5,3:4', '-4,3:1', '0,3:9', '1,3:7', '2,3:12', '3,3:26', '-1,4:20',
+            '1,4:20', '2,4:4', '3,4:12', '3,5:4',
         ]);
         // The meadow census dropped to 28 (63 before; the spread tick also
         // re-skins one fringe tile back to meadow, so the net is 28)
@@ -502,37 +531,40 @@ describe('forestPlugin — independent ticking and invalid config', () => {
         // Two thousand world minutes at the REAL pace: the recruit rhythm
         // runs in years, but each tile's staggered slot (offset < the
         // rhythm) is its FIRST due minute — the captured run has exactly
-        // one tile whose slot lands inside the horizon: (4,−5) (a 319-edge)
-        // recruits once; every other wood keeps its neighborhood count
+        // one tile whose slot lands inside the horizon: (4,−5) (the T2
+        // 383-edge) recruits once; every other wood keeps its neighborhood
+        // count
         ecology.fastForward(2000);
-        expect(treeSnapshot(world, ecology)).toBe(treesBefore.replace('4,-5:319#319', '4,-5:320#320'));
+        expect(treeSnapshot(world, ecology)).toBe(treesBefore.replace('4,-5:383#383', '4,-5:384#384'));
         // The wood moved by the captured crossings: the recruit's 1 sapling
-        // wood plus the lazy floor boundaries the seeded ages crossed
-        expect(woodTotal(world, ecology)).toBe(woodBefore + 82);
+        // wood plus the lazy floor boundaries the seeded ages crossed (the
+        // densified stands cross different age boundaries now)
+        expect(woodTotal(world, ecology)).toBe(woodBefore + 87);
     });
 
     it('two full years of default ecology recruit each wood whose slot lands in that year', () => {
         const { world, ecology } = buildEcology(undefined, 15, 9);
         // One year = 525,600 minutes: the 2-year recruitment rhythm fires
         // for the tiles whose staggered slot lands inside the year. The
-        // 15×9 layout staggers 7 of the 14 woods into year one and the
+        // 15×9 layout staggers 5 of the 14 woods into year one and the
         // remaining slots into year two (the 3-year spread rhythm fires
-        // nowhere — no meadows on the 15×9 island)
+        // nowhere — no meadows on the 15×9 island); T2's densified counts
+        // re-capture the whole board
         const treesBefore = treeSnapshot(world, ecology);
         expect(treesBefore).toBe(
-            '0,-1:101#101|1,-1:115#115|2,-1:115#115|3,-1:108#108|4,-1:81#81|-2,0:74#74|' +
-            '-1,0:101#101|0,0:128#128|1,0:135#135|2,0:135#135|3,0:108#108|0,1:101#101|1,1:115#115|2,1:101#101',
+            '0,-1:121#121|1,-1:135#135|2,-1:135#135|3,-1:128#128|4,-1:101#101|-2,0:95#95|' +
+            '-1,0:122#122|0,0:135#135|1,0:135#135|2,0:135#135|3,0:128#128|0,1:121#121|1,1:135#135|2,1:121#121',
         );
         ecology.fastForward(525600);
         const yearOne = treeSnapshot(world, ecology);
-        // Year one: 7 saplings stand (2,−1 / 3,−1 / −2,0 / −1,0 / 0,0 / 3,0 / 0,1 each +1)
+        // Year one: 5 saplings stand (3,−1 / −2,0 / −1,0 / 3,0 / 0,1 each +1)
         expect(yearOne).toBe(
-            '0,-1:101#101|1,-1:115#115|2,-1:116#116|3,-1:109#109|4,-1:81#81|-2,0:75#75|' +
-            '-1,0:102#102|0,0:129#129|1,0:135#135|2,0:135#135|3,0:109#109|0,1:102#102|1,1:115#115|2,1:101#101',
+            '0,-1:121#121|1,-1:135#135|2,-1:135#135|3,-1:129#129|4,-1:101#101|-2,0:96#96|' +
+            '-1,0:123#123|0,0:135#135|1,0:135#135|2,0:135#135|3,0:129#129|0,1:122#122|1,1:135#135|2,1:121#121',
         );
         // The SECOND year recruits the remaining staggered slots (0,−1 /
-        // 1,−1 / 4,−1 / 1,1 / 2,1 each +1) — the 2-yearly rhythm straddles
-        // both years for this layout; the mirrors move with the stands
+        // 4,−1 / 2,1 each +1) — the 2-yearly rhythm straddles both years
+        // for this layout; the mirrors move with the stands
         ecology.fastForward(525600);
         world.canvas.cells
             .filter((cell) => cell.biome === 'forest')
@@ -540,8 +572,8 @@ describe('forestPlugin — independent ticking and invalid config', () => {
                 expect(ecology.standOf(cell)?.trees).toBe(cell.resources.tree);
             });
         expect(treeSnapshot(world, ecology)).toBe(
-            '0,-1:102#102|1,-1:116#116|2,-1:116#116|3,-1:109#109|4,-1:82#82|-2,0:75#75|' +
-            '-1,0:102#102|0,0:129#129|1,0:135#135|2,0:135#135|3,0:109#109|0,1:102#102|1,1:116#116|2,1:102#102',
+            '0,-1:122#122|1,-1:135#135|2,-1:135#135|3,-1:129#129|4,-1:102#102|-2,0:96#96|' +
+            '-1,0:123#123|0,0:135#135|1,0:135#135|2,0:135#135|3,0:129#129|0,1:122#122|1,1:135#135|2,1:122#122',
         );
     });
 
@@ -625,7 +657,9 @@ describe('forestPlugin — independent ticking and invalid config', () => {
             woodCap: 5,
         });
         const stand = terrain.forestOf(-1, 0)!;
-        const bare = { x: -1, y: -2 };
+        // T2's densified 15×9 stand treed the old (−1,−2) bare spot —
+        // (0,0) is a bare fine cell of the (−1,0) stand (captured)
+        const bare = { x: 0, y: 0 };
         const sapling = { born: 0, base: 1, baseMinute: 0, carry: 0 };
         terrain.forestPlant(-1, 0, bare, sapling);
         // Minute 1000: 1 + floor(1000 × 4 / 4205) = 1 — the pool grows
@@ -700,7 +734,9 @@ describe('forestPlugin — the harvest integration (inventory flow)', () => {
             mature: false,
         });
         const before = ecology.standOf({ x: 0, y: 0 })!;
-        expect(before).toEqual({ trees: 128, wood: 456 });
+        // T2's densified 15×9 base: (0,0) now clamps at the FULL 135 (up
+        // from 128) with its mixed seeded ages
+        expect(before).toEqual({ trees: 135, wood: 488 });
         // THE CAPACITY GATE — a full bag never fells (the pool untouched)
         inventory.spawnKit('a', { sand: 8 });
         expect(inventory.harvest(ael, 'tree', 'wood')).toBe(false);
@@ -710,9 +746,9 @@ describe('forestPlugin — the harvest integration (inventory flow)', () => {
         inventory.consume(ael, 'sand');
         expect(inventory.harvest(ael, 'tree', 'wood')).toBe(true);
         expect(inventory.of('a')).toEqual({ sand: 7, wood: 1 });
-        expect(ecology.standOf({ x: 0, y: 0 })).toEqual({ trees: 128, wood: 455 });
+        expect(ecology.standOf({ x: 0, y: 0 })).toEqual({ trees: 135, wood: 487 });
         // The gatherable stock mirrors the stand exactly (no ghosts)
-        expect(inventory.cellStock(0, 0).tree).toBe(128);
+        expect(inventory.cellStock(0, 0).tree).toBe(135);
     });
 
     it('detaching seals the biological woods — the legacy whole-tree path cannot farm them', () => {
@@ -750,11 +786,13 @@ describe('forestPlugin — the harvest integration (inventory flow)', () => {
             spreadMinutes: 1000000000,
         });
         const ael = world.spawn(actor('a', 'Ael', 0, 0));
-        // A clock-sensitive recruited sapling joins the stand
+        // A clock-sensitive recruited sapling joins the stand — T2's
+        // densified base fills (0,0) to the FULL 135 cap, so the recruit
+        // slot has no room (the stand stands at 135 with no added sapling)
         ecology.fastForward(10);
         const before = ecology.standOf({ x: 0, y: 0 })!;
-        expect(before).toEqual({ trees: 129, wood: 457 }); // 128 seeded + 1 recruited
-        expect(inventory.cellStock(0, 0).tree).toBe(129);
+        expect(before).toEqual({ trees: 135, wood: 488 }); // 135 seeded, full cap
+        expect(inventory.cellStock(0, 0).tree).toBe(135);
         // DETACH — the provider unmounts, the boundary stands guard
         world.plugins.remove('forest');
         // The cut is REFUSED — the persistent tree keeps its pool (the
@@ -762,15 +800,14 @@ describe('forestPlugin — the harvest integration (inventory flow)', () => {
         expect(inventory.harvest(ael, 'tree', 'wood')).toBe(false);
         expect(inventory.of('a')).toEqual({});
         expect(ecology.standOf({ x: 0, y: 0 })).toEqual(before);
-        expect(inventory.cellStock(0, 0).tree).toBe(129);
-        expect(world.cellAt(0, 0)?.resources.tree).toBe(129);
+        expect(inventory.cellStock(0, 0).tree).toBe(135);
+        expect(world.cellAt(0, 0)?.resources.tree).toBe(135);
         // REMOUNT — the setup sweep re-aligns (nothing drifted — the
-        // mirrors already read the stand), the clock stays monotonic: the
-        // recruited sapling's absolute birth minute keeps its meaning
+        // mirrors already read the stand), the clock stays monotonic
         world.plugins.add(ecology);
         expect(ecology.standOf({ x: 0, y: 0 })).toEqual(before);
-        expect(inventory.cellStock(0, 0).tree).toBe(129);
-        expect(world.cellAt(0, 0)?.resources.tree).toBe(129);
+        expect(inventory.cellStock(0, 0).tree).toBe(135);
+        expect(world.cellAt(0, 0)?.resources.tree).toBe(135);
         expect(inventory.of('a')).toEqual({});
         // The remounted chop is the REAL cut: one wood off Ael's seeded
         // pool-7 tree at the fine spot (4,4), the tree STANDS — conservation
@@ -778,8 +815,8 @@ describe('forestPlugin — the harvest integration (inventory flow)', () => {
         expect(inventory.harvest(ael, 'tree', 'wood')).toBe(true);
         expect(inventory.of('a')).toEqual({ wood: 1 });
         expect(ecology.treeAt({ x: 0, y: 0 }, { x: 4, y: 4 })!.wood).toBe(6);
-        expect(ecology.standOf({ x: 0, y: 0 })).toEqual({ trees: 129, wood: 456 });
-        expect(inventory.cellStock(0, 0).tree).toBe(129);
+        expect(ecology.standOf({ x: 0, y: 0 })).toEqual({ trees: 135, wood: 487 });
+        expect(inventory.cellStock(0, 0).tree).toBe(135);
     });
 
     it('the legacy whole-tree path survives on stand-less terrain only (old fixtures)', () => {

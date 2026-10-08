@@ -6,21 +6,25 @@
 // canvas, so grid sizes must be ODD (even input is nudged up one cell). The
 // canvas edge is always open sea — the island never touches the border.
 //
-// Every column also carries RESOURCE DEPOSITS (TileResources) under two
+// Every column also carries RESOURCE DEPOSITS (TileResources) under three
 // rules: the INFINITE GROUND SUPPLY — every ground voxel material a dry
-// column is built from, at the symbolic count of 1 (stone/dirt/grass/sand —
-// never depleted, mirrored onto every fine cell); and the FINITE biological
+// column is built from, at the symbolic count of 1 (grass/dirt/sand — never
+// depleted, mirrored onto every fine cell; GRAVEL is the rock terrain
+// itself, not a deposit — see the FINITE STONE rule); the FINITE biological
 // TREE STAND under the NEIGHBORHOOD MODEL — every forested tile seeds the
-// 8-neighbor coverage (isolated base FOREST_COVERAGE 45% + forest
+// 8-neighbor coverage (isolated base FOREST_COVERAGE 60% + forest
 // cardinal/diagonal gains − rocky penalties, clamped to [0,1]) with one
 // persistent tree per covered fine cell, and every MEADOW beside woods
-// gains its localized edge ingress (meadowIngressSpots). The exact per-tile
-// counts below were captured from a reference run of the seed-7 default
-// island (see the neighboring islandTerrainNeighbors.test.ts for the
-// controlled-neighborhood model pins). Iron lodes stay finite vein
-// landmarks. Wood is NOT a deposit — it is the product of cutting a tree's
-// wood pool (the lumber behaviour's chop → inventory.harvest →
-// plugins/forest).
+// gains its localized edge ingress (meadowIngressSpots); and the FINITE
+// STONE STOCK — the rock terrain (VoxelKind 'gravel') no longer supplies
+// stone: stone stands only on the localized rock sites (the highland
+// peaks' STONE_PER_HIGHLAND base + the generator's finite-stone guarantee
+// floor), drawn down by mining. The exact per-tile counts below were
+// captured from a reference run of the seed-7 default island (see the
+// neighboring islandTerrainNeighbors.test.ts for the controlled-neighborhood
+// model pins). Iron lodes stay finite vein landmarks. Wood is NOT a
+// deposit — it is the product of cutting a tree's wood pool (the lumber
+// behaviour's chop → inventory.harvest → plugins/forest).
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -33,6 +37,8 @@ import {
     FOREST_COVERAGE,
     IRON_LODE_THRESHOLD,
     FOREST_MOISTURE_THRESHOLD,
+    STONE_PER_HIGHLAND,
+    STONE_GUARANTEE_MIN,
 } from './islandTerrain';
 import { createWorld } from '../../engine/world';
 
@@ -111,8 +117,10 @@ describe('generateIsland', () => {
             'ocean ocean ocean ocean ocean ocean shallows',
         ]);
         // R1/R3 shifted the 7×5: the lone forest now sits on the center
-        // (0,0) and the coastal sand band trimmed the beaches
-        expect(island.stats).toEqual({ land: 13, water: 22, forest: 1, iron: 0 });
+        // (0,0) and the coastal sand band trimmed the beaches; the finite-
+        // stone guarantee stamps the 7×5's highland-less board with its full
+        // 12-stone heap on the peak (stats counts UNITS)
+        expect(island.stats).toEqual({ land: 13, water: 22, forest: 1, iron: 0, stone: 12 });
     });
 
     it('produces the exact biome map for seed 7 at default size (25×17)', () => {
@@ -151,23 +159,26 @@ describe('generateIsland', () => {
             "ococococococococococococococococococshshshshshshsh",
         ]);
         // R5's finite mineable guarantee: the default island carries exactly
-        // 1 iron lode (stamped on the first highland) — census iron 1
-        expect(island.stats).toEqual({ land: 282, water: 143, forest: 68, iron: 1 });
+        // 1 iron lode (stamped on the first highland) — census iron 1; the
+        // finite-stone census reads 27 units (the 9 highlands ×
+        // STONE_PER_HIGHLAND 3 — at/above the guarantee floor, untouched)
+        expect(island.stats).toEqual({ land: 282, water: 143, forest: 68, iron: 1, stone: 27 });
     });
 
     it('carries resource deposits: the voxel ground supply, the neighborhood tree stands, bare sea', () => {
         const island = generateIsland({ seed: 7 });
         // The density ladder: the ISOLATED wood seeds its FOREST_COVERAGE
-        // base (45% — pinned below), the neighborhood model moves every
-        // forested tile from there (forestTreeCount pins the exact rounding
-        // choice, Math.round(0.45 × 425) = 191)
-        expect(FOREST_COVERAGE).toBe(0.45);
-        expect(forestTreeCount(25, 17)).toBe(191);
-        expect(forestTreeCount(7, 5)).toBe(16);
+        // base (60% — pinned below; T2 densified the resources), the
+        // neighborhood model moves every forested tile from there
+        // (forestTreeCount pins the exact rounding choice,
+        // Math.round(0.6 × 425) = 255)
+        expect(FOREST_COVERAGE).toBe(0.6);
+        expect(forestTreeCount(25, 17)).toBe(255);
+        expect(forestTreeCount(7, 5)).toBe(21);
         // (3,−6) is now a BEACH (R1/R3 re-grew the woods into the meadows):
-        // the column is stone/dirt/sand — all three unlimited ground supply
+        // the column is dirt/sand — the unlimited ground supply (the gravel
+        // bedrock no longer mirrors a stone deposit — the finite-stone rule)
         expect(island.cells.find((cell) => cell.x === 3 && cell.y === -6)?.resources).toEqual({
-            stone: 1,
             dirt: 1,
             sand: 1,
         });
@@ -184,60 +195,79 @@ describe('generateIsland', () => {
             .join(' ');
         // R1 meadow-feed re-grew the woods (68 census); the 59 forest-biome
         // tiles (0.8 cutoff) read the meadow neighbors at full weight (many
-        // clamp 425)
+        // clamp 425); T2's densified base (60%) lifted the edge woods onto
+        // the clamp — 45 of the 59 woods now stand FULL 425
         expect(forestCounts).toBe(
-            '4,-5:319 3,-4:425 4,-4:425 5,-4:340 2,-3:425 3,-3:425 4,-3:425 ' +
-            '5,-3:425 6,-3:340 -2,-2:404 2,-2:425 3,-2:425 4,-2:425 5,-2:425 6,-2:425 ' +
-            '7,-2:340 -8,-1:319 -7,-1:425 -3,-1:404 2,-1:404 3,-1:425 4,-1:425 ' +
-            '5,-1:425 6,-1:425 7,-1:425 8,-1:319 -8,0:319 -7,0:425 -5,0:425 -4,0:425 ' +
-            '2,0:319 3,0:425 4,0:425 5,0:425 6,0:425 7,0:425 8,0:361 ' +
-            '-7,1:340 -6,1:425 -5,1:425 -4,1:425 2,1:319 3,1:425 4,1:425 5,1:425 ' +
-            '8,1:319 -6,2:340 2,2:404 3,2:425 4,2:425 7,2:383 4,3:425 5,3:383 ' +
-            '7,3:298 0,4:425 4,4:340 -1,5:361 0,5:361 1,5:361',
+            '4,-5:383 3,-4:425 4,-4:425 5,-4:404 2,-3:425 3,-3:425 4,-3:425 ' +
+            '5,-3:425 6,-3:404 -2,-2:425 2,-2:425 3,-2:425 4,-2:425 5,-2:425 6,-2:425 ' +
+            '7,-2:404 -8,-1:383 -7,-1:425 -3,-1:425 2,-1:425 3,-1:425 4,-1:425 ' +
+            '5,-1:425 6,-1:425 7,-1:425 8,-1:382 -8,0:382 -7,0:425 -5,0:425 -4,0:425 ' +
+            '2,0:383 3,0:425 4,0:425 5,0:425 6,0:425 7,0:425 8,0:425 ' +
+            '-7,1:404 -6,1:425 -5,1:425 -4,1:425 2,1:383 3,1:425 4,1:425 5,1:425 ' +
+            '8,1:383 -6,2:404 2,2:425 3,2:425 4,2:425 7,2:425 4,3:425 5,3:425 ' +
+            '7,3:361 0,4:425 4,4:404 -1,5:425 0,5:425 1,5:425',
         );
         // THE MEADOW INGRESS — every meadow beside woods carries its
-        // localized edge fringe (6 spots per cardinal forest edge, 2 per
-        // diagonal); bare meadows carry none (captured per tile)
+        // localized edge fringe (T2: 8 spots per cardinal forest edge, 3
+        // per diagonal — the denser grassland fringe); bare meadows carry
+        // none (captured per tile)
         const meadowCounts = island.cells
             .filter((cell) => cell.biome === 'meadow')
             .map((cell) => `${cell.x},${cell.y}:${cell.resources.tree ?? 0}`)
             .join(' ');
         // R1 re-grew the meadow fringes (the meadows are now forest-adjacent
         // feeders); the 0.8 cutoff turned (1,−4)/(1,−5) into lakes, so 2 fewer
-        // meadow tiles (63) carry ingress — 44 meadows carry trees
+        // meadow tiles (63) carry ingress; T2's denser fringe (8/3) lifted
+        // the per-edge counts — 44 meadows carry trees
         expect(meadowCounts).toBe(
             '-3,-5:0 -2,-5:0 -1,-5:0 0,-5:0 -5,-4:0 -4,-4:0 -3,-4:0 -2,-4:0 ' +
-            '-1,-4:0 0,-4:0 -7,-3:0 -6,-3:0 -5,-3:0 -3,-3:8 -2,-3:8 -1,-3:2 0,-3:0 ' +
-            '1,-3:10 -7,-2:8 -6,-2:2 -5,-2:0 -1,-2:6 0,-2:0 1,-2:10 ' +
-            '-6,-1:16 -5,-1:10 -4,-1:16 -2,-1:14 1,-1:10 -3,0:14 -3,1:8 -2,1:0 ' +
-            '6,1:26 7,1:24 -4,2:14 -3,2:2 -2,2:0 -1,2:0 0,2:0 1,2:8 -5,3:8 -4,3:2 ' +
-            '-3,3:0 -2,3:0 -1,3:2 0,3:6 1,3:4 2,3:8 3,3:18 -5,4:0 -4,4:0 -3,4:0 ' +
-            '-2,4:2 -1,4:14 1,4:14 2,4:2 3,4:8 -5,5:0 -4,5:0 -3,5:0 -2,5:6 2,5:6 3,5:2',
+            '-1,-4:0 0,-4:0 -7,-3:0 -6,-3:0 -5,-3:0 -3,-3:11 -2,-3:11 -1,-3:3 0,-3:0 ' +
+            '1,-3:14 -7,-2:11 -6,-2:3 -5,-2:0 -1,-2:8 0,-2:0 1,-2:14 ' +
+            '-6,-1:22 -5,-1:14 -4,-1:22 -2,-1:19 1,-1:14 -3,0:19 -3,1:11 -2,1:0 ' +
+            '6,1:36 7,1:33 -4,2:19 -3,2:3 -2,2:0 -1,2:0 0,2:0 1,2:11 -5,3:11 -4,3:3 ' +
+            '-3,3:0 -2,3:0 -1,3:3 0,3:8 1,3:6 2,3:11 3,3:25 -5,4:0 -4,4:0 -3,4:0 ' +
+            '-2,4:3 -1,4:19 1,4:19 2,4:3 3,4:11 -5,5:0 -4,5:0 -3,5:0 -2,5:8 2,5:8 3,5:3',
         );
         // The treed-tile census: 59 woods + the 35 ingressed meadows + the 13
-        // wetland tiles that kept their pre-basin fringe deposits — 107
+        // wetland tiles that keep their pre-basin fringe deposits — 107
+        // (T2's denser COUNTS fill the same tiles — the census count is
+        // topology-driven, the unit counts are denser)
         expect(island.cells.filter((cell) => (cell.resources.tree ?? 0) > 0).length).toBe(107);
-        // Beach (−4,−7): the column is stone/dirt/sand — all three supply
+        // Beach (−4,−7): the column is dirt/sand — the unlimited ground
+        // supply (the gravel bedrock supplies no stone anymore)
         expect(island.cells.find((cell) => cell.x === -4 && cell.y === -7)?.resources).toEqual({
-            stone: 1,
             dirt: 1,
             sand: 1,
         });
-        // Meadow (1,−4): stone bedrock + dirt + the grass cover, plus its
-        // cardinal+diagonal forest edges' 10-spot ingress fringe
+        // Lake (1,−4): the R2 fresh-water basin KEPT its pre-basin meadow
+        // deposits — the dirt/grass ground + its cardinal+diagonal forest
+        // edges' 14-spot ingress fringe (T2's densified fringe; the lake
+        // surface ranks above the canopy in the surface derivation)
         expect(island.cells.find((cell) => cell.x === 1 && cell.y === -4)?.resources).toEqual({
-            stone: 1,
             dirt: 1,
             grass: 1,
-            tree: 10,
+            tree: 14,
         });
-        // The ground-supply censuses: every dry land cell carries stone
-        // (the bedrock under everything) and dirt; grass covers meadows
-        // AND woods (135 = 59 forests + the grass-tiled meadows; R2's 13
-        // lake/pond wetlands lose their grass — the wetland reads as water,
-        // not meadow); sand only the beaches — R3's 2-tile coastal band
-        // shrank the sands from 160 to 138
-        expect(island.cells.filter((cell) => (cell.resources.stone ?? 0) > 0).length).toBe(282);
+        // The ground-supply censuses: every dry land cell carries dirt;
+        // grass covers meadows AND woods (135 = 59 forests + the
+        // grass-tiled meadows; R2's 13 lake/pond wetlands lose their grass
+        // — the wetland reads as water, not meadow); sand only the beaches
+        // — R3's 2-tile coastal band shrank the sands from 160 to 138.
+        // STONE is FINITE now: it blankets the 9 highland rock sites (the
+        // localized rock terrain — 3 units each, 27 units in all), never the
+        // 282-cell dry land (the old bedrock-stone mirror is gone — the
+        // finite-stone rule)
+        expect(island.cells.filter((cell) => (cell.resources.stone ?? 0) > 0).length).toBe(9);
+        expect(
+            island.cells
+                .filter((cell) => (cell.resources.stone ?? 0) > 0)
+                .map((cell) => [cell.x, cell.y, cell.resources.stone])
+                .sort((a, b) => a[1] - b[1] || a[0] - b[0]),
+        ).toEqual([
+            [-1, -1, 3], [0, -1, 3], [-2, 0, 3], [-1, 0, 3], [0, 0, 3],
+            [1, 0, 3], [-1, 1, 3], [0, 1, 3], [1, 1, 3],
+        ]);
+        expect(island.cells.reduce((sum, cell) => sum + (cell.resources.stone ?? 0), 0)).toBe(27);
         expect(island.cells.filter((cell) => (cell.resources.dirt ?? 0) > 0).length).toBe(282);
         expect(island.cells.filter((cell) => (cell.resources.grass ?? 0) > 0).length).toBe(135);
         expect(island.cells.filter((cell) => (cell.resources.sand ?? 0) > 0).length).toBe(138);
@@ -256,15 +286,17 @@ describe('generateIsland', () => {
             .map((cell) => `${cell.x},${cell.y}`);
         expect(lodes).toEqual(['-7,1', '-5,2', '-5,3']);
         // A lode carries stone AND iron — the ore sits in the rock (the
-        // column's dirt underlayer supplies beside them)
+        // column's dirt underlayer supplies beside them); T2's finite-stone
+        // rule puts the full 3-unit rock supply (STONE_PER_HIGHLAND) on
+        // every highland rock site, lode and plain alike
         expect(reference.cells.find((cell) => cell.x === -5 && cell.y === 3)?.resources).toEqual({
-            stone: 1,
+            stone: 3,
             dirt: 1,
             iron: 1,
         });
         // …while the plain highland next door keeps its stone + dirt supply
         expect(reference.cells.find((cell) => cell.x === -7 && cell.y === 0)?.resources).toEqual({
-            stone: 1,
+            stone: 3,
             dirt: 1,
         });
         // R5's FINITE MINEABLE GUARANTEE: the smaller 25×17 default island
@@ -338,6 +370,68 @@ describe('generateIsland', () => {
         expect(lodeOf(1)).toEqual([-2, 0]);
     });
 
+    it('T2: every island floors its finite stone at STONE_GUARANTEE_MIN (multi-seed)', () => {
+        // THE FINITE STONE GUARANTEE: the campaign's early tools are
+        // stone-gated (1-stone axe, 8-stone fort), so every playable island
+        // carries at least STONE_GUARANTEE_MIN stone UNITS. The per-highland
+        // base (STONE_PER_HIGHLAND each) supplies the stone-rich boards
+        // untouched (25×17 seed-7: 9 highlands × 3 = 27 ≥ 12); short boards
+        // top up cyclically or stamp the whole shortfall on their peak
+        // (highland-less 7×5: the exact 12 on (−1,0) — the voxel column
+        // reference pins the heap's cell). Net invariant across seeds.
+        expect(STONE_GUARANTEE_MIN).toBe(12);
+        expect(STONE_PER_HIGHLAND).toBe(3);
+        for (let seed = 1; seed <= 12; seed++) {
+            const island = generateIsland({ seed, width: 25, height: 17 });
+            const hasHighland = island.cells.some((cell) => cell.biome === 'highland');
+            expect(island.stats.stone).toBeGreaterThanOrEqual(STONE_GUARANTEE_MIN);
+            if (hasHighland) {
+                // The stone always rides visible rock — every stone-bearing
+                // cell IS a highland: its stock is finite and its surface
+                // reads 'stone' while the stock stands
+                island.cells
+                    .filter((cell) => (cell.resources.stone ?? 0) > 0)
+                    .forEach((cell) => {
+                        expect(cell.biome).toBe('highland');
+                        // The lode highland's iron landmark outranks the
+                        // rock look — every OTHER stone cell reads 'stone'
+                        expect(tileSurfaceKey(cell)).toBe(
+                            (cell.resources.iron ?? 0) > 0 ? 'iron' : 'stone',
+                        );
+                    });
+            } else {
+                // The highland-less board starts at zero stone (gravel never
+                // supplies any) — the guarantee's heap is EXACTLY the floor
+                // (the peak's own sand surface keeps the sandbar look — the
+                // heap is stock, the look follows the surface)
+                expect(island.stats.stone).toBe(STONE_GUARANTEE_MIN);
+            }
+        }
+        // The default island is stone-RICH: the guarantee left it exactly as
+        // generated — 9 highlands × STONE_PER_HIGHLAND = 27 (the census
+        // pins the cell list)
+        expect(generateIsland({ seed: 7 }).stats.stone).toBe(27);
+        // The highland-less 7×5 and the highland-less 21×13 are exactly
+        // floored — the whole guarantee rides their peak
+        expect(generateIsland({ seed: 7, width: 7, height: 5 }).stats.stone).toBe(STONE_GUARANTEE_MIN);
+        expect(generateIsland({ seed: 7, width: 21, height: 13 }).stats.stone).toBe(STONE_GUARANTEE_MIN);
+    });
+
+    it('survives a fully drowned board — the guarantee cannot stamp land that is not there', () => {
+        // THE REVIEWER REPRO: a public-option map the sea swallows whole
+        // (seaLevel 8 on the 9×9 seed-7 board leaves NO dry cell). The
+        // guarantee's peak fallback used to read ranked[0].cell on the empty
+        // dry-cell ranking and THREW. The rule: the guarantee never forces
+        // land into the caller's layout — with nothing to stand on it simply
+        // cannot floor the stock, and the census discloses the shortfall
+        // (stone 0) on a board that stays exactly as drowned.
+        const island = generateIsland({ seed: 7, width: 9, height: 9, seaLevel: 8 });
+        expect(island.stats).toEqual({ land: 0, water: 81, forest: 0, iron: 0, stone: 0 });
+        // Every column drowned — no forced passable cell, no hidden heap
+        expect(island.cells.every((cell) => !cell.passable)).toBe(true);
+        expect(island.cells.every((cell) => cell.resources.stone === undefined)).toBe(true);
+    });
+
     it('derives the canvas surface from the tile deposits and its ground (tileSurfaceKey)', () => {
         const island = generateIsland({ seed: 7, width: 7, height: 5 });
         // Landmarks win: the 7×5 island surfaces as tree / sand (the
@@ -369,8 +463,13 @@ describe('generateIsland', () => {
         expect(tileSurfaceKey(current.cells.find((cell) => cell.x === 0 && cell.y === 0)!)).toBe('stone');
         // A clearcut wood keeps its forest look (the forest voxel stands —
         // the canopy branch reads the voxels directly)
-        expect(tileSurfaceKey({ biome: 'meadow', resources: { stone: 1, dirt: 1, grass: 1 }, voxels: ['stone', 'dirt', 'grass'] })).toBe('grass');
-        expect(tileSurfaceKey({ biome: 'forest', resources: { grass: 1 }, voxels: ['stone', 'dirt', 'grass', 'forest'] })).toBe('forest');
+        expect(tileSurfaceKey({ biome: 'meadow', resources: { stone: 1, dirt: 1, grass: 1 }, voxels: ['gravel', 'dirt', 'grass'] })).toBe('grass');
+        expect(tileSurfaceKey({ biome: 'forest', resources: { grass: 1 }, voxels: ['gravel', 'dirt', 'grass', 'forest'] })).toBe('forest');
+        // R4: the GRAVEL-topped rock. A live stone stock on a gravel surface
+        // reads 'stone'; once the stock is spent the rock look deprecates to
+        // the ground (no stone → no rock identity)
+        expect(tileSurfaceKey({ biome: 'highland', resources: { stone: 3, dirt: 1, grass: 1 }, voxels: ['gravel', 'dirt', 'grass', 'gravel'] })).toBe('stone');
+        expect(tileSurfaceKey({ biome: 'highland', resources: { dirt: 1, grass: 1 }, voxels: ['gravel', 'dirt', 'grass', 'gravel'] })).toBe('grass');
         // A deposit-less shape (sea column, test fixture) falls back to its
         // plain biome — the ground branch only keys resources the tile carries
         expect(tileSurfaceKey({ biome: 'meadow' })).toBe('meadow');
@@ -379,7 +478,9 @@ describe('generateIsland', () => {
 
     it('summarizes deposits for hover titles and inspectors (tileDepositSummary)', () => {
         expect(tileDepositSummary({ tree: 383 })).toBe('tree ×383');
-        expect(tileDepositSummary({ stone: 1, dirt: 1, iron: 1 })).toBe('stone ×∞ · iron ×1 · dirt ×∞');
+        // R4: stone is FINITE now — the mined rock renders its actual count,
+        // never the infinity marker (dirt/iron-lode supplies stay ∞)
+        expect(tileDepositSummary({ stone: 3, dirt: 1, iron: 1 })).toBe('stone ×3 · iron ×1 · dirt ×∞');
         // Unlimited deposits render the infinity marker, never a bare count
         expect(tileDepositSummary({ sand: 1 })).toBe('sand ×∞');
         expect(tileDepositSummary({ dirt: 1, berry: 2 } as never)).toBe('dirt ×∞');
@@ -415,19 +516,30 @@ describe('generateIsland', () => {
 
     it('builds voxel columns bottom → top with dirt under the surface', () => {
         const island = generateIsland({ seed: 7, width: 7, height: 5 });
-        // Forest cell (0,0) — the canvas middle (R1's lone 7×5 wood): stone
-        // bedrock, dirt, grass surface, forest on top, the 16-tree neighbor-
-        // priced stand mirrored (the 7×5 island's woods are now just (0,0)
-        // — its meadow neighbors feed it at full R1 weight)
+        // Forest cell (0,0) — the canvas middle (R1's lone 7×5 wood): GRAVEL
+        // bedrock (R4: the stone mirror is gone — the 7×5 has no highland,
+        // so the guarantee's 12-stone heap lands one cell over at (−1,0),
+        // whose sand surface outranks its stock in the surface derivation),
+        // dirt, grass surface, forest on top, the 21-tree neighbor-priced
+        // stand mirrored (T2's densified 7×5 base — the 7×5 island's woods
+        // are still just (0,0); its meadow neighbors feed it at full R1
+        // weight)
         expect(island.cells[2 * 7 + 3]).toEqual({
             x: 0,
             y: 0,
-            voxels: ['stone', 'stone', 'stone', 'dirt', 'grass', 'forest'],
+            voxels: ['gravel', 'gravel', 'gravel', 'dirt', 'grass', 'forest'],
             height: 5,
             waterLevel: 3,
             biome: 'forest',
             passable: true,
-            resources: { stone: 1, dirt: 1, grass: 1, tree: 16 },
+            resources: { dirt: 1, grass: 1, tree: 21 },
+        });
+        // The no-highland GUARANTEE HEAP: the 7×5's single dry peak (−1,0)
+        // carries the finite STONE_GUARANTEE_MIN of 12 (stats.stone 12) —
+        // its sand top keeps the sandbar look (the heap is stock, the look
+        // follows the surface)
+        expect(island.cells.find((cell) => cell.x === -1 && cell.y === 0)).toMatchObject({
+            resources: { stone: 12 },
         });
         // Top-left corner (−3,−2): shallow seabed sand + water stacked to
         // the sea level — no deposits on a sea column
@@ -486,7 +598,9 @@ describe('islandTerrainPlugin', () => {
     it('exposes generation stats', () => {
         const plugin = islandTerrainPlugin({ width: 7, height: 5 });
         createWorld({ seed: 7, plugins: [plugin] });
-        expect(plugin.stats()).toEqual({ land: 13, water: 22, forest: 1, iron: 0 });
+        // The no-highland 7×5 still carries its finite-stone guarantee heap
+        // (12 units on the peak (−1,0) — see the voxel column reference)
+        expect(plugin.stats()).toEqual({ land: 13, water: 22, forest: 1, iron: 0, stone: 12 });
     });
 
     it('respects a seed override independent of the world seed', () => {
@@ -514,8 +628,10 @@ describe('islandTerrainPlugin', () => {
         expect(world.canvas.height).toBe(13);
         expect(world.canvas.cells.length).toBe(273);
         expect(plugin.size()).toEqual({ width: 21, height: 13 });
-        // R1's meadow-feed re-grew the 21×13 woods slightly (40 vs 44)
-        expect(plugin.stats()).toEqual({ land: 162, water: 111, forest: 40, iron: 0 });
+        // R1's meadow-feed re-grew the 21×13 woods slightly (40 vs 44);
+        // R4's finite stone adds the guarantee heap (21×13 has no highland →
+        // the floor 12 lands on its peak — stats stone 12)
+        expect(plugin.stats()).toEqual({ land: 162, water: 111, forest: 40, iron: 0, stone: 12 });
         // The redraw is announced on the story feed (a world-scale
         // happening — the god reshaped the world)
         expect(world.events.log()[events]).toEqual({
@@ -608,40 +724,41 @@ describe('islandTerrainPlugin', () => {
     it('distributes the parent deposits onto the subtiles (the zoomed view)', () => {
         const plugin = islandTerrainPlugin({ width: 7, height: 5 });
         const world = createWorld({ seed: 7, plugins: [plugin] });
-        // The forest center (R1's lone 7×5 wood) mirrors its 16-tree
-        // neighbor-priced stand — those PERSISTENT fine positions carry one
-        // tree unit each, and every subtile mirrors the ground supply
-        // (stone/dirt/grass ×∞)
+        // The forest center (R1's lone 7×5 wood) mirrors its 21-tree
+        // neighbor-priced stand (T2's densified base) — those PERSISTENT
+        // fine positions carry one tree unit each, and every subtile mirrors
+        // the ground supply (the 7×5 wood carries NO stone — the finite-
+        // stone rule stamps only highlands, and the 7×5 has none)
         const forest = plugin.canvasFor([{ x: 0, y: 0 }]);
         const treeTiles = forest?.cells.filter((cell) => (cell.resources.tree ?? 1) === 1 && cell.resources.tree === 1);
         expect(treeTiles?.map((cell) => [cell.x, cell.y])).toEqual([
             [-3, -2], [-1, -2], [0, -2], [1, -2], [2, -2],
-            [-3, -1], [-2, -1], [-1, -1], [1, -1],
-            [3, 0],
+            [-3, -1], [-2, -1], [-1, -1], [1, -1], [3, -1],
+            [1, 0], [2, 0], [3, 0],
             [-3, 1], [0, 1], [3, 1],
-            [-2, 2], [-1, 2], [1, 2],
+            [-3, 2], [-2, 2], [-1, 2], [0, 2], [1, 2],
         ]);
-        // Exactly nineteen bare fine cells remain (35 − 16) — the seeded gaps
-        expect(forest?.cells.filter((cell) => cell.resources.tree === undefined).length).toBe(19);
+        // Exactly fourteen bare fine cells remain (35 − 21) — the seeded gaps
+        expect(forest?.cells.filter((cell) => cell.resources.tree === undefined).length).toBe(14);
         // A treed subtile carries its tree + the ground supply; a bare one
         // only the supply
         expect(plugin.cellFor([{ x: 0, y: 0 }, { x: 2, y: -2 }])?.resources).toEqual({
-            stone: 1,
             dirt: 1,
             grass: 1,
             tree: 1,
         });
         expect(plugin.cellFor([{ x: 0, y: 0 }, { x: -1, y: 0 }])?.resources).toEqual({
-            stone: 1,
             dirt: 1,
             grass: 1,
         });
         // The unlimited ground supply IS the ground — every subtile of the
-        // beach carries the symbolic deposits (the zoom preserves the look)
+        // beach carries the symbolic deposits (the zoom preserves the look;
+        // R4: the beach column is dirt/sand only — the gravel bedrock no
+        // longer mirrors a stone deposit)
         const beach = world.cellAt(1, -1);
-        expect(beach?.resources).toEqual({ stone: 1, dirt: 1, sand: 1 });
+        expect(beach?.resources).toEqual({ dirt: 1, sand: 1 });
         const beachSub = plugin.canvasFor([{ x: 1, y: -1 }]);
-        expect(beachSub?.cells.every((cell) => cell.resources.sand === 1 && cell.resources.stone === 1 && cell.resources.dirt === 1)).toBe(true);
+        expect(beachSub?.cells.every((cell) => cell.resources.sand === 1 && cell.resources.dirt === 1)).toBe(true);
         // A sea column has no deposits — its sub-grid is bare too
         const seaSub = plugin.canvasFor([{ x: 3, y: 1 }]);
         expect(seaSub?.cells.every((cell) => Object.keys(cell.resources).length === 0)).toBe(true);
@@ -653,10 +770,11 @@ describe('islandTerrainPlugin', () => {
         // A length-1 path resolves the root canvas cell
         expect(plugin.cellFor([{ x: 0, y: 0 }])).toEqual(world.cellAt(0, 0));
         // A length-2 path resolves a subtile of the forest's sub-grid — one
-        // of the 16 stand-authored tree subtiles (R1's lone 7×5 wood)
+        // of the 21 stand-authored tree subtiles (R1's lone 7×5 wood; T2's
+        // densified stand)
         const subtile = plugin.cellFor([{ x: 0, y: 0 }, { x: 2, y: -2 }]);
         expect(subtile?.biome).toBe('forest');
-        expect(subtile?.resources).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 1 });
+        expect(subtile?.resources).toEqual({ dirt: 1, grass: 1, tree: 1 });
         // Depth 1: a length-2 path still resolves; length 3 is beyond the
         // generated content (the ladder bounds the reach)
         expect(plugin.cellFor([{ x: 0, y: 0 }, { x: 2, y: -2 }, { x: 0, y: 0 }])).toBeUndefined();
@@ -675,12 +793,13 @@ describe('islandTerrainPlugin', () => {
         // drops with the stand, plugins/forest syncMirror) leaves every
         // OTHER position byte-identical — the trees never reshuffle
         const before = plugin.canvasFor([{ x: 0, y: 0 }])!.cells.map((cell) => cell.resources.tree ?? 0);
-        expect(before.filter((count) => count === 1).length).toBe(16);
+        expect(before.filter((count) => count === 1).length).toBe(21);
         plugin.forestOf(0, 0)!.trees.delete('-3,-2');
         plugin.forestOf(0, 0)!.trees.delete('-1,-2');
-        world.cellAt(0, 0)!.resources.tree = 14;
+        // Two full chops off the 21-tree densified stand → 19
+        world.cellAt(0, 0)!.resources.tree = 19;
         const after = plugin.canvasFor([{ x: 0, y: 0 }])!.cells.map((cell) => cell.resources.tree ?? 0);
-        expect(after.filter((count) => count === 1).length).toBe(14);
+        expect(after.filter((count) => count === 1).length).toBe(19);
         // The surviving positions are byte-identical to the seeded layout
         after.forEach((count, index) => {
             if (before[index] === 0) {
@@ -688,7 +807,6 @@ describe('islandTerrainPlugin', () => {
             }
         });
         expect(plugin.cellFor([{ x: 0, y: 0 }, { x: -3, y: -2 }])?.resources).toEqual({
-            stone: 1,
             dirt: 1,
             grass: 1,
         });
@@ -697,20 +815,21 @@ describe('islandTerrainPlugin', () => {
     it('regenerates sub-grids when the parent deposits change (fingerprint)', () => {
         const plugin = islandTerrainPlugin({ width: 7, height: 5 });
         const world = createWorld({ seed: 7, plugins: [plugin] });
-        // The forest mirrors its 16-tree stand; the fingerprint (deposits +
-        // voxels + biome) changes when a tree is felled off the record —
-        // the cached sub-grid invalidates and the mirror re-reads the stand
+        // The forest mirrors its 21-tree stand (T2's densified 7×5); the
+        // fingerprint (deposits + voxels + biome) changes when a tree is
+        // felled off the record — the cached sub-grid invalidates and the
+        // mirror re-reads the stand
         const sub = plugin.canvasFor([{ x: 0, y: 0 }]);
-        expect(sub?.cells.filter((cell) => (cell.resources.tree ?? 0) === 1).length).toBe(16);
+        expect(sub?.cells.filter((cell) => (cell.resources.tree ?? 0) === 1).length).toBe(21);
         const firstPass = sub!.cells.map((cell) => cell.resources.tree ?? 0);
         // A regeneration with an UNCHANGED parent serves the cached grid
         expect(plugin.canvasFor([{ x: 0, y: 0 }])).toBe(sub);
-        // Drop the standing-tree mirror by one (what a full fell does) —
-        // the sub-grid invalidates and re-mirrors
-        world.cellAt(0, 0)!.resources.tree = 15;
+        // Drop the standing-tree mirror by one (what a full fell does: 21 →
+        // 20) — the sub-grid invalidates and re-mirrors
+        world.cellAt(0, 0)!.resources.tree = 20;
         plugin.forestOf(0, 0)!.trees.delete('-3,-2');
         const second = plugin.canvasFor([{ x: 0, y: 0 }]);
-        expect(second?.cells.filter((cell) => (cell.resources.tree ?? 0) === 1).length).toBe(15);
+        expect(second?.cells.filter((cell) => (cell.resources.tree ?? 0) === 1).length).toBe(20);
         // The reshape is exact: only the felled position went bare
         second!.cells.forEach((cell, index) => {
             const before = firstPass[index];
@@ -720,6 +839,90 @@ describe('islandTerrainPlugin', () => {
             }
         });
         expect(plugin.cellFor([{ x: 0, y: 0 }, { x: -3, y: -2 }])?.resources.tree).toBeUndefined();
+    });
+
+    it('R4: mirrors the finite stone stock onto fine cells — live, never resurrected', () => {
+        const plugin = islandTerrainPlugin({ width: 7, height: 5 });
+        const world = createWorld({ seed: 7, plugins: [plugin] });
+        // The 7×5's rock site: the guarantee heap on the peak (−1,0) — 12
+        // units on a sand-surfaced column (GRAVEL bedrock underneath: the
+        // ground the piles stand on, itself no supplier)
+        const heap = world.cellAt(-1, 0)!;
+        expect(heap.resources.stone).toBe(12);
+        const sub = plugin.canvasFor([{ x: -1, y: 0 }])!;
+        // The stock scatters one unit per seeded subtile — 12 loose piles,
+        // never stacked, each a single unit
+        const piles = sub.cells.filter((cell) => (cell.resources.stone ?? 0) > 0);
+        expect(piles.length).toBe(12);
+        expect(piles.every((cell) => cell.resources.stone === 1)).toBe(true);
+        // An UNCHANGED parent serves the cached grid (the fingerprint holds)
+        expect(plugin.canvasFor([{ x: -1, y: 0 }])).toBe(sub);
+        // Mine the parent down to 5 — the stock count rides the fingerprint,
+        // so the cached grid invalidates and the mirror re-reads the LIVE
+        // stock: five units stand, every one of them a pile the 12-unit
+        // scatter already showed (mining draws units OFF the site — the
+        // stale cache resurrects nothing)
+        heap.resources.stone = 5;
+        const after = plugin.canvasFor([{ x: -1, y: 0 }])!;
+        const survivors = after.cells.filter((cell) => (cell.resources.stone ?? 0) > 0);
+        expect(survivors.length).toBe(5);
+        const pileSet = new Set(piles.map((cell) => `${cell.x},${cell.y}`));
+        expect(survivors.every((cell) => pileSet.has(`${cell.x},${cell.y}`))).toBe(true);
+        // The re-derivation is a PURE read of the live stock: a fresh world
+        // whose site starts at 5 scatters the exact same five cells (the
+        // seeded stream + the row-major grid, no history in the layout)
+        const fresh = islandTerrainPlugin({ width: 7, height: 5 });
+        const freshWorld = createWorld({ seed: 7, plugins: [fresh] });
+        freshWorld.cellAt(-1, 0)!.resources.stone = 5;
+        expect(
+            fresh
+                .canvasFor([{ x: -1, y: 0 }])!
+                .cells.filter((cell) => (cell.resources.stone ?? 0) > 0)
+                .map((cell) => `${cell.x},${cell.y}`),
+        ).toEqual(survivors.map((cell) => `${cell.x},${cell.y}`));
+        // Work the site to nothing — NO fine cell carries stone anymore,
+        // even though every subtile still inherits the gravel-bedrock
+        // column (the ground is terrain, not a hidden infinite supply)
+        heap.resources.stone = 0;
+        const bare = plugin.canvasFor([{ x: -1, y: 0 }])!;
+        expect(bare.cells.every((cell) => cell.resources.stone === undefined)).toBe(true);
+        expect(bare.cells.every((cell) => cell.voxels.includes('gravel'))).toBe(true);
+    });
+
+    it('crown-first: boulders carry the stock first, the leftover scatters, mining shrinks the crowns', () => {
+        const plugin = islandTerrainPlugin();
+        const world = createWorld({ seed: 7, plugins: [plugin] });
+        // The default island's highland (0,0) — a 3-unit rock site
+        const peak = world.cellAt(0, 0)!;
+        expect(peak.resources.stone).toBe(3);
+        // Crown FOUR fine spots — one more than the standing stock (the
+        // last crown must stay a bare boulder: crowns own the FIRST units)
+        peak.carving = { rock: ['-12,-8', '0,-8', '12,8', '5,5'] };
+        const sub = plugin.canvasFor([{ x: 0, y: 0 }])!;
+        const at = (x: number, y: number) => sub.cells.find((cell) => cell.x === x && cell.y === y)!;
+        // The first three crowns (recorded row-major order) carry one unit
+        // each; the fourth stays bare while the stock covers only three
+        expect(at(-12, -8).resources.stone).toBe(1);
+        expect(at(0, -8).resources.stone).toBe(1);
+        expect(at(12, 8).resources.stone).toBe(1);
+        expect(at(5, 5).resources.stone).toBeUndefined();
+        // No double pile: the fine units total EXACTLY the parent stock (the
+        // leftover after the crowns is zero — nothing scatters beside them)
+        expect(sub.cells.filter((cell) => (cell.resources.stone ?? 0) > 0).length).toBe(3);
+        // A crowned cell stacks the boulder — a GRAVEL voxel on top of the
+        // inherited column (the visible rock surface)
+        expect(at(-12, -8).voxels[at(-12, -8).voxels.length - 1]).toBe('gravel');
+        // Mine down to ONE unit — the visible crowns shrink to the first
+        // crown only; the boulders themselves stay (the gravel top is the
+        // terrain — only the stock-driven icon drops)
+        peak.resources.stone = 1;
+        const after = plugin.canvasFor([{ x: 0, y: 0 }])!;
+        const lit = after.cells.filter((cell) => (cell.resources.stone ?? 0) > 0);
+        expect(lit.length).toBe(1);
+        expect([lit[0].x, lit[0].y]).toEqual([-12, -8]);
+        const spent = after.cells.find((cell) => cell.x === 0 && cell.y === -8)!;
+        expect(spent.resources.stone).toBeUndefined();
+        expect(spent.voxels[spent.voxels.length - 1]).toBe('gravel');
     });
 
     it('is deterministic: the same seed and address regenerate identically', () => {

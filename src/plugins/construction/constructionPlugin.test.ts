@@ -142,6 +142,42 @@ describe('constructionPlugin — the shared registries', () => {
         expect(toolAxe?.appliesTo?.(subject as never)).toBe(false);
     });
 
+    it('R4: the tool-lead hold releases the moment the crew holds the tool (the reserve dies with the debt)', () => {
+        // THE HOLD'S OTHER HALF — owedToolInputsOf reserves the craft inputs
+        // ONLY while the tool is UNMET. Once any bag carries the tool the
+        // once-gate closes the owed craft, and the lead must go back to
+        // hauling: the protected units of a CLOSED craft would otherwise
+        // block its fetch/seek/fell/deliver forever on material the crew
+        // now needs (the reserve outliving the debt).
+        const handle = island();
+        handle.world.step(); // the shelter project opens — staged, owes wood 2
+        const site = handle.construction.activeSite();
+        expect(site).toMatchObject({ blueprintId: 'shelter', state: 'staged' });
+        const ael = handle.world.actors.get('actor-1')!;
+        const subject = { id: ael.id, actor: ael } as never;
+        const deliver = handle.tasks.ledger.behaviours().find((module) => module.id === 'deliver');
+        expect(deliver).toBeDefined();
+        // actor-1 is the AXE LEAD: its bag holds the axe's full input set
+        // (wood 1 + stone 1) and the crew carries no axe. The deliver rung
+        // declines its input-only load — the seed-7 starvation protection,
+        // intact: the unit the 5-minute craft waits on stays in the bag
+        handle.inventory.spawnKit('actor-1', { wood: 1, stone: 1 });
+        expect(deliver?.appliesTo?.(subject)).toBe(false);
+        // THE RELEASE — the axe lands in ANOTHER crew bag (the once-gate
+        // closes; actor-1 never crafts it): the same wood unit is no longer
+        // a protected input of an owed craft, and the shelter takes the haul
+        handle.inventory.spawnKit('actor-2', { axe: 1 });
+        expect(deliver?.appliesTo?.(subject)).toBe(true);
+        // And the hammer lead releases the same way: actor-1 now holds the
+        // hammer's full input set (wood 2) and leads it while the hammer is
+        // unmet — held, then released by one hammer
+        handle.inventory.spawnKit('actor-1', { wood: 1 }); // wood 2 total — the hammer's input
+        const hammerLeadHolds = deliver?.appliesTo?.(subject); // wood 2 − hammer 2 = 0 → still held
+        expect(hammerLeadHolds).toBe(false);
+        handle.inventory.spawnKit('actor-2', { hammer: 1 });
+        expect(deliver?.appliesTo?.(subject)).toBe(true);
+    });
+
     it('R4: both early tools land in a crew bag in a NORMAL world — once each, inputs consumed', () => {
         // A FRESH registry handle proves the tools are CRAFTED (their raw
         // inputs are consumed, never spawned for free): the axe's log + stone
@@ -169,9 +205,15 @@ describe('constructionPlugin — the shared registries', () => {
         // STARTING_KIT (berry + flint), no injected tool inputs. The crew
         // must gather the axe's STONE itself (the demand the R4 fix folds
         // into the early fetches) and craft BOTH tools, each ONCE, well
-        // inside 400 minutes. Pinned from the run: axe@147, hammer@310, and
-        // each tool's crew total peaks at EXACTLY one (the once-gate plus the
-        // deterministic lead gate end the craft after a single output).
+        // inside 400 minutes. Pinned from the run: hammer@262, axe@375, and
+        // each tool's crew total peaks at EXACTLY one (the once-gate plus
+        // the deterministic lead gate end the craft after a single output).
+        // The finite-stone shift moved the axe late in the window (stone
+        // now stands only on the 9 highland rock sites — the crew treks to
+        // them instead of gathering stone underfoot, and the stone/wood
+        // combo must land in ONE bag for the 5-minute craft; the tool-lead
+        // hold in the construction plugin keeps the lead actor's input bag
+        // intact while the ladder commits it — see owedToolInputsOf).
         const handle = island();
         const crewTotal = (tool: string): number =>
             [...handle.world.actors.values()].reduce(
@@ -195,8 +237,8 @@ describe('constructionPlugin — the shared registries', () => {
                 hammerAt = minute;
             }
         }
-        expect(axeAt).toBe(147);
-        expect(hammerAt).toBe(310);
+        expect(axeAt).toBe(375);
+        expect(hammerAt).toBe(262);
         expect(axeMax).toBe(1);
         expect(hammerMax).toBe(1);
     });
@@ -405,10 +447,10 @@ describe('constructionPlugin — the autonomous staging and work', () => {
         }
         // The sleep restore (1.2/min) + the shelter bonus (0.5/min) − the
         // decay (0.06/min): 1.64 per sleeping minute — the sheltered night
-        // is the safe night. Pinned from the run (the R4 tool-craft demand
-        // plus the deterministic lead gate shifted the 400-min campaign
-        // minutes, so the pin moved).
-        expect(handle.needs.of(sleeper.id).energy).toBe(6.62);
+        // is the safe night. Pinned from the run (the finite-stone campaign
+        // — the highland stone trek plus the tool-lead hold — shifted the
+        // 400-min campaign minutes again, so the pin moved).
+        expect(handle.needs.of(sleeper.id).energy).toBe(16.459999999999994);
         expect(handle.tasks.taskOf(sleeper.id)?.kind).toBe('sleep');
     });
 });

@@ -64,10 +64,14 @@ export const ITEM_CATALOG: Record<string, ItemDef> = {
     seaweed: { name: 'Seaweed', kind: 'food', nutrition: 8, hydration: 2 },
     water: { name: 'Water', kind: 'drink', hydration: 35 },
     // Tile deposits — the standing natural features: trees (cut into wood
-    // by the chop), stone, and the iron lodes hide in the highlands. Grass,
-    // sand and dirt are the UNLIMITED ground supply — the voxel materials
-    // every dry column is built from (engine/types.ts
-    // UNLIMITED_TILE_RESOURCES): gathering them never empties the tile.
+    // by the chop), FINITE stone (the localized rock sites it stands on —
+    // the highland peaks, the boulder crowns — it draws down with the
+    // stock and the 🪨 icon drops when it empties), and the iron lodes
+    // hide in the highlands. Grass, sand and dirt are the UNLIMITED ground
+    // supply — the voxel materials every dry column is built from
+    // (engine/types.ts UNLIMITED_TILE_RESOURCES): gathering them never
+    // empties the tile. (GRAVEL — the rock terrain itself — is NOT a
+    // deposit: the old bedrock stone never mirrors into the stocks.)
     // WOOD IS NOT A DEPOSIT — it is the product of cutting a tree's wood
     // (the lumber behaviour's chop → inventory.harvest), a trade good like
     // stone.
@@ -106,8 +110,9 @@ export const ITEM_CATALOG: Record<string, ItemDef> = {
  * (plugins/entity/entityPlugin.ts). Taking stone or iron off a tile through
  * the inventory plugin's takeFromCell demands the entity's species to hold
  * the mine ability; every other item is free for any hand that reaches it.
- * The gate is about WHO may work the ground — the supply itself is infinite
- * (stone mirrors every stone-voxel tile), the ability limits the hands.
+ * The gate is about WHO may work the ROCK — the stone supply is FINITE now
+ * (the localized rock-site stock draws down with the pile; the 🪨 icon and
+ * the 'stone' surface key track it), the ability limits the hands.
  */
 export const MINED_ITEMS: readonly string[] = ['stone', 'iron'];
 

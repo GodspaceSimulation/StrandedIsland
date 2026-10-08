@@ -750,3 +750,73 @@ export const scaleView = (island: IslandHandle, viewPath: TilePath): ViewSlice |
     }
     return { canvas, coordinates: { all: () => entries } };
 };
+
+// ── Tree icon opacity — the scale-1 readability rule ─────────────────────────
+
+// At the ISLAND view (scale 1 — the ladder's top) the canvases decorate a
+// tile with its standing tree icon whenever the tile carries ANY tree stock,
+// regardless of how many subtles of the tile's sub-grid actually hold a
+// tree. A tile with one tree among forty cells would read as fully wooded —
+// the icon OVERSTATES the coverage. The scale-1 tree icon's opacity is
+// therefore derived from the tile's TRUE scale-0 tree coverage: the ratio of
+// the tile's standing tree UNITS (the fine cells a sub-grid would scatter
+// them onto — its `resources.tree` deposit) to the tile's sub-grid CELL
+// COUNT, clamped so the icon stays legible yet honest:
+//
+//   coverage  = treeUnits / subGridCells            (the true occupancy at
+//                                                    scale 0 — 0.01 when
+//                                                    1 of 100 cells woods)
+//   opacity   = clamp(coverage / FULL_COVERAGE, MIN_OPACITY, 1)
+//
+//   • FULL_COVERAGE (0.9) — the coverage at which the icon reads as a FULL
+//     forest (opacity 1). A sub-grid that woods 90 % of its cells is, for
+//     the tile's color, indistinguishable from a full canopy; below it the
+//     icon fades proportionally, so a sparse woodland shows a faint icon.
+//   • MIN_OPACITY (0.1) — a floor: even a single tree among a hundred
+//     cells still marks the tile (the woods are findable), so the icon
+//     never vanishes while trees stand.
+//   • ZERO trees → no icon at all: the resolver returns undefined and the
+//     view draws nothing (a clear-cut tile is bare — the same no-flood rule
+//     the decorations carry).
+//
+// The SCALE-0 view (the tile interior) always draws its tree icons at FULL
+// opacity: there every drawn sub-grid cell is a tree by construction (the
+// sub-grid scatters exactly the deposited units onto one cell each), so
+// the true coverage of what is on screen is 100 % — the fade would be a
+// lie. features/worldGrid.tsx wires this into BOTH the Unicode (emoji
+// opacity) and the SVG (group opacity) views at the island view only.
+//
+// The helper is PURE (two numbers in, an opacity out) so the rule — and
+// its anchors — is testable without a world:
+//   treeIconOpacity(1, 100)   → 0.1     (one tree / 100 cells → the floor)
+//   treeIconOpacity(45, 100)  → 0.5     (45 % woods → half cover)
+//   treeIconOpacity(90, 100)  → 1       (90 % woods → full cover)
+//   treeIconOpacity(100, 100) → 1       (clamps at 1 — coverage > full)
+//   treeIconOpacity(0, 100)   → undefined (no trees → no icon)
+
+/** The tree coverage at which the scale-1 icon reads as a full forest (opacity 1). */
+export const TREE_ICON_FULL_COVERAGE = 0.9;
+
+/** The minimum scale-1 tree icon opacity — a lone tree among many cells still marks the tile. */
+export const TREE_ICON_MIN_OPACITY = 0.1;
+
+/**
+ * The opacity the ISLAND view (scale 1) draws a tile's standing tree icon
+ * at, from the tile's TRUE scale-0 tree coverage (its tree-units deposit
+ * against its sub-grid cell count). See the rule above the constants.
+ *
+ * @returns the clamped opacity (TREE_ICON_MIN_OPACITY … 1), or `undefined`
+ *          when the tile carries no tree stock (the caller draws no icon).
+ */
+export const treeIconOpacity = (treeUnits: number, subGridCells: number): number | undefined => {
+    // No tree stock (or a degenerate zero-cell sub-grid) — no icon at all
+    if (treeUnits <= 0 || subGridCells <= 0) {
+        return undefined;
+    }
+    // The true coverage, normalized to the full-forest mark and clamped onto
+    // the [MIN_OPACITY, 1] legibility window (coverage above full clamps to
+    // 1 — the icon fades DOWN with sparseness, never up)
+    const coverage = treeUnits / subGridCells;
+    const opacity = coverage / TREE_ICON_FULL_COVERAGE;
+    return Math.min(1, Math.max(TREE_ICON_MIN_OPACITY, opacity));
+};

@@ -98,7 +98,7 @@ import {
     useTile,
     selectTile,
 } from './worldBridge';
-import { scaleView } from './tileDetails';
+import { scaleView, treeIconOpacity } from './tileDetails';
 
 /** The four representations tabs switch between. */
 type CanvasTab = 'data' | 'ascii' | 'unicode' | 'svg';
@@ -132,8 +132,17 @@ const Cell = styled<{ background: string; border: string }>('div', {
     cursor: 'pointer',
 });
 
-const Marker = styled<{ color: string }>('span', {
+// `opacity` is prop-driven: the standing DECORATIONS (the tree icon) fade by
+// the tile's true scale-0 tree coverage in the island view (features/
+// tileDetails treeIconOpacity) while entity glyphs always stand at full
+// opacity (they pass no opacity — the resolver returns undefined and the
+// styled class drops the property). NOTE the function (not the 'custom'
+// sentinel): 'custom' runs numbers through styleStructure's rem conversion
+// (0.1 → '0.05rem' — INVALID for the unitless opacity, the fade would
+// silently no-op); returning a STRING bypasses the conversion untouched.
+const Marker = styled<{ color: string; opacity?: number }>('span', {
     color: 'custom',
+    opacity: ({ opacity }) => (opacity === undefined ? undefined : String(opacity)),
     textShadow: '0 1px 2px rgba(0,0,0,0.8)',
     lineHeight: 1,
 });
@@ -510,6 +519,10 @@ export const WorldGrid = () => {
                                 // tabs now share the ascii grid so switching never breaks
                                 // the layout
                                 size={26}
+                                // The island view (the ladder's top — no zoomed slice)
+                                // fades the tree decorations by the tile's TRUE scale-0
+                                // coverage; the interior view stands at full opacity
+                                islandView={slice === null}
                                 onTile={inspectTile}
                                 onHover={hoverTile}
                             />
@@ -523,6 +536,10 @@ export const WorldGrid = () => {
                                 palette={svg.palette().tiles}
                                 inspected={inspectedTail}
                                 selected={selected}
+                                // Same island-view flag as the unicode view above — the
+                                // coverage fade applies to the island view only (the
+                                // interior view's drawn cells are trees by construction)
+                                islandView={slice === null}
                                 onTile={inspectTile}
                                 onHover={hoverTile}
                             />
@@ -640,6 +657,7 @@ const UnicodeView = ({
     inspected,
     selected,
     size,
+    islandView,
     onTile,
     onHover,
 }: {
@@ -649,6 +667,14 @@ const UnicodeView = ({
     inspected: { x: number; y: number } | null;
     selected: string | null;
     size: number;
+    // True at the island view (the ladder's top — the frame is the bound
+    // root view, no zoomed slice): the tree decorations fade by the tile's
+    // TRUE scale-0 tree coverage (features/tileDetails treeIconOpacity).
+    // The interior view (the zoomed slice) stands at full opacity — every
+    // drawn sub-grid cell there is a tree by construction (the mirror
+    // scatters exactly the deposited units, one per cell), so its true
+    // on-screen coverage is 100 %
+    islandView: boolean;
     onTile: (tile: { x: number; y: number }, castawayId: string | undefined) => void;
     // R1 hover — selects this tile ONLY (never the actor pick, never a
     // zoom); see hoverTile in WorldGrid for the full R1/R2 contract
@@ -665,14 +691,45 @@ const UnicodeView = ({
                 const isSelected = glyph !== undefined && glyph.id === selected;
                 const isInspected =
                     inspected !== null && inspected.x === tile.x && inspected.y === tile.y;
-                // Entities draw their emoji in the state color; EMPTY treed
-                // tiles draw their standing decoration — the 🌳 tree emoji
-                // (the woods, visible at last; an entity always wins the
-                // tile over the decoration). Everything else stays bare —
-                // terrain shows through its background color alone (no
-                // per-tile emoji flood)
+                // Entities draw their emoji in the state color; EMPTY
+                // decorated tiles draw their standing icon — the 🌳 tree
+                // emoji on treed tiles (the woods, visible at last) and the
+                // 🪨 rock icon on stone-bearing tiles (the localized rock
+                // sites — the finite stone stock's marker, stock-driven:
+                // the frame's decorationOfCell resolver drops 'rock' the
+                // moment the tile's stock empties, so the icon disappears
+                // when the local stone is gone, at every scale). An entity
+                // always wins the tile over the decoration. Everything else
+                // stays bare — terrain shows through its background color
+                // alone (no per-tile emoji flood)
                 const decorationGlyph =
-                    glyph === undefined && tile.decoration === 'tree' ? '🌳' : null;
+                    glyph === undefined
+                        ? tile.decoration === 'rock'
+                            ? '🪨'
+                            : tile.decoration === 'tree'
+                              ? '🌳'
+                              : null
+                        : null;
+                // THE SCALE-1 TREE OPACITY — at the island view the tree
+                // icon fades by the tile's TRUE scale-0 tree coverage: its
+                // standing tree UNITS (the live `resources.tree` deposit —
+                // the fine cells a sub-grid would scatter them onto) against
+                // the tile's sub-grid CELL COUNT (the board's width ×
+                // height — the sub-grid copies the world grid's dims). Zero
+                // trees → no icon (treeIconOpacity returns undefined — and
+                // the 'tree' decoration itself is stock-driven, so a bare
+                // tile never reaches the draw). The interior view (the
+                // zoomed slice) keeps FULL opacity: its drawn cells are
+                // trees by construction, so their true coverage is 100 %.
+                // The rock icon is BINARY (stock present → full opacity):
+                // the stock-driven drop is its honesty mechanism
+                const treeOpacity =
+                    decorationGlyph === '🌳' && islandView
+                        ? treeIconOpacity(
+                              world.cellAt(tile.x, tile.y)?.resources.tree ?? 0,
+                              world.canvas.width * world.canvas.height,
+                          )
+                        : undefined;
                 return (
                     <Cell
                         key={`${tile.x},${tile.y}`}
@@ -690,7 +747,26 @@ const UnicodeView = ({
                                 {glyph.glyph}
                             </Marker>
                         ) : decorationGlyph ? (
-                            <Marker color={palette.tree ?? '#4caf50'} data-testid="tree-icon-unicode">
+                            <Marker
+                                // The decoration's identity color — tree
+                                // green from the palette, the rock's mid
+                                // gray beside it (the emoji itself is
+                                // full-color; the color only styles the
+                                // surrounding span fallback)
+                                color={
+                                    decorationGlyph === '🪨'
+                                        ? (palette.stone ?? '#8d939e')
+                                        : (palette.tree ?? '#4caf50')
+                                }
+                                // The coverage fade (tree, island view
+                                // only) — undefined omits the attribute
+                                opacity={treeOpacity}
+                                data-testid={
+                                    decorationGlyph === '🪨'
+                                        ? 'rock-icon-unicode'
+                                        : 'tree-icon-unicode'
+                                }
+                            >
                                 {decorationGlyph}
                             </Marker>
                         ) : null}
@@ -747,11 +823,58 @@ const SvgGlyph = styled('text', {
 // rising to the tile's lower third (the silhouette that separates tree
 // from bush). Colors mirror the @godspace/canvas svg plugin's own tree
 // painter (packages/godspace/canvas src/svg drawTree) so the React view and
-// the plugin's DOM mount draw the same icon.
+// the plugin's DOM mount draw the same icon. `opacity` carries the tile's
+// SCALE-1 coverage fade (the island view only — see SvgView's treeOpacity;
+// an undefined opacity renders the icon at full strength).
 const TREE_TRUNK = '#7a5230';
 const TREE_CANOPY = '#2e7d32';
 
-const SvgTree = ({ x, y, size }: { x: number; y: number; size: number }) => (
+// The vector ROCK icon — the svg twin of the unicode view's 🪨 emoji, and
+// of the @godspace/canvas svg plugin's own rock painter (packages/godspace/
+// canvas src/svg drawRock — the same two-circle geometry + hex pair, the
+// main stone + the leaning pebble) so the React view and the plugin's DOM
+// mount draw the same icon. It marks a STOCK-BEARING rock site (the finite
+// stone's marker — scenario/island.ts decorationOfCell drops the 'rock'
+// decoration when the tile's stone stock empties, so the icon disappears
+// when the local stone is gone, at every scale) — BINARY: no fade.
+const ROCK_MAIN = '#4b5563';
+const ROCK_PEBBLE = '#d1d5db';
+
+const SvgRock = ({ x, y, size }: { x: number; y: number; size: number }) => (
+    <>
+        {/* The main stone — a circle crowning the tile's center-right */}
+        <circle
+            cx={x + size * 0.05}
+            cy={y - size * 0.02}
+            r={size * 0.18}
+            fill={ROCK_MAIN}
+            data-testid="rock-icon-svg-main"
+        />
+        {/* The pebble — a smaller circle leaning on the main stone's
+            lower-left flank (drawn second so the overlap reads as stacked
+            stones) */}
+        <circle
+            cx={x - size * 0.13}
+            cy={y + size * 0.12}
+            r={size * 0.1}
+            fill={ROCK_PEBBLE}
+            data-testid="rock-icon-svg-pebble"
+        />
+    </>
+);
+
+const SvgTree = ({
+    x,
+    y,
+    size,
+    opacity,
+}: {
+    x: number;
+    y: number;
+    size: number;
+    // The coverage fade — undefined (omitted) at full strength
+    opacity?: number;
+}) => (
     <>
         {/* The canopy — a circle crowning the center, sized a bit over half
             the tile edge so it stays inside the rounded rect */}
@@ -760,6 +883,7 @@ const SvgTree = ({ x, y, size }: { x: number; y: number; size: number }) => (
             cy={y - size * 0.12}
             r={size * 0.26}
             fill={TREE_CANOPY}
+            opacity={opacity}
             data-testid="tree-icon-svg-canopy"
         />
         {/* The trunk — a slim rect rising from below the canopy */}
@@ -770,6 +894,7 @@ const SvgTree = ({ x, y, size }: { x: number; y: number; size: number }) => (
             height={size * 0.3}
             rx={1}
             fill={TREE_TRUNK}
+            opacity={opacity}
             data-testid="tree-icon-svg-trunk"
         />
     </>
@@ -781,6 +906,7 @@ const SvgView = ({
     palette,
     inspected,
     selected,
+    islandView,
     onTile,
     onHover,
 }: {
@@ -789,6 +915,12 @@ const SvgView = ({
     palette: Record<string, string>;
     inspected: { x: number; y: number } | null;
     selected: string | null;
+    // True at the island view (the ladder's top — the frame is the bound
+    // root view, no zoomed slice): the tree icons fade by the tile's TRUE
+    // scale-0 tree coverage (the same rule the unicode view applies —
+    // features/tileDetails treeIconOpacity); the interior view stands at
+    // full opacity (its drawn cells are trees by construction)
+    islandView: boolean;
     onTile: (tile: { x: number; y: number }, castawayId: string | undefined) => void;
     // R1 hover — selects this tile ONLY (never the actor pick, never a
     // zoom); see hoverTile in WorldGrid for the full R1/R2 contract
@@ -845,12 +977,16 @@ const SvgView = ({
                             fill={tile.background}
                             stroke={tileStroke(isSelected, isInspected)}
                         />
-                        {/* Entities draw their glyph in the state color at
-                            the dead-center of the tile — the same visual
-                            position the flex-centered DOM cells produce.
-                            Empty treed tiles draw their standing decoration
-                            instead — the vector tree icon (an entity always
-                            wins the tile over the decoration) */}
+                        {/* THE SCALE-1 TREE OPACITY — the island view fades
+                            the vector tree icon by the tile's TRUE scale-0
+                            tree coverage (the live `resources.tree` units
+                            against the board's cell count — the sub-grid
+                            copies the world grid's dims); the interior view
+                            stands at full opacity (its drawn cells are
+                            trees by construction — 100 % true coverage).
+                            The rock icon is BINARY (no fade) — the stock-
+                            driven drop is its honesty mechanism. An entity
+                            always wins the tile over the decoration */}
                         {glyph ? (
                             <SvgGlyph
                                 x={column * frame.size + frame.size / 2}
@@ -861,6 +997,22 @@ const SvgView = ({
                             </SvgGlyph>
                         ) : tile.decoration === 'tree' ? (
                             <SvgTree
+                                x={column * frame.size + frame.size / 2}
+                                y={row * frame.size + frame.size / 2}
+                                size={frame.size}
+                                opacity={
+                                    islandView
+                                        ? treeIconOpacity(
+                                              world.cellAt(tile.x, tile.y)?.resources.tree ?? 0,
+                                              world.canvas.width * world.canvas.height,
+                                          )
+                                        : undefined
+                                }
+                            />
+                        ) : tile.decoration === 'rock' ? (
+                            // The vector rock — the stone-bearing tile's
+                            // standing icon (full strength — binary)
+                            <SvgRock
                                 x={column * frame.size + frame.size / 2}
                                 y={row * frame.size + frame.size / 2}
                                 size={frame.size}

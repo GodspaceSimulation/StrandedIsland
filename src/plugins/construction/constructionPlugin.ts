@@ -624,6 +624,51 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
         return lead;
     };
 
+    /**
+     * R4 — the full input set of the UNMET early tool that `actorId` is the
+     * deterministic craft-lead for (the first TOOL_RECIPE_IDS tool whose
+     * toolLeadOf resolves to this actor), or the empty set when the actor
+     * leads no unmet tool. The material rungs read this as the TOOL-LEAD
+     * HOLD: the one pair of hands the crew trusts to hold the complete
+     * input set must not be drafted away with those inputs. The deliver
+     * rung sits ABOVE the tool-craft rung (24 > 23), so without the hold
+     * the lead's tool inputs leave its bag as site staging faster than the
+     * 5-minute craft can commit them — the seed-7 finite-stone campaign is
+     * the proof: the fort's permanent stone/wood staging keeps the lead
+     * actor hauling (hauls the deliver rung's label), the axe's inputs
+     * first land in one bag at minute 399, and at minute 800 the axe still
+     * has not crafted while the hammer landed at 262 on a lucky 5-minute
+     * gap. With the hold the lead sits on its inputs, the ladder falls
+     * past the declined material rungs to the tool-craft rung, and the
+     * first idle minute commits the craft.
+     *
+     * UNMET means UNMET — the same once-per-crew gate the tool-craft rung
+     * reads (crewHasTool): the moment ANY bag holds the tool the owed craft
+     * is closed, so the tool is SKIPPED and its inputs are no longer
+     * reserved. Without this skip a lead whose axe already exists would go
+     * on protecting the axe's wood + stone forever — the closed craft never
+     * consumes them, and the fetch/seek/fell/deliver rungs stay declined on
+     * material the crew now needs (the reserve outlives the debt). The skip
+     * cannot reopen the duplicate race the lead gate closed: while the craft
+     * is owed (tool in no bag) the hold behaves exactly as before, and the
+     * moment a tool lands the craft rung itself is closed for everyone.
+     */
+    const owedToolInputsOf = (actorId: string): Array<{ item: string; count: number }> => {
+        for (const toolId of TOOL_RECIPE_IDS) {
+            // The once-gate: a tool any crew member already carries is not
+            // owed — no reserve for a craft that will never run (the lead is
+            // RELEASED with the tool, the same instant the craft rung ends)
+            if (crewHasTool(toolId)) {
+                continue;
+            }
+            const recipe = crafting.recipes().find((candidate) => candidate.id === toolId);
+            if (recipe && toolLeadOf(toolId, recipe)?.id === actorId) {
+                return recipe.inputs.map((line) => ({ item: line.item, count: line.count }));
+            }
+        }
+        return [];
+    };
+
     /** The site of a blueprint that may be worked on: fully staged ('staged'
      * and ready()) or already open ('building'). */
     const readySiteOf = (blueprintId: string): Site | undefined =>
@@ -962,7 +1007,30 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                         return false;
                     }
                     const site = activeSite();
-                    return site !== undefined && site.state === 'staged' && carryingForSite(subject.actor.id, site);
+                    if (!site || site.state !== 'staged' || !carryingForSite(subject.actor.id, site)) {
+                        return false;
+                    }
+                    // THE TOOL-LEAD HOLD (the draft half) — the actor leads
+                    // an unmet early tool: the protection is PER-UNIT, the
+                    // craft's own input count — the units the craft will
+                    // consume stay in the bag (the effect below re-validates
+                    // the same arithmetic at completion), and only the
+                    // SURPLUS above them is a stageable haul. A lead holding
+                    // wood 3 for the hammer's 2 still hauls the third; a
+                    // lead whose bag is exactly its inputs hauls nothing
+                    // (the input-only load that would draft the lead off the
+                    // minute the 5-minute craft is waiting on — the seed-7
+                    // axe starvation, see owedToolInputsOf).
+                    const owed = owedToolInputsOf(subject.actor.id);
+                    return site.required.some((line) => {
+                        const remaining = line.count - (site.delivered[line.item] ?? 0);
+                        if (remaining <= 0) {
+                            return false;
+                        }
+                        const held = inventory.of(subject.actor.id)[line.item] ?? 0;
+                        const protectedUnits = owed.find((input) => input.item === line.item)?.count ?? 0;
+                        return held - protectedUnits > 0;
+                    });
                 },
                 plan: (subject) => {
                     const active = world;
@@ -1167,6 +1235,17 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                         if (subject.actor.kind === 'creature') {
                             return false;
                         }
+                        // THE TOOL-LEAD HOLD — the actor leads an unmet early
+                        // tool and this item is one of THOSE protected
+                        // inputs: the underfoot fetch declines (the craft
+                        // consumes exactly the recipe's count from this one
+                        // bag, so a second copy serves nothing, and the
+                        // 2-minute fetch beat is the beat the 5-minute craft
+                        // is waiting on). Fetches of the item the actor does
+                        // NOT lead with still serve the site.
+                        if (owedToolInputsOf(subject.actor.id).some((input) => input.item === item)) {
+                            return false;
+                        }
                         const site = activeSite();
                         if (!site) {
                             return false;
@@ -1212,6 +1291,19 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                 priority: MATERIALS_PRIORITY,
                 appliesTo: (subject) => {
                     if (subject.actor.kind === 'creature') {
+                        return false;
+                    }
+                    // THE TOOL-LEAD HOLD — the actor leads an unmet early
+                    // tool (its bag holds the full input set): the seek/fell
+                    // treks decline entirely. A trek would move the lead off
+                    // its inputs' minute, and every beat spent walking to
+                    // the site's next wood/stone is a beat the 5-minute
+                    // craft waits behind. Its inputs are protected by the
+                    // deliver hold above (they cannot be staged away), so
+                    // sitting still loses nothing — the first idle minute
+                    // the ladder falls past this rung to the tool-craft
+                    // rung, which commits the craft.
+                    if (owedToolInputsOf(subject.actor.id).length) {
                         return false;
                     }
                     const site = activeSite();
@@ -1431,12 +1523,26 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                         // never throw, the subtraction is exact and no item
                         // is conjured or lost.
                         const bag = inventory.of(actor.id);
+                        // THE TOOL-LEAD HOLD (the effect half) — revalidates
+                        // the per-unit protection at COMPLETION against the
+                        // LIVE bag: the units the craft itself will consume
+                        // (the recipe's own input count, read fresh — a
+                        // co-worker may have crafted the tool during the
+                        // wait, releasing the obligation) stay in the bag,
+                        // the surplus above them stages. The take therefore
+                        // caps at `held − protected` as well as the site's
+                        // remaining — the reviewer-repro site below (the
+                        // wood 2 demand with the worker's wood 3 bag) still
+                        // stages its snapshot unit exactly.
+                        const owed = owedToolInputsOf(actor.id);
                         arrayEach(site.required, ({ value: line }) => {
                             const remaining = line.count - (site.delivered[line.item] ?? 0);
                             if (remaining <= 0) {
                                 return;
                             }
-                            const take = Math.min(bag[line.item] ?? 0, remaining);
+                            const held = bag[line.item] ?? 0;
+                            const protectedUnits = owed.find((input) => input.item === line.item)?.count ?? 0;
+                            const take = Math.min(remaining, Math.max(0, held - protectedUnits));
                             if (take <= 0) {
                                 return;
                             }

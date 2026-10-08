@@ -168,7 +168,7 @@ describe('behaviorPlugin — every living thing plans through the ladder', () =>
         // The tile's own food went with the forage (the gather takes the
         // first food in stock order — the berry; the standing berry bush is a
         // material, not food, so the forage leaves it in place)
-        expect(inventory.cellStock(0, 3)).toEqual({ tree: 6, stone: 1, dirt: 1, grass: 1, berry: 1, bush: 1 });
+        expect(inventory.cellStock(0, 3)).toEqual({ tree: 8, dirt: 1, grass: 1, berry: 1, bush: 1 });
         // Foraging is a solo beat — silent
         expect(world.events.log().filter((event) => event.kind === 'gather' || event.kind === 'consume')).toEqual([]);
     });
@@ -357,10 +357,10 @@ describe('behaviorPlugin — every living thing plans through the ladder', () =>
         }
         expect(sleptAt).toBe(69);
         expect(world.coordinates.positionOf('bird-1')).toEqual({ x: -8, y: 0, z: 0 });
-        // The gull roosts AMONG the trees (the neighborhood-counted 319-tree
-        // stand at (−8,0) — no regrowth rhythm moves it any more; the ecology
-        // owns the trees)
-        expect(world.cellAt(-8, 0)?.resources).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 319 });
+        // The gull roosts AMONG the trees (the neighborhood-counted 382-tree
+        // stand at (−8,0) — T2's densified edge band; no regrowth rhythm
+        // moves it any more; the ecology owns the trees)
+        expect(world.cellAt(-8, 0)?.resources).toEqual({ dirt: 1, grass: 1, tree: 382 });
     });
 
     it('a tired bird already among the trees sleeps there — the roost gate declines on a treed tile', () => {
@@ -592,7 +592,7 @@ describe('behaviorPlugin', () => {
         expect(inventory.of('a')).toEqual({ water: 1 });
         // The standing berry bush refilled to its cap of two on the bush
         // rhythm (minute 25) — it is the standing plant, not the gathered food
-        expect(inventory.cellStock(2, 3)).toEqual({ tree: 8, stone: 1, dirt: 1, grass: 1, berry: 3, bush: 2 });
+        expect(inventory.cellStock(2, 3)).toEqual({ tree: 11, dirt: 1, grass: 1, berry: 3, bush: 2 });
         // The same minute re-plans the 2-minute drink from the bag,
         // completing at minute 32 (−35 thirst relief, the bag empties)
         for (let index = 0; index < 2; index++) {
@@ -693,7 +693,7 @@ describe('behaviorPlugin', () => {
         // three by the collect; the standing berry bush stays in place — it
         // is a material plant, not the gathered food)
         expect(inventory.of('a')).toEqual({ water: 1 });
-        expect(inventory.cellStock(2, 3)).toEqual({ tree: 8, stone: 1, dirt: 1, grass: 1, berry: 3, bush: 2 });
+        expect(inventory.cellStock(2, 3)).toEqual({ tree: 11, dirt: 1, grass: 1, berry: 3, bush: 2 });
         // The same minute re-plans the 2-minute drink from the bag,
         // completing at minute 35 (−35 thirst relief, the bag empties)
         for (let index = 0; index < 2; index++) {
@@ -808,7 +808,7 @@ describe('behaviorPlugin', () => {
         // The start cell (0,3): the gathered berry is gone (the gather takes
         // the first food in stock order); the grassland's few trees stand and
         // the standing berry bush stays (a material plant, not the food)
-        expect(inventory.cellStock(0, 3)).toEqual({ tree: 6, stone: 1, dirt: 1, grass: 1, berry: 1, bush: 1 });
+        expect(inventory.cellStock(0, 3)).toEqual({ tree: 8, dirt: 1, grass: 1, berry: 1, bush: 1 });
         // The gather + the eat are silent solo beats
         expect(world.events.log().filter((event) => event.kind === 'gather' || event.kind === 'consume')).toEqual([]);
     });
@@ -829,7 +829,7 @@ describe('behaviorPlugin', () => {
         // water, the cell is dry
         expect(tasks.taskOf('a')).toMatchObject({ kind: 'drink', remaining: 2 });
         expect(inventory.of('a')).toEqual({ water: 1 });
-        expect(inventory.cellStock(1, -2)).toEqual({ tree: 10, stone: 1, dirt: 1, grass: 1, berry: 2 });
+        expect(inventory.cellStock(1, -2)).toEqual({ tree: 14, dirt: 1, grass: 1, berry: 2 });
         world.step();
         world.step();
         // −35 thirst relief on the completing minute 6, drunk OUT OF THE

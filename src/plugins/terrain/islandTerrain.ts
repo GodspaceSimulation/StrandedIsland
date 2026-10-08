@@ -10,16 +10,39 @@
 //
 //   GROUND SUPPLY (infinite) — every ground voxel material a DRY column is
 //   actually built from supplies its resource forever, at the symbolic count
-//   of 1: stone voxels → stone ×∞, dirt voxels → dirt ×∞, grass voxels →
-//   grass ×∞, sand voxels → sand ×∞. The match is by voxel NAME (the
-//   resource token inside the name — "voxel names with 'stone' 'grass'
-//   produce infinite resource of that type at the tile"), never by biome,
-//   and it reads the ACTUAL voxel column (underlayers included — the dirt
-//   under a meadow and the stone bedrock under everything supply too).
+//   of 1: dirt voxels → dirt ×∞, grass voxels → grass ×∞, sand voxels →
+//   sand ×∞. The match is by voxel NAME (the resource token inside the name),
+//   never by biome, and it reads the ACTUAL voxel column (underlayers
+//   included — the dirt under a meadow supplies too; the GRAVEL bedrock under
+//   everything supplies nothing — gravel is terrain, not a resource token).
 //   Submerged columns supply nothing (no dry habitat, no access — the sea
 //   keeps its plain biome look and stocks fish only). Takes stay gated by
 //   bag capacity and the 'mine' ability (stone/iron) but never deplete the
 //   ground. Mirrored onto every fine cell at the zoomed scale.
+//
+//   FINITE STONE (the rock sites) — STONE IS NO LONGER THE GROUND'S
+//   INFINITE SUPPLY: the old "every column with a stone voxel carries stone
+//   ×∞" is gone (a gravel-to-stone rename of the rock terrain — VoxelKind
+//   'gravel' — and stone's removal from UNLIMITED_TILE_RESOURCES). The stone
+//   resource now stands ONLY where a visible rock site does, as a FINITE,
+//   mineable, drawable deposit:
+//     highland tiles (the gravel-surface peaks) — STONE_PER_HIGHLAND each
+//     (the rock site the mine gate works; the 🪨 icon + the 'stone' surface
+//     key read it while its stock stands);
+//     boulder-crowned fine cells (the rock-spillover band, rockSpillSpots)
+//     — the crowns are the visible boulders: at the zoom, each crown fine
+//     cell carries one stone unit while the parent tile's stock covers it
+//     (generateSubCanvas's crown-first distribution — the remaining stock
+//     scatters onto ordinary fine cells as standing piles).
+//     THE FINITE STONE GUARANTEE — like the iron guarantee below, every
+//     playable island carries at least STONE_GUARANTEE_MIN stones (the
+//     campaign's 1-stone axe + 8-stone fort need 9; 12 leaves headroom):
+//     highlands top up cyclically; a highland-less island stamps the whole
+//     shortfall on its PEAK (the highest dry cell — a stone heap visible on
+//     the island view).
+//   Deterministic and seed-keyed: the distribution reads no random stream
+//   (row-major order + the fixed constants), so the noise-lattice stream
+//   above and the biome map stay untouched.
 //
 //   THE FOREST STAND (finite, biological) — a forested tile seeds a
 //   PERSISTENT FINE-SCALE TREE RECORD (ForestStand below): the tile's
@@ -126,11 +149,16 @@ export type IslandStats = {
     forest: number;
     /** Cells carrying an iron lode deposit. */
     iron: number;
+    /** Total FINITE STONE standing on the island (the sum of every tile's
+     *  stone deposit after the finite-stone guarantee — the gatherable
+     *  rock stock; the 🪨 icons and the 'stone' surfaces track it). */
+    stone: number;
 };
 
 /**
- * Vein-noise threshold for iron lodes: a dry stone-surface cell whose vein
- * sample exceeds it carries an iron deposit. Calibrated so lodes stay rare
+ * Vein-noise threshold for iron lodes: a dry gravel-surface cell (the
+ * highland) whose vein sample exceeds it carries an iron deposit. Calibrated
+ * so lodes stay rare
  * landmarks — on the 37×25 seed-7 reference board 3 of the 9 highland cells
  * lode (vein samples 0.0756 … 0.5158), while the smaller 25×17 default
  * island keeps all 9 samples below it (0.1552 … 0.4076). The vein noise
@@ -139,6 +167,31 @@ export type IslandStats = {
  * lode (its iron census reads 1; the tests pin both boards).
  */
 export const IRON_LODE_THRESHOLD = 0.5;
+
+/**
+ * The FINITE STONE stock of one HIGHLAND tile at generation — the localized
+ * visible rock site (the gravel-surface peak that reads as the 'stone'
+ * surface key and carries the 🪨 marker while its stock stands). Chosen for
+ * the campaign's early needs: the 1-stone axe + the 8-stone fort owe 9
+ * stones before anything else, so a handful of highlands must each cover
+ * more than a single tool's edge (3 per site — 9 highlands seed-7 style
+ * island: 27 stones standing) while the finite-stone guarantee (below)
+ * still guarantees the island-wide floor for rocky-poor seeds.
+ */
+export const STONE_PER_HIGHLAND = 3;
+
+/**
+ * The FINITE STONE GUARANTEE floor: every playable island carries at least
+ * this many stones after the guarantee pass (the campaign's axe 1 + fort 8
+ * = 9 leaves a headroom of 3 — a second fort edge or tool repair). The pass
+ * (generateIsland's stone-guarantee, after the iron guarantee) tops
+ * highlands up cyclically when their base stock falls short; a HIGHLAND-LESS
+ * island (degenerate/low seeds) stamps
+ * the whole shortfall on its PEAK — the highest dry cell (row-major tie) —
+ * as a visible stone heap. Deterministic: row-major order + the constants
+ * only (no random draws — the noise stream is untouched).
+ */
+export const STONE_GUARANTEE_MIN = 12;
 
 /**
  * Moisture threshold for forests: a dry grass-surface cell whose moisture
@@ -161,8 +214,12 @@ export const FOREST_MOISTURE_THRESHOLD = 0.5;
  * half-surrounded woods land below the old uniform 90% seeding. Recruitment
  * may still carry an uncut stand to the full 100% over the years
  * (plugins/forest documents the cap); felled spots refill by recruitment.
+ * Raised 0.45 → 0.60 for the resource-density fix (T2): sparse woods read
+ * as an empty island; a denser base stand thickens every isolated wood
+ * (an isolated 25×17 wood now seeds Math.round(0.60 × 425) = 255 trees,
+ * not 191).
  */
-export const FOREST_COVERAGE = 0.45;
+export const FOREST_COVERAGE = 0.6;
 
 /**
  * Coverage gain per CARDINAL forest neighbor (left/right/up/down — the
@@ -191,17 +248,24 @@ export const ROCK_NEIGHBOR_DIAGONAL = 0.05;
  * closest to that shared edge (meadowIngressSpots), so the ingress stays a
  * thin fringe, never a full stand.
  */
-export const MEADOW_INGRESS_CARDINAL = 6;
+export const MEADOW_INGRESS_CARDINAL = 8;
 
-/** Meadow tree ingress per diagonal forest neighbor — the corner fringe. */
-export const MEADOW_INGRESS_DIAGONAL = 2;
+/**
+ * Meadow tree ingress per diagonal forest neighbor — the corner fringe.
+ * Raised 2 → 3 for the resource-density fix (T2): thin woodland borders
+ * read as bare meadow; the fuller corner fringe keeps the woods' edges
+ * continuous (a meadow sharing 1 cardinal + 1 diagonal forest edge now
+ * ingresses 8 + 3 = 11 spots, not 8).
+ */
+export const MEADOW_INGRESS_DIAGONAL = 3;
 
 /**
  * The BASE standing-tree count of a forest tile: FOREST_COVERAGE of the
- * sub-grid's fine cells, half-up rounded (Math.round — 191.25 → 191 on the
- * 425-cell default island). The neighborhood model starts here and moves
- * with the 8 neighbors (forestCoverageOf); the exact per-tile count is what
- * generation writes into the tile's `tree` deposit.
+ * sub-grid's fine cells, half-up rounded (Math.round — 255.0 → 255 on the
+ * 425-cell default island at the 0.6 base; 21.0 → 21 on the 35-cell 7×5
+ * board). The neighborhood model starts here and moves with the 8 neighbors
+ * (forestCoverageOf); the exact per-tile count is what generation writes
+ * into the tile's `tree` deposit.
  */
 export const forestTreeCount = (width: number, height: number): number =>
     Math.round(FOREST_COVERAGE * width * height);
@@ -526,7 +590,9 @@ const deriveBiome = (
     if (forested) {
         return 'forest';
     }
-    if (surface === 'stone') {
+    // The rock terrain reads as the gravel surface (the 'stone'-to-'gravel'
+    // rename: stone is a finite DEPOSIT now, gravel the voxel it stands on)
+    if (surface === 'gravel') {
         return 'highland';
     }
     if (surface === 'sand') {
@@ -672,7 +738,7 @@ export const generateIsland = (
     }
 
     const cells: TerrainCell[] = [];
-    const stats: IslandStats = { land: 0, water: 0, forest: 0, iron: 0 };
+    const stats: IslandStats = { land: 0, water: 0, forest: 0, iron: 0, stone: 0 };
 
     for (let row = 0; row < height; row++) {
         for (let col = 0; col < width; col++) {
@@ -682,14 +748,16 @@ export const generateIsland = (
             const y = row - halfY;
             // The pass-1 geometry + the coastal distance for this cell
             const { groundHeight, submerged } = coast[index];
-            // THE COASTAL SURFACE LADDER (R3): seabed sand → stone highland
-            // at the peaks → the distance-based beach ring (a dry cell within
+            // THE COASTAL SURFACE LADDER (R3): seabed sand → gravel highland
+            // at the peaks (the rock terrain — formerly 'stone': stone is a
+            // finite DEPOSIT now, gravel the voxel the highland is built of)
+            // → the distance-based beach ring (a dry cell within
             // COASTAL_SAND_DISTANCE of the sea) → grass meadow inland
             const beach = !submerged && seaDistance[index] <= COASTAL_SAND_DISTANCE;
             const surface: VoxelKind = submerged
                 ? 'sand'
                 : groundHeight >= seaLevel + 4
-                  ? 'stone'
+                  ? 'gravel'
                   : beach
                     ? 'sand'
                     : 'grass';
@@ -698,13 +766,15 @@ export const generateIsland = (
             const forested = surface === 'grass' && moisture(col, row) > FOREST_MOISTURE_THRESHOLD;
 
             // Build the voxel stack, bottom → top:
-            //   stone × (ground-2), dirt × 1, surface × 1,
+            //   gravel × (ground-2), dirt × 1, surface × 1,
             //   then water up to the sea level (submerged columns),
             //   then a forest voxel when wooded
+            // The bedrock is GRAVEL (the old 'stone' voxels): ordinary gravel
+            // supplies NO stone (the finite-stone rule — see the header)
             const stack: VoxelKind[] = [];
             if (groundHeight >= 3) {
                 for (let bedrock = 0; bedrock < groundHeight - 2; bedrock++) {
-                    stack.push('stone');
+                    stack.push('gravel');
                 }
             }
             if (groundHeight >= 2) {
@@ -725,13 +795,26 @@ export const generateIsland = (
             // What the tile carries as gatherable material. Deposits are a
             // tile property: the inventory plugin seeds its gatherable cell
             // stocks from them, and tileSurfaceKey derives the canvas
-            // appearance from the tile (see below). Two seeding rules:
+            // appearance from the tile (see below). Three seeding rules:
             //
             //   GROUND SUPPLY — every ground voxel material the DRY column
-            //   is built from, at the symbolic count of 1: unlimited, never
-            //   depleted by takes (UNLIMITED_TILE_RESOURCES), mirrored onto
-            //   every fine cell at the zoom. Submerged columns supply
-            //   nothing (no habitat, no access — the sea keeps its look).
+            //   is built from (dirt/grass/sand — GRAVEL EXCLUDED: it is
+            //   terrain, not a resource token), at the symbolic count of 1:
+            //   unlimited, never depleted by takes (UNLIMITED_TILE_RESOURCES),
+            //   mirrored onto every fine cell at the zoom. Submerged columns
+            //   supply nothing (no habitat, no access — the sea keeps its
+            //   look).
+            //
+            //   FINITE STONE — a gravel-SURFACE tile (the highland) carries
+            //   its localized rock stock (STONE_PER_HIGHLAND, below).
+            //   Non-highland tiles carry NONE, no matter how much gravel
+            //   bedrock underlies them (the old "stone under everything
+            //   supplies stone forever" is what made stone infinite — the
+            //   finite-stone rule kills it). The stone guarantee pass
+            //   (after the iron guarantee) tops the island total up to the
+            //   floor; the canvas icon ('rock' decoration + the 'stone'
+            //   surface key) reads the LIVE deposit, so the marker drops
+            //   when the stock is mined away.
             //
             //   THE TREE STAND — its COUNT comes from the NEIGHBORHOOD MODEL
             //   (pass 2 below — all 8 neighbors weigh in), not from a flat
@@ -740,8 +823,11 @@ export const generateIsland = (
             //   recruitment move the mirror with the stand (plugins/forest).
             const resources: TileResources = {};
             if (!submerged) {
-                if (stack.includes('stone')) {
-                    resources.stone = 1;
+                if (surface === 'gravel') {
+                    // THE HIGHLAND ROCK SITE — the localized finite stone
+                    // (the mine gate's quarry; the 🪨 marker stands while
+                    // its stock does)
+                    resources.stone = STONE_PER_HIGHLAND;
                 }
                 if (stack.includes('dirt')) {
                     resources.dirt = 1;
@@ -752,8 +838,8 @@ export const generateIsland = (
                 if (stack.includes('sand')) {
                     resources.sand = 1;
                 }
-                if (surface === 'stone' && veins(col, row) > IRON_LODE_THRESHOLD) {
-                    // Iron lodes hide in the stone highlands — the vein
+                if (surface === 'gravel' && veins(col, row) > IRON_LODE_THRESHOLD) {
+                    // Iron lodes hide in the gravel highlands — the vein
                     // noise's rare landmark (a FINITE deposit; the mine gate
                     // limits who takes it)
                     resources.iron = 1;
@@ -768,6 +854,10 @@ export const generateIsland = (
                 if (forested) {
                     stats.forest = stats.forest + 1;
                 }
+                // The stone census counts UNITS (the gatherable stock — the
+                // highland's STONE_PER_HIGHLAND), not cells, so the board's
+                // rock supply reads in the campaign's currency
+                stats.stone = stats.stone + (resources.stone ?? 0);
             }
 
             cells.push({
@@ -930,17 +1020,81 @@ export const generateIsland = (
         }
     }
 
+    // ── THE FINITE STONE GUARANTEE (T2) ─────────────────────────────────────
+    // The campaign's early tools are stone-gated (the 1-stone axe + the
+    // 8-stone fort), so an island that seeds too little finite rock would
+    // starve its first build. The guarantee floors the island-wide STONE
+    // TOTAL at STONE_GUARANTEE_MIN stones (the census above counts the
+    // per-highland base stock):
+    //   STONE-RICH boards (highlands × STONE_PER_HIGHLAND already at/above
+    //     the floor) are left exactly as generated (determinism: the pass
+    //     fires only when short — same as the iron guarantee's zero-only
+    //     rule);
+    //   PARTIAL boards top up their highlands cyclically (row-major, +1 per
+    //     lap — the extra stones ride the existing rock sites, so every
+    //     mined stone still comes off a visible, 'stone'-surfaced tile);
+    //   HIGHLAND-LESS boards stamp the whole shortfall on their PEAK — the
+    //     highest dry cell (row-major tie-break; a forested peak yields to
+    //     the highest NON-FORESTED dry cell so the stone heap never hides
+    //     under a canopy) — a visible stone heap the island view can point
+    //     the crew at.
+    // PURE: row-major indices + the constants only (no random draws — the
+    // noise stream and the biome map are untouched).
+    // `stats.stone` already sums the units (the per-cell census above added
+    // every highland's STONE_PER_HIGHLAND stock) — the floor test reads it
+    let stoneTotal = stats.stone;
+    const highlandCells = cells.filter((cell) => cell.biome === 'highland');
+    if (stoneTotal < STONE_GUARANTEE_MIN) {
+        if (highlandCells.length > 0) {
+            // The cyclic row-major top-up: +1 stone per highland per lap
+            let lap = 0;
+            while (stoneTotal < STONE_GUARANTEE_MIN) {
+                const target = highlandCells[lap % highlandCells.length];
+                target.resources.stone = (target.resources.stone ?? 0) + 1;
+                stoneTotal = stoneTotal + 1;
+                stats.stone = stats.stone + 1;
+                lap = lap + 1;
+            }
+        } else {
+            // The peak fallback: the highest dry cell (row-major tie) carries
+            // the whole shortfall. Rank the dry cells by height descending,
+            // ties by the row-major index; prefer a NON-forested peak so the
+            // stone heap shows its own 🪨 marker instead of a tree canopy.
+            // A FULLY DROWNED board (a public seaLevel above every column)
+            // has no dry cell at all — the optional reads below resolve the
+            // fallback to undefined and the guarantee simply CANNOT floor the
+            // stock: the map stays drowned (no forced land — the layout is
+            // the caller's) and stats.stone discloses the shortfall (0).
+            const shortfall = STONE_GUARANTEE_MIN - stoneTotal;
+            const ranked = cells
+                .map((cell, index) => ({ cell, index }))
+                .filter(({ cell }) => cell.passable)
+                .sort((left, right) => right.cell.height - left.cell.height || left.index - right.index);
+            const fallbackCell =
+                ranked.find(({ cell }) => cell.biome !== 'forest')?.cell ?? ranked[0]?.cell;
+            if (fallbackCell) {
+                fallbackCell.resources.stone = (fallbackCell.resources.stone ?? 0) + shortfall;
+                stoneTotal = stoneTotal + shortfall;
+                // The whole shortfall rides the heap — the unit census takes
+                // the full amount (the per-lap top-up above adds 1 per stone)
+                stats.stone = stats.stone + shortfall;
+            }
+        }
+    }
+
     return { width, height, cells, stats };
 };
 
 // ── Tile appearance ──────────────────────────────────────────────────────────
 // The tile's DEPOSITS + ACTUAL VOXELS decide what it appears as on the
-// canvas: landmarks first (an iron lode, standing trees), then the tile's
-// own GROUND material (the topmost voxel that maps to a resource, read from
-// the real column), falling back to the plain biome. The underlayer supplies
-// (the dirt under a meadow, the bedrock stone under everything) appear in
-// the Resources lists but never repaint the tile — the tile reads as what
-// its SURFACE is.
+// canvas: landmarks first (an iron lode, standing trees, the stock-bearing
+// rock surface), then the tile's own GROUND material (the topmost voxel that
+// maps to a resource — gravel is excluded: ordinary bedrock never repaints
+// a tile as rock), falling back to the plain biome. The underlayer supplies
+// (the dirt under a meadow — the gravel bedrock under everything supplies
+// nothing) appear in the Resources lists but never repaint the tile — the
+// tile reads as what its SURFACE is (or as the rock it stands, while the
+// rock stock stands).
 
 /** The minimal cell slice the surface derivation reads. */
 export type TileSurfaceCell = {
@@ -952,12 +1106,18 @@ export type TileSurfaceCell = {
 /**
  * The canvas surface key of a tile:
  *   iron lode → 'iron'; standing trees → 'tree' — the landmarks stand out;
- *   a BOULDER-crowned column (the rock spillover's fine cells — a stone
- *   voxel stacked ON TOP of the column) → 'stone', so the spillover is
- *   VISIBLE in the zoomed grid and not just the voxel summary;
+ *   a GRAVEL-topped column carrying a LIVE STONE STOCK → 'stone': the
+ *   highland peak (its gravel surface) and the BOULDER-crowned fine cells
+ *   (the rock spillover's gravel voxel stacked ON TOP of the column) read
+ *   as rock while their stock stands — and the exhausted site FALLS THROUGH
+ *   to its ground/canopy look (an exhausted highland reads dirt, an
+ *   exhausted boulder cell reads its parent's forest/ground) — the R4 rule
+ *   that the rock identity disappears with the stock (the 🪨 decoration
+ *   follows the same live-stock read, scenario/island.ts decorationOfCell);
  *   a forest voxel (the standing canopy — a clearcut wood keeps the look) →
  *   'forest'; else the topmost ground voxel that maps to a carried resource
- *   ('grass' | 'sand' | 'stone' | 'dirt') — the tile reads as its ground;
+ *   ('grass' | 'sand' | 'dirt' — GRAVEL DELIBERATELY ABSENT: ordinary gravel
+ *   is terrain, not a carried resource) — the tile reads as its ground;
  *   else the plain biome (sea columns, or the deposit-less fallback shapes).
  */
 export const tileSurfaceKey = (cell: TileSurfaceCell): string | undefined => {
@@ -980,12 +1140,16 @@ export const tileSurfaceKey = (cell: TileSurfaceCell): string | undefined => {
     }
     const voxels = cell.voxels;
     if (voxels && voxels.length > 0) {
-        // THE BOULDER CROWN — the spillover band's stone voxel sits ON TOP
-        // of the column (above even the forest canopy), so a rock-spilled
-        // fine cell reads as the rock it crowns. The stone resource check
-        // keeps deposit-less shapes (test fixtures) on their plain look.
+        // THE ROCK SURFACE — a gravel top carrying a live stone stock reads
+        // as rock (the highland's own surface, or the spillover band's
+        // boulder crown — the crown's gravel sits ON TOP of the column,
+        // above even the forest canopy). The stock check is what makes the
+        // surface DEPRECATE with depletion: an exhausted site falls through
+        // to the forest/ground look below (no stock → no rock identity, the
+        // way an exhausted iron lode reads its ground). Deposit-less shapes
+        // (test fixtures) with a bare gravel top stay on their biome.
         const top = voxels[voxels.length - 1];
-        if (top === 'stone' && (resources.stone ?? 0) > 0) {
+        if (top === 'gravel' && (resources.stone ?? 0) > 0) {
             return 'stone';
         }
         // The standing canopy outranks the ground — a clearcut wood keeps
@@ -995,10 +1159,12 @@ export const tileSurfaceKey = (cell: TileSurfaceCell): string | undefined => {
         }
         // The tile's GROUND: the topmost voxel whose material is carried as
         // a resource (the resource-backed check keeps deposit-less shapes —
-        // sea columns, test fixtures — on their plain biome)
+        // sea columns, test fixtures — on their plain biome). Gravel is not
+        // in the ladder: the bedrock under every column would otherwise
+        // repaint barren tiles as rock (the finite-stone rule).
         for (let index = voxels.length - 1; index >= 0; index--) {
             const kind = voxels[index];
-            if ((kind === 'grass' || kind === 'sand' || kind === 'stone' || kind === 'dirt') &&
+            if ((kind === 'grass' || kind === 'sand' || kind === 'dirt') &&
                 (resources[kind] ?? 0) > 0) {
                 return kind;
             }
@@ -1257,9 +1423,23 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
      * the parent column (voxels, height, water line, passability, biome):
      * the tile's interior ground IS the tile's ground. The parent's deposits
      * distribute across the subtiles — the zoom reveals WHERE they stand:
-     *   the INFINITE ground supply (stone/dirt/grass/sand) IS the ground —
-     *     every subtile carries the symbolic deposit so the zoom preserves
-     *     the tile's look (rocks full-matching every stone-voxel tile);
+     *   the INFINITE ground supply (dirt/grass/sand — NOT stone: gravel is
+     *     terrain, and the finite-stone rule keeps it a non-supplier) IS
+     *     the ground — every subtile carries the symbolic deposit so the
+     *     zoom preserves the tile's look;
+     *   the STONE stock is CROWN-FIRST (the finite rock sites): the
+     *     boulder-crowned fine cells (parent.carving's spillover band, a
+     *     GRAVEL voxel stacked ON TOP of the inherited column — the
+     *     boulder's visible surface) each carry one stone unit while the
+     *     parent's standing stock covers them (the first crowns in
+     *     row-major order — the visible ones), and the LEFTOVER stock
+     *     scatters onto ordinary fine cells as standing piles (one unit per
+     *     seeded subtile, never on a boulder or under a standing tree).
+     *     The distribution is a pure read of the parent's LIVE stock: the
+     *     fingerprint stamps the stock count, so a mined-down parent
+     *     invalidates the cached grid and re-derives the (fewer) units —
+     *     the fine icons can never outlive the stock they mark (no stone
+     *     from a stale sub-grid cache, no stone from ordinary gravel).
      *   the TREE stand is PERSISTENT — the forest record's fine positions
      *     put one tree unit each on their exact subtile; felling and
      *     recruitment never reshuffle the other positions (the stand is
@@ -1267,13 +1447,10 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
      *     still invalidates the cache when the mirror moves, and the
      *     regenerated grid re-reads the SAME positions);
      *   the NEIGHBORHOOD CARVE (the rock spillover band — parent.carving)
-     *     crowns its fine cells with a BOULDER: a stone voxel stacked ON
-     *     TOP of the inherited column, so the fine cell's TOP SURFACE reads
-     *     as rock (tileSurfaceKey's boulder crown) — visible edge influence,
-     *     not a duplicate of the bedrock stone supply every column already
-     *     carries. The carve applies at the FIRST zoom only: deeper grids
-     *     inherit the boulder through this very column copy (and no
-     *     carving field — re-applying would double-stack the boulder).
+     *     crowns its fine cells with a boulder. The carve applies at the
+     *     FIRST zoom only: deeper grids inherit the boulder through this
+     *     very column copy (and no carving field — re-applying would
+     *     double-stack the boulder).
      *   remaining finite deposits (an iron lode) scatter one unit per
      *     seeded subtile.
      */
@@ -1289,14 +1466,27 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
         const stand = forestOf(parent.x, parent.y);
 
         // The parent's spillover band — the fine spots that crown with a
-        // boulder (rockSpillSpots wrote it at generation; the fingerprint
-        // stamps it so a cached grid never outlives its carve)
-        const rocks = new Set(parent.carving?.rock ?? []);
+        // boulder (rockSpillSpots wrote it at generation in ROW-MAJOR order;
+        // the fingerprint stamps it so a cached grid never outlives its
+        // carve)
+        const crownSpots = parent.carving?.rock ?? [];
+        const rocks = new Set(crownSpots);
 
-        // Pre-scatter the remaining finite deposits (an iron lode — and the
-        // legacy tree scatter when no stand exists): each unit lands on its
-        // own seeded subtile position (a bounded re-roll keeps units from
-        // stacking when the grid has room to spread them)
+        // THE CROWN-FIRST STONE SPLIT — the parent's LIVE finite stone stock
+        // (the live deposit the inventory draws down as the mine gate works
+        // it): the boulders own one unit each, the FIRST crowns in the
+        // recorded row-major order, up to the standing stock; the leftover
+        // scatters. A mined-down parent (stock < crowns) shrinks the visible
+        // crowns — the boulders stay, their icons drop one by one.
+        const stoneStock = parent.resources.stone ?? 0;
+        const visibleCrownCount = Math.min(stoneStock, crownSpots.length);
+        const visibleCrowns = new Set(crownSpots.slice(0, visibleCrownCount));
+
+        // Pre-scatter the remaining finite deposits (the stone's LEFTOVER
+        // after the crowns, an iron lode — and the legacy tree scatter when
+        // no stand exists): each unit lands on its own seeded subtile
+        // position (a bounded re-roll keeps units from stacking when the
+        // grid has room to spread them)
         const deposits = new Map<string, TileResources>();
         TILE_RESOURCES.forEach((resource) => {
             if (UNLIMITED_TILE_RESOURCES.includes(resource)) {
@@ -1306,12 +1496,24 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
             if (resource === 'tree' && stand) {
                 return;
             }
-            const count = parent.resources[resource] ?? 0;
+            // Stone scatters its LEFTOVER (the crowns carry their units in
+            // the cell loop below — pre-scattering them too would double the
+            // pile on a boulder)
+            const count =
+                resource === 'stone' ? stoneStock - visibleCrownCount : (parent.resources[resource] ?? 0);
             if (count <= 0) {
                 return;
             }
             const stream = randomKeyed(resolvedSeed, `sub:${pathKey}:${resource}`);
             const taken = new Set<string>();
+            if (resource === 'stone') {
+                // No loose pile on a boulder (every crown spot — visible or
+                // bare, rock is not a pile) and none under a standing tree
+                // (the canopy icon would hide it — one visible unit per fine
+                // cell)
+                crownSpots.forEach((spot) => taken.add(spot));
+                stand?.trees.forEach((_record, spot) => taken.add(spot));
+            }
             for (let unit = 0; unit < count; unit++) {
                 let x = 0;
                 let y = 0;
@@ -1340,17 +1542,27 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
                 if (stand?.trees.has(`${x},${y}`)) {
                     resources.tree = 1;
                 }
-                // The inherited column — and the spillover band's boulder
-                // stacked ON TOP (the fine cell's top surface reads as rock;
-                // tree positions and boulders never share a spot — seedStands
-                // refuses the band)
+                // The boulder's own STONE UNIT — the crown-first allocation:
+                // the visible crowns carry the parent stock's first units
+                // (the 🪨 icon + the 'stone' surface key read this live
+                // per-fine-cell stock; it drops as the parent is mined)
+                if (visibleCrowns.has(`${x},${y}`)) {
+                    resources.stone = 1;
+                }
+                // The inherited column — and the spillover band's boulder:
+                // a GRAVEL voxel stacked ON TOP (the visible rock surface —
+                // reads as the 'stone' surface key only while the crown
+                // carries the stock above; tree positions and boulders never
+                // share a spot — seedStands refuses the band)
                 const stack = [...parent.voxels];
                 if (rocks.has(`${x},${y}`)) {
-                    stack.push('stone');
+                    stack.push('gravel');
                 }
                 // Unlimited deposits are the ground itself — every subtile
                 // carries the symbolic deposit so the zoomed tile keeps the
-                // look its parent paints with (the microscopic-zoom rule)
+                // look its parent paints with (the microscopic-zoom rule).
+                // Stone is NOT in the unlimited ladder anymore — the crown/
+                // pile units above are its only fine-scale presence.
                 TILE_RESOURCES.forEach((resource) => {
                     if (
                         UNLIMITED_TILE_RESOURCES.includes(resource) &&

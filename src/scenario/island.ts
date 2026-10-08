@@ -432,29 +432,61 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     // ── Tile decorations — the standing ICONS the canvases draw ─────────────
     // A tile may carry a DECORATION on top of its color: the canvas plugins
     // expose it per tile (AsciiTile.decoration) and the god-views draw it.
-    // THE TREE: a treed tile (a standing tree deposit — the lumber
-    // behaviour's harvest target) decorates as 'tree', so the unicode tab
-    // draws the 🌳 emoji and the SVG tab draws the vector tree icon on
-    // every tile trees stand on — at every zoom level (the decorationOf
-    // adapter runs per-cell on each frame's canvas, zoomed slices included,
-    // where the tile's tree subtiles each decorate too). Tiles WITHOUT
-    // trees decorate nothing (color-only — the same no-flood rule the
-    // terrain emoji fix established).
+    // TWO standing icons decorate today (see the resolver below for the
+    // resolution order + the stock-driven rules):
+    //   THE TREE — a treed tile (a standing tree deposit — the lumber
+    //   behaviour's harvest target) decorates as 'tree', so the unicode tab
+    //   draws the 🌳 tree emoji and the SVG tab draws the vector tree icon
+    //   on every tile trees stand on — at every zoom level (the
+    //   decorationOf adapter runs per-cell on each frame's canvas, zoomed
+    //   slices included, where the tile's tree subtiles each decorate too).
+    //   THE ROCK — a stone-bearing tile (a live finite stone stock — the
+    //   localized rock sites) decorates as 'rock', so the unicode tab
+    //   draws the 🪨 rock emoji and the SVG tab draws the vector rock icon
+    //   on every tile that still carries mineable stone.
+    // Tiles carrying NEITHER decorate nothing (color-only — the same
+    // no-flood rule the terrain emoji fix established).
     // (Built STRUCTURES are NOT decorations — the decoration adapter cannot
     // tell a root cell from a zoomed subtile, and a structure is not a
     // per-cell surface anyway. The scaleView slice appends the structure
     // entries instead — tile-level at the island view, fine-cell level in
     // the interior views — drawn through the same STRUCTURE_TYPE_GLYPHS
     // type palette the entity glyphs resolve; see features/tileDetails.ts.)
-    // R2 — a basin (lake/pond wetland) paints its WATER surface, so the tree
-    // decoration is suppressed on it: the meadow-ingress stand that seeded
-    // beneath the carved basin must not obscure the fresh-water body (the
-    // canopy-on-water the reviewer flags). Non-basin treed tiles keep their
-    // tree decoration (the R1 grass-land fringe stands unaffected).
+    // R2 — a basin (lake/pond wetland) paints its WATER surface, so the
+    // standing decorations are suppressed on it: the meadow-ingress stand
+    // that seeded beneath the carved basin must not obscure the fresh-water
+    // body (the canopy-on-water the reviewer flags). Non-basin treed tiles
+    // keep their tree decoration (the R1 grass-land fringe stands
+    // unaffected).
+    // THE ROCK (R4 finite stone) — a tile with a LIVE STONE STOCK (the
+    // localized rock sites — the highland peaks' STONE_PER_HIGHLAND stock,
+    // the stone-guarantee's top-up/heap stock) decorates as 'rock', so the
+    // unicode tab draws the 🪨 rock emoji and the SVG tab draws the vector
+    // rock icon. The adapter runs per-cell on every frame's canvas — zoomed
+    // slices included — and generateSubCanvas mirrors the parent's live
+    // stone stock onto its fine cells (the crown-first boulder split, each
+    // crowned/scattered fine cell carrying resources.stone = 1), so the
+    // stone-bearing fine cells decorate 'rock' AT THE FINE SCALE too.
+    // The icon is BINARY and stock-driven, not opacity-driven: a live stock
+    // draws it, an empty stock hides it (decorationOfCell reads the frame
+    // cell's CURRENT resources.stone, and the canvas re-derives every frame
+    // — the parent's stock change also breaks the cached sub-grid's
+    // fingerprint — so the icon drops the moment the tile's stock reaches
+    // 0, at the island scale and the fine scale alike). Rock ranks ABOVE
+    // tree: a mineable rock site is a gameplay landmark (the early tools
+    // gate on stone), and the generator seeds no stands on the gravel
+    // highlands, so a tree + rock co-occurrence is only theoretical today —
+    // but if one ever lands, the 🪨 must not hide under the (coverage-
+    // faded, possibly 0.1-opacity) tree canopy.
     const decorationOfCell = (cell: unknown): string | undefined => {
         const slice = cell as { biome?: string; resources?: TileResources };
         if (slice.biome === 'lake' || slice.biome === 'pond') {
             return undefined;
+        }
+        // A live finite stone stock — the localized rock site — marks the
+        // rock icon (the binary stock-driven rule above)
+        if ((slice.resources?.stone ?? 0) > 0) {
+            return 'rock';
         }
         return (slice.resources?.tree ?? 0) > 0 ? 'tree' : undefined;
     };
@@ -498,8 +530,9 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         // Tiles appear as the resources they carry (see surfaceOfCell above)
         surfaceOf: surfaceOfCell,
         titleOf: titleOfCell,
-        // Treed tiles decorate (the ASCII view stays color-only — the frame
-        // data carries the decoration for the emoji/vector siblings)
+        // Treed + rock-bearing tiles decorate (the ASCII view stays
+        // color-only — the frame data carries the decoration for the
+        // emoji/vector siblings)
         decorationOf: decorationOfCell,
         // The grass surface joins the palette (the ground-supply identity)
         tiles: GRASS_TILE_PALETTE,
@@ -533,7 +566,8 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     const unicode = unicodeCanvasPlugin({
         surfaceOf: surfaceOfCell,
         titleOf: titleOfCell,
-        // Treed tiles decorate — the unicode view draws the 🌳 tree emoji
+        // Treed + rock-bearing tiles decorate — the unicode view draws the
+        // 🌳 tree emoji and the 🪨 rock icon
         decorationOf: decorationOfCell,
         tiles: GRASS_TILE_PALETTE,
         types: {
@@ -553,7 +587,8 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     const svg = svgCanvasPlugin({
         surfaceOf: surfaceOfCell,
         titleOf: titleOfCell,
-        // Treed tiles decorate — the SVG view draws the vector tree icon
+        // Treed + rock-bearing tiles decorate — the SVG view draws the
+        // vector tree icon and the vector rock icon
         decorationOf: decorationOfCell,
         tiles: GRASS_TILE_PALETTE,
         types: {

@@ -97,8 +97,11 @@ describe('lumberPlugin', () => {
         // pool-1 sapling, so the cut FELS it (the mirror drops 425 → 424).
         // The wetland shore's water stands beside the grove (water:2)
         expect(inventory.of('a')).toEqual({ wood: 1 });
-        expect(inventory.cellStock(-7, 0)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 424, berry: 1, mushroom: 2, water: 2 });
-        expect(world.cellAt(-7, 0)?.resources).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 424 });
+        // R4: the (−7,0) column is a meadow shore — the finite stone is gone
+        // (stone stands only on the highland rock sites); the tree mirror
+        // keeps its felled 424 band
+        expect(inventory.cellStock(-7, 0)).toEqual({ dirt: 1, grass: 1, tree: 424, berry: 1, mushroom: 2, water: 2 });
+        expect(world.cellAt(-7, 0)?.resources).toEqual({ dirt: 1, grass: 1, tree: 424 });
         // The felling is silent — a solo beat, not a story between entities
         expect(world.events.log().map((event) => event.kind)).toEqual(['spawn']);
         // Wooded up, the lumber gate fails — the actor fine-wanders on
@@ -155,13 +158,14 @@ describe('lumberPlugin', () => {
         });
         // The step west onto the treed (1,5) short-circuits the trek (a tree
         // underfoot chops): by minute 40 the wood is in the bag and the
-        // grove's tree mirror holds 361 (the chop cut a pool wood — the
-        // 361-tree stand stands; the berry/mushroom regrow on their rhythms)
+        // grove's tree mirror holds 425 (T2's densified pure stand; the chop
+        // cut a pool wood — the 425-tree stand stands; the berry/mushroom
+        // regrow on their rhythms; R4: the meadow is no stone-bearing)
         for (let index = 0; index < 40; index++) {
             world.step();
         }
         expect(inventory.of('a')).toEqual({ wood: 1 });
-        expect(inventory.cellStock(1, 5)).toEqual({ stone: 1, dirt: 1, grass: 1, tree: 361, berry: 2, mushroom: 2 });
+        expect(inventory.cellStock(1, 5)).toEqual({ dirt: 1, grass: 1, tree: 425, berry: 2, mushroom: 2 });
         expect(world.cellAt(1, 5)?.biome).toBe('forest');
     });
 

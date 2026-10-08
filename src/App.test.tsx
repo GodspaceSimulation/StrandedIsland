@@ -314,18 +314,20 @@ describe('App', () => {
         // ground. Clicked on the default unicode board.
         fireEvent.click(screen.getByTestId('unicode-tile--5--7'));
         expect(screen.getByTestId('tile-position').textContent).toBe('(-5, -7) · sand');
-        // The ground supply: the column is stone/dirt/sand — all three
-        // mirror ×∞ (unlimited)
-        expect(screen.getByTestId('tile-resources').textContent).toBe('stone ×∞ · sand ×∞ · dirt ×∞');
+        // The ground supply: the column is gravel/dirt/sand (R4's bedrock) —
+        // the supply reads sand + dirt ×∞ (gravel feeds nothing; the
+        // meadow-style stone that the old endless supply buried under the
+        // beach stands only on the highland rock sites)
+        expect(screen.getByTestId('tile-resources').textContent).toBe('sand ×∞ · dirt ×∞');
         expect(screen.getByTestId('tile-terrain-meta').textContent).toBe(
             'height 3 · water line 3 · walkable',
         );
-        expect(screen.getByTestId('tile-voxels').textContent).toBe('stone, dirt, sand');
+        expect(screen.getByTestId('tile-voxels').textContent).toBe('gravel, dirt, sand');
         // Scale-0 granularity: the ground generalizes into its CATEGORIES —
-        // coconut is a food, the ground supply is three materials
+        // coconut is a food, the ground supply is two materials (sand, dirt)
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
-        ).toEqual(['Foods ×1', 'Materials ×3']);
+        ).toEqual(['Foods ×1', 'Materials ×2']);
         // Nobody lives here
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
@@ -378,19 +380,22 @@ describe('App', () => {
         // flying gull (z 2)
         fireEvent.click(screen.getByTestId('unicode-tile-0-0'));
         expect(screen.getByTestId('tile-position').textContent).toBe('(0, 0) · stone');
-        // The highland carries the ground supply: unlimited stone + the
-        // dirt under it
-        expect(screen.getByTestId('tile-resources').textContent).toBe('stone ×∞ · dirt ×∞');
+        // The highland carries the finite rock stock (3 units — R4: the
+        // stone the old endless supply buried under the highland is now the
+        // mined resource) + the unlimited dirt under it
+        expect(screen.getByTestId('tile-resources').textContent).toBe('stone ×3 · dirt ×∞');
         // All living things are actors: the bird is listed as a resident
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['Kiki — bird · flying-2 · z 2']);
-        // Highland floor: the ground supply — generalized to categories.
-        // This run's highland hid a flint too (the survey's chance stream
-        // moved with the richer map) — the tool is its own category
+        // Highland floor: the ground supply — generalized to categories
+        // (R4: the rock stock counts its THREE finite units — 3 stone +
+        // 1 dirt = 4 materials). This run's highland hid a flint too (the
+        // survey's chance stream moved with the richer map) — the tool is
+        // its own category
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
-        ).toEqual(['Materials ×2', 'Tools ×1']);
+        ).toEqual(['Materials ×4', 'Tools ×1']);
         // …but the tile click selects no entity — no inspector card opens
         // (the resident ROW would; the tile click alone does not)
         expect(screen.queryByTestId('actor-inventory')).toBeNull();
@@ -505,10 +510,11 @@ describe('App', () => {
         expect(coconut.title).toContain('Coconut');
         // The sub-grid keeps every inspection working exactly like the
         // island view: clicking the inspected subtile opens the Tile
-        // Inspector's lineage
+        // Inspector's lineage — the subtile's supply reads the parent's
+        // unlimited sand + dirt (R4: no stone — the bedrock is gravel)
         fireEvent.click(screen.getByTestId('unicode-tile-0-0'));
         expect(screen.getByTestId('tile-position').textContent).toBe('(-11, 0) · (0, 0) · sand');
-        expect(screen.getByTestId('tile-resources').textContent).toBe('stone ×∞ · sand ×∞ · dirt ×∞');
+        expect(screen.getByTestId('tile-resources').textContent).toBe('sand ×∞ · dirt ×∞');
         // The item-level granularity: the coconut's subtile lists it BY NAME
         fireEvent.click(coconut);
         expect(screen.getByTestId('tile-position').textContent).toBe('(-11, 0) · (-11, 5) · sand');
@@ -599,11 +605,12 @@ describe('App', () => {
         // (−5+8)×25+(4+12) = 91 — the unicode tab draws the 🌳 tree emoji
         // (the woods, visible at last; the decoration rides the frame data
         // the canvas plugins expose; the 0.85-era (3,−6) tile 65 became a
-        // beach). The tile's neighborhood-counted stand reads 319 trees.
+        // beach). The tile's neighborhood-counted stand reads 383 trees at
+        // T2's densified edge band.
         const treed = screen.getByTestId('unicode-tile-4--5');
         expect(treed.textContent).toBe('🌳');
         expect(treed.querySelector('[data-testid="tree-icon-unicode"]')).not.toBeNull();
-        expect(treed.title).toContain('tree ×319');
+        expect(treed.title).toContain('tree ×383');
         // A treed tile with a castaway standing on it: Dune came ashore on
         // the treed tile (5,−1) — the entity wins the tile, no tree icon
         expect(screen.getByTestId('unicode-tile-5--1').textContent).toBe('🧍‍♂️');
@@ -626,6 +633,111 @@ describe('App', () => {
         // A bare sea tile draws neither icon nor text
         expect(tiles[0].querySelector('[data-testid="tree-icon-svg-canopy"]')).toBeNull();
         expect(tiles[0].querySelector('text')).toBeNull();
+    });
+
+    it('the island view fades tree icons by true coverage and draws the rock icon on rock sites', () => {
+        render(<App seed={7} />);
+        // Emotion serializes each unique prop combination into its own class
+        // rule (base + the min-width:0 media block the styled builder wraps
+        // custom values in) — collect every block styling one class
+        const ruleFor = (className: string): string => {
+            const all = Array.from(document.querySelectorAll('style'))
+                .map((tag) => tag.textContent ?? '')
+                .join('');
+            let out = '';
+            const matcher = new RegExp(`\\.${className}\\b[^{]*\\{([^}]*)\\}`, 'g');
+            let block = matcher.exec(all);
+            while (block) {
+                out += block[1];
+                block = matcher.exec(all);
+            }
+            return out;
+        };
+        // ── The coverage fade (unicode) ─────────────────────────────────────
+        // The sparse ingress fringe (1,−2): 14 trees across the 425-cell
+        // sub-grid → coverage 0.033 → the 0.1 floor (a lone stand still
+        // marks the tile)
+        const fringe = screen
+            .getByTestId('unicode-tile-1--2')
+            .querySelector('[data-testid="tree-icon-unicode"]') as HTMLElement;
+        expect(fringe.textContent).toBe('🌳');
+        expect(ruleFor(fringe.className)).toContain('opacity:0.1');
+        // The dense edge wood (4,−5): 383 trees → coverage 0.901 → clamped
+        // to FULL strength (the fade only ever pulls sparse stands down)
+        const dense = screen
+            .getByTestId('unicode-tile-4--5')
+            .querySelector('[data-testid="tree-icon-unicode"]') as HTMLElement;
+        expect(ruleFor(dense.className)).toContain('opacity:1');
+        // An ENTITY glyph stands at full strength — its Marker carries no
+        // opacity rule at all (the fade belongs to the decorations only)
+        const entity = screen
+            .getByTestId('unicode-tile-5--1')
+            .querySelector('span') as HTMLElement;
+        expect(entity.textContent).toBe('🧍‍♂️');
+        expect(ruleFor(entity.className)).not.toContain('opacity');
+        // ── The coverage fade (svg twin) ────────────────────────────────────
+        fireEvent.click(screen.getByTestId('canvas-tab-svg'));
+        const board = screen.getByTestId('world-grid-svg') as SVGSVGElement;
+        const tiles = board.querySelectorAll('g');
+        // (1,−2) → tile (−2+8)×25+(1+12) = 163 — the vector canopy carries
+        // the same 0.1 fade; (4,−5) → tile 91 stands at full 1
+        expect(tiles[163].querySelector('[data-testid="tree-icon-svg-canopy"]')?.getAttribute('opacity')).toBe('0.1');
+        expect(tiles[91].querySelector('[data-testid="tree-icon-svg-canopy"]')?.getAttribute('opacity')).toBe('1');
+        // ── The rock icon (unicode) ─────────────────────────────────────────
+        fireEvent.click(screen.getByTestId('canvas-tab-unicode'));
+        // The highland rock site (−1,−1) — 3 standing stones, nobody on it:
+        // the 🪨 marker stands while the stock does (the BINARY rule — no
+        // fade: the stock-driven drop is its honesty mechanism)
+        const rock = screen.getByTestId('unicode-tile--1--1');
+        expect(rock.textContent).toBe('🪨');
+        const rockIcon = rock.querySelector('[data-testid="rock-icon-unicode"]') as HTMLElement;
+        expect(rockIcon).not.toBeNull();
+        expect(ruleFor(rockIcon.className)).not.toContain('opacity');
+        // ── The rock icon (svg twin) ────────────────────────────────────────
+        fireEvent.click(screen.getByTestId('canvas-tab-svg'));
+        const svgTiles = (screen.getByTestId('world-grid-svg') as SVGSVGElement).querySelectorAll('g');
+        // (−1,−1) → tile (−1+8)×25+(−1+12) = 186 — the vector rock: main
+        // stone + pebble, no text glyph
+        expect(svgTiles[186].querySelector('[data-testid="rock-icon-svg-main"]')).not.toBeNull();
+        expect(svgTiles[186].querySelector('[data-testid="rock-icon-svg-pebble"]')).not.toBeNull();
+        expect(svgTiles[186].querySelector('text')).toBeNull();
+    });
+
+    it('the interior view (scale 0) draws tree icons at full opacity', () => {
+        render(<App seed={7} />);
+        const ruleFor = (className: string): string => {
+            const all = Array.from(document.querySelectorAll('style'))
+                .map((tag) => tag.textContent ?? '')
+                .join('');
+            let out = '';
+            const matcher = new RegExp(`\\.${className}\\b[^{]*\\{([^}]*)\\}`, 'g');
+            let block = matcher.exec(all);
+            while (block) {
+                out += block[1];
+                block = matcher.exec(all);
+            }
+            return out;
+        };
+        // Zoom into the sparse fringe (1,−2) — at the island view its icon
+        // fades to the 0.1 floor…
+        fireEvent.click(screen.getByTestId('unicode-tile-1--2'));
+        fireEvent.click(screen.getByTestId('zoom-toggle'));
+        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 0');
+        // …but its fine cells are trees BY CONSTRUCTION (the mirror scatters
+        // exactly the deposited units, one per cell) — the drawn tree at the
+        // ingress spot (11,−8) stands at FULL strength: no opacity rule on
+        // its marker at all
+        const fine = screen
+            .getByTestId('unicode-tile-11--8')
+            .querySelector('[data-testid="tree-icon-unicode"]') as HTMLElement;
+        expect(fine.textContent).toBe('🌳');
+        expect(ruleFor(fine.className)).not.toContain('opacity');
+        // The svg twin agrees: no opacity attribute on the interior canopy
+        fireEvent.click(screen.getByTestId('canvas-tab-svg'));
+        const board = screen.getByTestId('world-grid-svg') as SVGSVGElement;
+        const canopies = board.querySelectorAll('[data-testid="tree-icon-svg-canopy"]');
+        expect(canopies.length).toBeGreaterThan(0);
+        canopies.forEach((canopy) => expect(canopy.getAttribute('opacity')).toBeNull());
     });
 
     it('the canvas area tabs between Data, ASCII, Unicode and SVG representations', () => {
@@ -744,25 +856,27 @@ describe('App', () => {
     it('the Tile Inspector reads the forest layer: the stand summary and the tree card', () => {
         render(<App seed={7} />);
         // A treed tile's Resources row carries the mirror (the
-        // neighborhood-counted 319-tree stand beside the ground supply);
-        // the FOREST row carries the wood stats
+        // neighborhood-counted 383-tree stand at T2's densified edge beside
+        // the ground supply — R4: no stone line); the FOREST row carries the
+        // wood stats
         fireEvent.click(screen.getByTestId('unicode-tile-4--5'));
         expect(screen.getByTestId('tile-resources').textContent).toBe(
-            'tree ×319 · stone ×∞ · dirt ×∞ · grass ×∞',
+            'tree ×383 · dirt ×∞ · grass ×∞',
         );
         // The stand summary reads in the plural for a whole stand (no
-        // singularization at 319) — the exact line (the card span is
+        // singularization at 383) — the exact line (the card span is
         // empty at the island view, so the row IS the stand line)
         expect(screen.getByTestId('tile-forest').textContent).toBe(
-            '319 trees · 1241 wood standing',
+            '383 trees · 1518 wood standing',
         );
         // No tree card at the island view (the summary shape)
         expect(screen.getByTestId('tile-forest-tree').textContent).toBe('');
-        // An INGRESS meadow rides its fringe's forest layer; a BARE meadow
-        // carries no forest layer at all
+        // An INGRESS meadow rides its fringe's forest layer (T2's
+        // densified 14-tree fringe); a BARE meadow carries no forest layer
+        // at all
         fireEvent.click(screen.getByTestId('unicode-tile-1--2'));
-        // The 10-tree fringe keeps its plural stand read
-        expect(screen.getByTestId('tile-forest').textContent).toBe('10 trees · 44 wood standing');
+        // The 14-tree fringe keeps its plural stand read
+        expect(screen.getByTestId('tile-forest').textContent).toBe('14 trees · 61 wood standing');
         fireEvent.click(screen.getByTestId('unicode-tile-0--3'));
         expect(screen.queryByTestId('tile-forest')).toBeNull();
         // ── Scale 0: the tree card on the inspected fine spot ────────────
@@ -780,8 +894,11 @@ describe('App', () => {
         expect(screen.getByTestId('tile-forest-tree').textContent).toBe(' · age 6.6 y · growing');
         expect(screen.getByTestId('tile-forest-tree').textContent).not.toContain('wood');
         // A bare fine cell of the same wood carries no card — the forest
-        // layer resolves only for a TREED fine spot, so the row drops out
-        fireEvent.click(screen.getByTestId('unicode-tile-9-5'));
+        // layer resolves only for a TREED fine spot, so the row drops out.
+        // The first bare spot row-major on the densified (4,−5) stand is
+        // (−2,−8) (the (9,5) spot the 319-tree stand left bare now stands
+        // treed)
+        fireEvent.click(screen.getByTestId('unicode-tile--2--8'));
         expect(screen.queryByTestId('tile-forest')).toBeNull();
     });
 
@@ -896,13 +1013,14 @@ describe('App', () => {
         expect(screen.getByTestId('tile-terrain-meta').textContent).toBe(
             'height 3 · water line 3 · walkable',
         );
-        expect(screen.getByTestId('tile-voxels').textContent).toBe('stone, dirt, sand');
-        expect(screen.getByTestId('tile-resources').textContent).toBe(
-            'stone ×∞ · sand ×∞ · dirt ×∞',
-        );
+        // R4: the column's bedrock reads gravel and the supply drops the
+        // meadow-style stone — Ael's shore keeps its shell (three materials
+        // now: sand, dirt, shell)
+        expect(screen.getByTestId('tile-voxels').textContent).toBe('gravel, dirt, sand');
+        expect(screen.getByTestId('tile-resources').textContent).toBe('sand ×∞ · dirt ×∞');
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
-        ).toEqual(['Foods ×1', 'Materials ×4']);
+        ).toEqual(['Foods ×1', 'Materials ×3']);
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['Ael — human · well']);
@@ -953,13 +1071,14 @@ describe('App', () => {
         expect(screen.getByTestId('tile-terrain-meta').textContent).toBe(
             'height 3 · water line 3 · walkable',
         );
-        expect(screen.getByTestId('tile-voxels').textContent).toBe('stone, dirt, sand');
-        expect(screen.getByTestId('tile-resources').textContent).toBe(
-            'stone ×∞ · sand ×∞ · dirt ×∞',
-        );
+        // R4: the mirrored line — the quiet beach's bedrock reads gravel
+        // and its supply drops the meadow-style stone (two materials: sand,
+        // dirt)
+        expect(screen.getByTestId('tile-voxels').textContent).toBe('gravel, dirt, sand');
+        expect(screen.getByTestId('tile-resources').textContent).toBe('sand ×∞ · dirt ×∞');
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
-        ).toEqual(['Foods ×1', 'Materials ×3']);
+        ).toEqual(['Foods ×1', 'Materials ×2']);
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['No one here.']);
@@ -1103,10 +1222,13 @@ describe('App', () => {
         expect(screen.getByTestId('tile-position').textContent).toBe('(0, 0) · stone');
         fireEvent.click(screen.getByTestId('zoom-toggle'));
         expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 0');
-        // Her fine spot inside the (0,0) tile (the interior view's bird glyph)
+        // Her fine spot inside the (0,0) tile (the interior view's bird
+        // glyph). The fine cell's surface reads the dirt underlayer — R4:
+        // the rock identity lives on the island view's live stone stock,
+        // while the sub-grid's gravel bedrock feeds no surface read
         expect(screen.getByTestId('unicode-tile-4--6').textContent).toBe('🐦');
         fireEvent.mouseOver(screen.getByTestId('unicode-tile-4--6'));
-        expect(screen.getByTestId('tile-position').textContent).toBe('(0, 0) · (4, -6) · stone');
+        expect(screen.getByTestId('tile-position').textContent).toBe('(0, 0) · (4, -6) · dirt');
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['Kiki — bird · flying-2 · z 2']);

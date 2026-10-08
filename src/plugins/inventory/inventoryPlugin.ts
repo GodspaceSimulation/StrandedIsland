@@ -2,21 +2,25 @@
 //
 // Gives every actor a personal inventory, fills the canvas with resource
 // stocks by tile deposit (the voxel-derived ground supply — grass, dirt,
-// sand, stone — mirrors every matching dry column; trees stand in the
-// forests' persistent fine-scale records; berries AND mushrooms in the
-// meadows and woods, fish AND seaweed in the sea, coconuts on beaches,
-// iron lodes in the highlands, flints, vines, the sea's fish and
-// seaweed), grows the living stocks back over time, rains fresh water onto
-// the land in scattered pools, and exposes the gathering + harvest +
-// exchange actions that other plugins (behavior, lumber) and the god-view
-// drive.
+// sand — mirrors every matching dry column; GRAVEL supplies nothing — it is
+// terrain, not a resource; FINITE STONE stands only on the localized rock
+// sites (the highland peaks + the generator's peak-fallback heap); trees
+// stand in the forests' persistent fine-scale records; berries AND
+// mushrooms in the meadows and woods, fish AND seaweed in the sea,
+// coconuts on beaches, iron lodes in the highlands, flints, vines, the
+// sea's fish and seaweed), grows the living stocks back over time, rains
+// fresh water onto the land in scattered pools, and exposes the gathering
+// + harvest + exchange actions that other plugins (behavior, lumber) and
+// the god-view drive.
 //
 // TILE DEPOSITS: every canvas cell carries `resources` (engine/types.ts
 // TileResources) — written by the terrain generator, kept in sync here. The
 // survey seeds each cell's gatherable stock from its deposits; taking an
-// UNLIMITED deposit (the ground supply: grass, dirt, sand, stone) never
-// decrements the tile — the ground hands it out forever; a FINITE deposit
-// (iron) draws down with its stock. The TREE deposit is the standing-tree
+// UNLIMITED deposit (the ground supply: grass, dirt, sand) never decrements
+// the tile — the ground hands it out forever; a FINITE deposit (stone — the
+// localized rock sites, iron — the lodes) draws down with its stock and the
+// canvas icon drops when it empties (drawDeposit deletes the entry at 0).
+// The TREE deposit is the standing-tree
 // MIRROR of the persistent fine-scale forest records (plugins/terrain
 // ForestStand): it moves only when a tree is fully felled (its wood pool
 // chopped to 0) or when the forest ecology recruits one — the wood itself
@@ -89,9 +93,12 @@ const REGROW_CAPS: Record<string, number> = {
     // permanent meadow/forest feature; only its berry stock draws down and
     // refills, on the bush rhythm below)
     bush: 2,
-    // shell / iron / flint are finite — no regrowth
-    // grass / stone / sand / dirt are the unlimited ground supply — never
-    // depleted, never regrown
+    // shell / iron / flint / STONE are finite — no regrowth (stone draws
+    // down with the localized rock-site stock; the 🪨 icon drops when it
+    // empties — drawDeposit deletes the entry at 0)
+    // grass / sand / dirt are the unlimited ground supply — never depleted,
+    // never regrown (GRAVEL is terrain, not a resource — it supplies
+    // nothing; the old bedrock stone never mirrored into the stocks)
 };
 
 /**
@@ -211,7 +218,10 @@ const bushAt = (x: number, y: number): boolean => {
 const isTileResource = (itemId: string): itemId is TileResource =>
     (TILE_RESOURCES as readonly string[]).includes(itemId);
 
-/** Whether an item id is an UNLIMITED deposit (sand/dirt — never depleted). */
+/**
+ * Whether an item id is an UNLIMITED deposit (grass/sand/dirt — never
+ * depleted; stone left the list when it became a finite rock-site stock).
+ */
 const isUnlimitedResource = (itemId: string): boolean =>
     (UNLIMITED_TILE_RESOURCES as readonly string[]).includes(itemId);
 
@@ -412,13 +422,15 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
     };
 
     // Internal: keeps a tile's deposit in step with its gatherable stock.
-    // Finite deposits (iron — and the legacy tree path) follow the stock —
-    // taking one draws the tile's deposit down (deleting the entry at 0
-    // falls the surface derivation through to the tile's next landmark /
-    // ground / voxel look through tileSurfaceKey: an exhausted iron lode
-    // reads its stone ground, a clearcut wood KEEPS its forest canopy —
-    // the forest voxel stands). Unlimited deposits are never touched: a
-    // tile's ground supply cannot run out.
+    // Finite deposits (iron — stone the localized rock-site stock — and
+    // the legacy tree path) follow the stock — taking one draws the tile's
+    // deposit down (deleting the entry at 0 falls the surface derivation
+    // through to the tile's next landmark / ground / voxel look through
+    // tileSurfaceKey: an exhausted rock site falls off its 'stone' surface
+    // (gravel is excluded from the ground scan — it supplies nothing) down
+    // to the plain highland / ground key, a clearcut wood KEEPS its forest
+    // canopy — the forest voxel stands). Unlimited deposits are never
+    // touched: a tile's ground supply cannot run out.
     const drawDeposit = (x: number, y: number, itemId: string) => {
         if (!isTileResource(itemId) || isUnlimitedResource(itemId)) {
             return;
@@ -586,8 +598,9 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             // THE MINE GATE — the 'mine' ability unlock: stone and iron come
             // off a tile only for species that can mine (a bird hopping onto
             // a highland picks up nothing). The gate limits WHO works the
-            // ground — the stone supply itself is infinite (the ground
-            // mirrors it, unlimited takes below)
+            // ROCK — the stone stock is FINITE now (the localized rock-site
+            // deposit below draws down with the pile; the ground-supply
+            // takes below never touch it)
             if (MINED_ITEMS.includes(itemId) && !mayMine(actor.id)) {
                 return false;
             }
@@ -599,9 +612,10 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             const x = actor.position.x;
             const y = actor.position.y;
             const stock = stockOf(x, y);
-            // UNLIMITED ground-supply deposits (grass, stone, sand, dirt)
-            // cannot be exhausted: the pile never decrements, so the tile
-            // hands them out forever — only the bag's capacity gates
+            // UNLIMITED ground-supply deposits (grass, sand, dirt) cannot be
+            // exhausted: the pile never decrements, so the tile hands them
+            // out forever — only the bag's capacity gates (stone is FINITE:
+            // it rides the stock branch and draws down with the pile)
             if (isUnlimitedResource(itemId)) {
                 if ((stock[itemId] ?? 0) <= 0) {
                     return false;
@@ -612,7 +626,10 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             inventoryAdd(bagOf(actor.id), itemId, 1);
             // Finite deposits draw down with the pile — an exhausted
             // landmark falls through the surface derivation to the tile's
-            // next look (an exhausted iron lode reads its stone ground)
+            // next look (an exhausted rock site loses its 'stone' surface —
+            // the depleted gravel top supplies nothing — an exhausted iron
+            // lode on a stocked highland still reads 'stone' through the
+            // live-stock rule, otherwise the plain highland)
             drawDeposit(x, y, itemId);
             return true;
         },

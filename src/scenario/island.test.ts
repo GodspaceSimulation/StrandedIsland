@@ -345,7 +345,10 @@ describe('createIslandWorld', () => {
         expect(frame.tiles[201].glyphs).toEqual([
             { id: 'actor-1', glyph: 'A', color: '#5cb85c', elevation: 0, kind: 'sentient', type: 'human', state: 'well' },
         ]);
-        expect(frame.tiles[201].title).toBe('beach · height 3 · stone / dirt / sand · stone ×∞ · sand ×∞ · dirt ×∞ · Ael · well');
+        // R4: the column's bedrock reads gravel (not the stone that the
+        // old endless ground supply buried under everything) and the beach
+        // is no stone-bearing — the unlimited ground reads sand + dirt
+        expect(frame.tiles[201].title).toBe('beach · height 3 · gravel / dirt / sand · sand ×∞ · dirt ×∞ · Ael · well');
         // The tile appears as the resource its ground is: the beach's
         // unlimited sand surface paints it with the sand palette color
         expect(frame.tiles[201].background).toBe('#d3bd85');
@@ -355,8 +358,11 @@ describe('createIslandWorld', () => {
         expect(frame.tiles[212].glyphs).toEqual([
             { id: 'bird-1', glyph: 'K', color: '#7ec8e3bf', elevation: 2, kind: 'creature', type: 'bird', state: 'flying-2' },
         ]);
+        // R4: the highland's column is GRAVEL (the rock the finite stone
+        // mines off) and its stock is the finite rock-site count (3) —
+        // the old endless deposit reads ×∞ no more
         expect(frame.tiles[212].title).toBe(
-            'highland · height 7 · stone / stone / stone / stone / stone / dirt / stone · stone ×∞ · dirt ×∞ · Kiki · flying-2 · z 2',
+            'highland · height 7 · gravel / gravel / gravel / gravel / gravel / dirt / gravel · stone ×3 · dirt ×∞ · Kiki · flying-2 · z 2',
         );
         // The highland's stone deposit surfaces the tile with the stone
         // palette color
@@ -367,10 +373,11 @@ describe('createIslandWorld', () => {
         // (3,−6) tile 65 became a beach at the lowered 0.8 threshold).
         // Trees paint GREEN on the canvas — the greenery of the standing
         // woods. The deposit count is the tile's neighborhood-counted
-        // stand (319 at 0.8).
+        // stand (T2's densified edge band reads 383; the R4 gravel column
+        // carries no stone line).
         expect(frame.tiles[91].background).toBe('#4caf50');
         expect(frame.tiles[91].title).toBe(
-            'forest · height 5 · stone / stone / stone / dirt / grass / forest · tree ×319 · stone ×∞ · dirt ×∞ · grass ×∞',
+            'forest · height 5 · gravel / gravel / gravel / dirt / grass / forest · tree ×383 · dirt ×∞ · grass ×∞',
         );
     });
 
@@ -416,6 +423,53 @@ describe('createIslandWorld', () => {
         expect(handle.unicode.palette().types.coconut).toBe('🥥');
         expect(handle.unicode.palette().types.berry).toBe('🍒');
         expect(handle.unicode.palette().types.fish).toBe('🐟');
+    });
+
+    it('decorates rock sites with the rock icon — stock-driven, rock over tree, basins bare', () => {
+        // R3/R4 — the 🪨 decoration tracks the LIVE finite stone stock:
+        // it stands while the tile carries mineable rock and drops the
+        // moment the stock is worked away (the frame re-derives per read)
+        const handle = createIslandWorld({ seed: 7 });
+        const frame = handle.unicode.frame();
+        // Kiki's highland (0,0) — tile 212 — carries the finite 3-unit rock
+        // site: it decorates 'rock' (the bird glyph rides ABOVE the
+        // decoration — separate channels, the entity still wins the tile)
+        expect(frame.tiles[212].decoration).toBe('rock');
+        // A treed tile decorates 'tree' — the 383-tree edge wood (4,−5)
+        expect(frame.tiles[91].decoration).toBe('tree');
+        // A bare beach decorates nothing (the no-flood rule stands)
+        expect(frame.tiles[201].decoration).toBeUndefined();
+        // ── DEPLETION — the icon drops with the stock (coarse scale) ──────
+        // Work the site's whole stock away (what the mine gate does unit by
+        // unit) — the next frame reads NO rock decoration on the tile
+        handle.world.cellAt(0, 0)!.resources.stone = 0;
+        expect(handle.unicode.frame().tiles[212].decoration).toBeUndefined();
+        // …and the ascii + svg siblings follow the same live read
+        expect(handle.ascii.frame().tiles[212].decoration).toBeUndefined();
+        expect(handle.svg.frame().tiles[212].decoration).toBeUndefined();
+        // A partial stock keeps the icon (binary rule: any live unit shows)
+        handle.world.cellAt(0, 0)!.resources.stone = 1;
+        expect(handle.unicode.frame().tiles[212].decoration).toBe('rock');
+        // ── ROCK RANKS ABOVE TREE ───────────────────────────────────────────
+        // A hypothetical tree + rock co-occurrence must show the 🪨 (the
+        // mineable rock site is the gameplay landmark — it may not hide
+        // under the coverage-faded canopy): stand stone on the wood tile
+        handle.world.cellAt(4, -5)!.resources.stone = 2;
+        expect(handle.unicode.frame().tiles[91].decoration).toBe('rock');
+        delete handle.world.cellAt(4, -5)!.resources.stone;
+        expect(handle.unicode.frame().tiles[91].decoration).toBe('tree');
+        // ── BASIN SUPPRESSION — water surfaces wear no standing icon ───────
+        // A carved lake/pond tile paints water: even a stone stock stamped
+        // on it decorates nothing (the same rule that suppresses the canopy
+        // over the basin)
+        const basin = handle.world.canvas.cells.find(
+            (cell) => cell.biome === 'lake' || cell.biome === 'pond',
+        )!;
+        basin.resources.stone = 2;
+        const basinIndex =
+            (basin.y + (handle.world.canvas.height - 1) / 2) * handle.world.canvas.width +
+            (basin.x + (handle.world.canvas.width - 1) / 2);
+        expect(handle.unicode.frame().tiles[basinIndex].decoration).toBeUndefined();
     });
 
     it('the svg canvas frame mirrors the ascii world as a vector document', () => {
