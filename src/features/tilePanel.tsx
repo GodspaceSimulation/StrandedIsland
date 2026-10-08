@@ -33,10 +33,12 @@ import {
     voxelSummary,
     occupantLine,
     structureLine,
+    progressLine,
     forestStandLine,
     forestTreeLine,
     type TileOccupant,
     type TileStructure,
+    type TileProgress,
 } from './tileDetails';
 import { itemLabel } from '../plugins/inventory/items';
 
@@ -138,6 +140,46 @@ const ResidentRow = ({ occupant, dotColor }: { occupant: TileOccupant; dotColor:
 const StructureRow = ({ structure }: { structure: TileStructure }) => (
     <li>
         <span data-testid={`tile-structure-${structure.siteId}`}>{structureLine(structure)}</span>
+    </li>
+);
+
+// The inspector's progress bar — the same work-minute read the boards draw
+// (worldGrid.tsx WorkBars), rendered as a labeled track for the panel
+const ProgressTrack = styled('div', {
+    position: 'relative',
+    height: 6,
+    borderRadius: 3,
+    background: 'rgba(0,0,0,0.45)',
+    flex: 1,
+});
+
+const ProgressFill = styled<{ pct: number }>('div', {
+    width: ({ pct }) => `${Math.round(Math.min(1, Math.max(0, pct)) * 100)}%`,
+    height: '100%',
+    borderRadius: 3,
+    background: PALETTE.accent,
+});
+
+/**
+ * Work row — one standing job on the inspected tile (R6): the shared
+ * tile-work unit (the chop/fell labor any skilled entity can finish) or a
+ * live site's build work. The line reads the exact work minutes
+ * ("chop 7/15") beside the bar.
+ */
+const WorkRow = ({ job }: { job: TileProgress }) => (
+    <li>
+        <Row>
+            <span data-testid={`tile-work-${job.label}`}>{progressLine(job)}</span>
+            <ProgressTrack
+                role="progressbar"
+                aria-valuenow={job.done}
+                aria-valuemin={0}
+                aria-valuemax={job.total}
+                aria-label={progressLine(job)}
+            >
+                <ProgressFill pct={job.total > 0 ? job.done / job.total : 0} />
+            </ProgressTrack>
+        </Row>
     </li>
 );
 
@@ -266,6 +308,27 @@ export const TilePanel = () => {
                             ) : (
                                 summary.structures.map((structure) => (
                                     <StructureRow key={structure.siteId} structure={structure} />
+                                ))
+                            )}
+                        </List>
+                    </div>
+                    <div>
+                        <PanelTitle>Work</PanelTitle>
+                        <List data-testid="tile-work">
+                            {/* The standing jobs on the tile (R6): the
+                                shared tile-work ledger (the chop/fell labor
+                                several entities contribute to — the work
+                                survives every actor) and the live site
+                                build work. Any skilled entity can pick the
+                                standing job up; the bar reads the exact
+                                work minutes. */}
+                            {summary.work.length === 0 ? (
+                                <li>
+                                    <EmptyNote>No work standing here.</EmptyNote>
+                                </li>
+                            ) : (
+                                summary.work.map((job, index) => (
+                                    <WorkRow key={`${job.label}-${index}`} job={job} />
                                 ))
                             )}
                         </List>

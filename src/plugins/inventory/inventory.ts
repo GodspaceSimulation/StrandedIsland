@@ -1,122 +1,23 @@
-// Inventory primitives — pure functions over a simple `Record<item, count>`
-// bag. Every operation either succeeds fully or leaves both sides untouched
-// (atomicity matters for the exchange primitive: a trade is all-or-nothing).
+// Inventory primitives — COMPATIBILITY RE-EXPORT.
+//
+// The pure `Record<item, count>` bag helpers (count/add/remove/entries/
+// total/fits/has/affords/transfer/exchange + the Inventory type) are
+// CANONICAL in @userfiction/core (packages/userfiction/core/src/inventory/
+// inventory.ts — the engine-independent fiction layer, R1/R2). The island
+// keeps this module as its local import path so every existing consumer
+// ('./inventory', the plugin barrel) resolves the exact same names (R3);
+// the helpers themselves have one owner and are never forked here.
 
-/** An inventory: item id → count. Counts are always integers ≥ 0. */
-export type Inventory = Record<string, number>;
-
-/** How many of `item` are held (0 when absent). */
-export const inventoryCount = (inventory: Inventory, item: string): number =>
-    inventory[item] ?? 0;
-
-/** Adds `count` of `item` (mutates + returns the inventory for chaining). */
-export const inventoryAdd = (inventory: Inventory, item: string, count: number): Inventory => {
-    inventory[item] = inventoryCount(inventory, item) + count;
-    return inventory;
-};
-
-/**
- * Removes `count` of `item`. When the inventory cannot afford it, nothing
- * changes and `false` is returned — never a partial removal.
- */
-export const inventoryRemove = (inventory: Inventory, item: string, count: number): boolean => {
-    if (inventoryCount(inventory, item) < count) {
-        return false;
-    }
-    const remaining = inventoryCount(inventory, item) - count;
-    if (remaining === 0) {
-        // Zero entries are dropped so logs/tests see a clean bag
-        delete inventory[item];
-    } else {
-        inventory[item] = remaining;
-    }
-    return true;
-};
-
-/** Non-zero entries as a list of stacks. */
-export const inventoryEntries = (inventory: Inventory): Array<{ item: string; count: number }> =>
-    Object.entries(inventory)
-        .filter(([, count]) => count > 0)
-        .map(([item, count]) => ({ item, count }));
-
-/**
- * The inventory's total UNITS across every stack — the measure inventory
- * SIZE is counted in (a bird's 3-unit beak holds three berries or one
- * berry and two shells; stacks are not the unit, things are).
- */
-export const inventoryTotal = (inventory: Inventory): number =>
-    Object.values(inventory).reduce((sum, count) => sum + count, 0);
-
-/**
- * Whether adding a bundle of items still fits an inventory of the given
- * capacity. `Infinity` capacity (no entity profiles mounted) always fits.
- * Pure read — the caller decides whether the add happens at all.
- */
-export const inventoryFits = (inventory: Inventory, additions: Inventory, capacity: number): boolean =>
-    inventoryTotal(inventory) + inventoryTotal(additions) <= capacity;
-
-/** Whether the inventory holds at least `count` of `item`. */
-export const inventoryHas = (inventory: Inventory, item: string, count = 1): boolean =>
-    inventoryCount(inventory, item) >= count;
-
-/**
- * Whether the inventory can afford every stack in a bundle.
- * Accounts for repeated item ids across the bundle (e.g. two entries of
- * 'wood' in the same offer must sum).
- */
-export const inventoryAffords = (inventory: Inventory, bundle: Inventory): boolean => {
-    const required: Record<string, number> = {};
-    Object.entries(bundle).forEach(([item, count]) => {
-        if (count > 0) {
-            required[item] = (required[item] ?? 0) + count;
-        }
-    });
-    return Object.entries(required).every(([item, count]) => inventoryHas(inventory, item, count));
-};
-
-/**
- * Moves `count` of `item` from one inventory to another.
- * Atomic: when the source cannot afford it, neither side changes.
- */
-export const inventoryTransfer = (
-    from: Inventory,
-    to: Inventory,
-    item: string,
-    count: number,
-): boolean => {
-    if (!inventoryRemove(from, item, count)) {
-        return false;
-    }
-    inventoryAdd(to, item, count);
-    return true;
-};
-
-/**
- * The exchange primitive — the heart of "one inventory can exchange items
- * with another". `giver` hands over `offer` and receives `request` from
- * `receiver`. Fully atomic: if either side cannot afford its part, both
- * inventories stay exactly as they were and `false` is returned.
- */
-export const inventoryExchange = (
-    giver: Inventory,
-    receiver: Inventory,
-    offer: Inventory,
-    request: Inventory,
-): boolean => {
-    // Pre-check both sides — no mutation may happen on a failed trade
-    if (!inventoryAffords(giver, offer) || !inventoryAffords(receiver, request)) {
-        return false;
-    }
-    // Perform the two-way transfer; affordability was proven above
-    Object.entries(offer).forEach(([item, count]) => {
-        if (count > 0) {
-            inventoryTransfer(giver, receiver, item, count);
-        }
-    });
-    Object.entries(request).forEach(([item, count]) => {
-        if (count > 0) {
-            inventoryTransfer(receiver, giver, item, count);
-        }
-    });
-    return true;
-};
+export {
+    inventoryCount,
+    inventoryAdd,
+    inventoryRemove,
+    inventoryEntries,
+    inventoryTotal,
+    inventoryFits,
+    inventoryHas,
+    inventoryAffords,
+    inventoryTransfer,
+    inventoryExchange,
+} from '@userfiction/core';
+export type { Inventory } from '@userfiction/core';

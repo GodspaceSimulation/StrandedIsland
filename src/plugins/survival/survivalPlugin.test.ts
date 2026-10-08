@@ -11,9 +11,13 @@
 // within one tile (Chebyshev) is a meeting that can hurt, and the flee
 // task pre-empts every other queue (the ledger's strictly-higher-priority
 // rule). The flee is one fine step away from the threat; a threat sharing
-// the actor's tile means blind flight (any valid step). While the threat
-// stands the ladder re-plans the flee every minute; the tick it clears,
-// the interrupted find-food / find-water queue resumes.
+// the actor's tile triggers the COMMITTED EXIT — the flee marches the
+// nearest dry tile edge and crosses out (a directionless random step was
+// the old fatal-chase bug: the tile-level threat scan never cleared, so
+// the actor random-walked its own tile while the beast mauled it — see
+// survivalFleeRegression.test.ts). While the threat stands the ladder
+// re-plans the flee every minute; the tick it clears, the interrupted
+// find-food / find-water queue resumes.
 
 import { describe, it, expect } from 'vitest';
 import { position3 } from '@godspace/core';
@@ -82,16 +86,18 @@ describe('survivalPlugin', () => {
         ]);
     });
 
-    it('a threatened actor flees one fine step away from the beast', () => {
+    it('a threatened actor flees a full tile away — the running stride', () => {
         const { world, needs, tasks } = buildStack();
         spawn(world, 'a', 'Ael', 8, 2); // dry beach — (6,2) is an impassable pond now
         // The boar closes in from the east — adjacent tile, within the
         // threat range
         placeThreat(world, 'boar-x', 'Tusk', 9, 2);
         world.step();
-        // The flee outranks everything: one fine step WEST, away from the
-        // beast (a 'move' task — the behavior plugin's move effect applies
-        // it; the tag reads in the payload)
+        // The flee outranks everything: the RUNNING STRIDE west, away from
+        // the beast — a full Scale-0 tile in one minute (the profile's run
+        // row; a fine step could never outpace the boar's two-minute gait).
+        // A 'move' task — the behavior plugin's move effect applies it; the
+        // tag reads in the payload)
         expect(tasks.taskOf('a')).toEqual({
             id: 't-1',
             actorId: 'a',
@@ -99,15 +105,17 @@ describe('survivalPlugin', () => {
             kind: 'move',
             label: 'flees',
             minutes: 1,
-            payload: { dx: -1, dy: 0, flee: true },
+            payload: { tx: 7, ty: 2, flee: true },
             total: 1,
             remaining: 1,
         });
         world.step();
-        // The step completed (interior — the coarse position holds) and
-        // the boar is still adjacent: the ladder re-plans the flee
-        expect(world.subOf('a')).toEqual({ x: -5, y: 7 });
-        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'flees', payload: { dx: -1, dy: 0, flee: true }, remaining: 1 });
+        // The stride landed: Ael stands a full tile west — a TWO-tile gap
+        // from the beast, beyond the threat range. The scan clears and the
+        // wider ladder takes the minute back (the old fine-step flee never
+        // opened a gap and re-planned forever).
+        expect(world.actors.get('a')!.position).toEqual(position3(7, 2));
+        expect(tasks.taskOf('a')?.behaviour).not.toBe('survival');
         // The fleeing is silent — movement is simulation plumbing
         expect(world.events.log().map((event) => event.kind)).toEqual(['spawn']);
         void needs;
@@ -116,9 +124,14 @@ describe('survivalPlugin', () => {
     it('the flee pre-empts a busy queue: the interrupted task is abandoned mid-work', () => {
         const { world, inventory, needs, tasks } = buildStack();
         spawn(world, 'a', 'Ael', 3, -4); // the berry+mushroom meadow stocks food
-        needs.satisfy('a', { hunger: 40 }); // hunger 60 → the 10-minute gather
-        world.step();
-        expect(tasks.taskOf('a')).toMatchObject({ kind: 'gather', remaining: 10 });
+        needs.satisfy('a', { hunger: 40 }); // hunger 60
+        // The busy queue is queued DIRECTLY on the ledger (a synthetic
+        // 10-minute gather under the hunger rung): survival's pre-emption
+        // contract must not hinge on the behavior plugin's plan-time
+        // gather economics (shared tile jobs / beats) — its own tests pin
+        // those. Equal priorities never churn a running queue, so the
+        // hunger rung leaves this one alone.
+        tasks.ledger.queue('a', 'hunger', [{ kind: 'gather', label: 'gathers', minutes: 10 }]);
         for (let index = 0; index < 3; index++) {
             world.step();
         }
@@ -136,7 +149,10 @@ describe('survivalPlugin', () => {
             kind: 'move',
             label: 'flees',
             minutes: 1,
-            payload: { dx: -1, dy: 0, flee: true },
+            // (the west neighbor is wet and the beast's own tile is never
+            // an exit — the committed exit runs NORTH to the nearest dry
+            // neighbor instead)
+            payload: { tx: 3, ty: -3, flee: true },
             total: 1,
             remaining: 1,
         });
@@ -150,28 +166,35 @@ describe('survivalPlugin', () => {
         const { world, inventory, needs, tasks } = buildStack();
         spawn(world, 'a', 'Ael', 3, -4); // the berry+mushroom meadow stocks food
         needs.satisfy('a', { hunger: 40 });
-        world.step();
+        // Synthetic busy queue (see the pre-emption test — the resume
+        // contract belongs to survival; the gather's minutes economics
+        // belong to the behavior plugin's own tests and are NOT pinned
+        // here)
+        tasks.ledger.queue('a', 'hunger', [{ kind: 'gather', label: 'gathers', minutes: 10 }]);
         placeThreat(world, 'boar-x', 'Tusk', 4, -4);
-        // Minute 2: the gather is pre-empted by the flee…
+        // Minute 1: the gather is pre-empted by the flee…
         world.step();
         expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'flees', remaining: 1 });
         // …and the beast wanders off (the threat is gone)
         world.coordinates.move('boar-x', position3(12, 8));
         world.step();
-        // The flee completed; with the coast clear the hunger rung
-        // re-plans the gather (a fresh 10-minute task)
-        expect(tasks.taskOf('a')).toMatchObject({ behaviour: 'hunger', kind: 'gather', remaining: 10 });
+        // The flee completed; with the coast clear the hunger rung takes
+        // the actor back (whatever shape its gather plan has this build)
+        expect(tasks.taskOf('a')).toMatchObject({ behaviour: 'hunger', kind: 'gather' });
         expect(inventory.of('a')).toEqual({});
     });
 
-    it('a beast sharing the actor\u2019s tile means blind flight (any valid step)', () => {
+    it('a beast sharing the actor\u2019s tile triggers the committed exit — the stride runs to the nearest dry neighbor tile', () => {
         const { world, tasks } = buildStack();
         spawn(world, 'a', 'Ael', 8, 2); // dry beach — (6,2) is an impassable pond now
         // The boar stands ON Ael's tile — no away direction exists
         placeThreat(world, 'boar-x', 'Tusk', 8, 2);
         world.step();
-        // Blind flight: one valid fine step drawn from the plugin's own
-        // stream (the seeded pick ran north)
+        // The committed exit (no random draw): the +y neighbor is the
+        // nearest dry edge from Ael's derived fine spot — the stride
+        // commits SOUTH. The old blind flight drew ANY step at random; a
+        // directionless walk never left the tile while the (tile-level)
+        // threat scan kept re-planning the flee every minute.
         expect(tasks.taskOf('a')).toEqual({
             id: 't-1',
             actorId: 'a',
@@ -179,10 +202,20 @@ describe('survivalPlugin', () => {
             kind: 'move',
             label: 'flees',
             minutes: 1,
-            payload: { dx: 0, dy: -1, flee: true },
+            payload: { tx: 8, ty: 3, flee: true },
             total: 1,
             remaining: 1,
         });
+        world.step();
+        // The stride lands Ael a full tile off the threatened tile
+        expect(world.actors.get('a')!.position).toEqual(position3(8, 3));
+        world.step();
+        // Minute 3 — the away rung's second stride put Ael TWO tiles from
+        // the beast: beyond the threat range the scan clears and the wider
+        // ladder takes the minute back (the running stride outpaces the
+        // lumbering gait — the gap never closes)
+        expect(world.actors.get('a')!.position).toEqual(position3(8, 4));
+        expect(tasks.taskOf('a')?.behaviour).not.toBe('survival');
     });
 
     it('removing the survival plugin strands the threat: the wider ladder takes over', () => {

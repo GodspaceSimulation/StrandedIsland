@@ -376,6 +376,9 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     const lumber = lumberPlugin({
         inventory,
         tasks,
+        // The species 'chop' ability gate (R6) — only skilled hands work
+        // the woods (the entity profiles' work-kind unlock)
+        profiles,
         travelMinutesPerTile: TRAVEL_MINUTES_PER_TILE,
     });
     // The construction governance — the build/craft rungs over the shared

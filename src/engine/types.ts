@@ -204,63 +204,30 @@ export type Canvas = {
 };
 
 // ── Actors ───────────────────────────────────────────────────────────────────
+// The actor domain — taxonomy, condition, profile, badges — is CANONICAL in
+// @userfiction/core (packages/userfiction/core/actor, the engine-
+// independent fiction layer; R1/R2). The island re-exports it unchanged and
+// adds only its engine half: WHERE an actor stands (Position3D). The
+// vocabulary itself has one owner; do not fork it here.
 
-/** Physical / life condition of an actor, derived from needs by the needs plugin. */
-export type ActorCondition = 'well' | 'weak' | 'critical' | 'gone';
+import type { Actor as CoreActor } from '@userfiction/core';
 
-/**
- * WHAT an actor is — the top taxonomy level. 'creature' covers the
- * non-sentient fauna (seabirds, any animal a plugin coins); 'sentient'
- * covers the thinking races (humans, and any fantasy race — orc, elf, …).
- */
-export type ActorKind = 'creature' | 'sentient';
-
-/**
- * WHICH an actor is — the species/race within its kind. Creatures are
- * 'bird' | 'dog' | …; sentients are 'human' | 'orc' | 'elf' | …. Open on
- * purpose: 'human' is a race like any other ('person' would deny the
- * orcs and elves of a future plugin a name of their own).
- */
-export type ActorType = string;
-
-// ── Actor profile ────────────────────────────────────────────────────────────
-// Stable personal facts carried beside the simulation state. The coordinate
-// record's display facet carries the sex (engine/world.ts facetOf), so the
-// representation plugins can draw it — the unicode canvas picks the gendered
-// person emoji for humans.
-
-/** Biological sex — the profile fact the god-view draws. */
-export type Sex = 'male' | 'female';
-
-/** The sex glyph badges — the inspector's profile line + future god-views. */
-export const SEX_BADGES: Record<Sex, string> = {
-    male: '♂', // U+2642 male sign
-    female: '♀', // U+2640 female sign
-};
-
-/** Stable personal facts of one actor. */
-export type ActorProfile = {
-    sex: Sex;
-};
+// Canonical actor vocabulary — re-exported so every island import path
+// ('../engine/types') keeps resolving the exact same names (R3).
+export type { ActorCondition, ActorKind, ActorType, Sex, ActorProfile } from '@userfiction/core';
+export { SEX_BADGES } from '@userfiction/core';
 
 /**
- * One living resident of the world. Position is a 3D coordinate — sentients
- * that cannot fly or dig keep Z at ground level (birds travel the Z axis).
+ * One living resident of the world. The identity/taxonomy/condition/profile
+ * half is @userfiction/core's canonical Actor; the island extends it with
+ * the engine-local 3D position — sentient actors that cannot fly or dig
+ * keep Z at ground level (birds travel the Z axis). Position is the ONLY
+ * island addition: the marker/condition/profile requirements the island
+ * always had come straight from the canonical Actor record.
  */
-export type Actor = {
-    id: string;
-    name: string;
-    /** WHAT the actor is — 'creature' | 'sentient' (see ActorKind). */
-    kind: ActorKind;
-    /** WHICH the actor is — species/race: 'human', 'bird', … (see ActorType). */
-    type: ActorType;
+export type Actor = CoreActor & {
     /** X, Y, Z position (Position3D from @godspace/core). Z is always 0. */
     position: Position3D;
-    /** Short grid marker (1–2 letters) shown in the god-view. */
-    marker: string;
-    condition: ActorCondition;
-    /** Stable personal facts (see ActorProfile) — the cast's sex, e.g. */
-    profile: ActorProfile;
 };
 
 // ── World events ─────────────────────────────────────────────────────────────

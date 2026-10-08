@@ -32,9 +32,11 @@
 //                recipes: vine→rope, wood→plank, frond→thatch, frond→cloth.
 //   materials 22 — a raw fetch is owed (demand-directed: only what the
 //                site's staging still lacks, never bag-filling lumber) →
-//                take it underfoot (the fetch modules ride the CORE's
-//                gather factory), fell a tree for wood, or travel toward
-//                the nearest stocked cell.
+//                take it underfoot (R6: the fetch is a 1-minute BEAT on the
+//                tile's shared gather job for that material — the
+//                plugins/tasks/gatherWork ledger, one job per tile per
+//                resource, the take pays on the atomic claim), fell a tree
+//                for wood, or travel toward the nearest stocked cell.
 //   build   21 — the site is fully staged → stand on its footprint and
 //                work one world-minute per task (the shared site
 //                registry's per-minute workOn stages).
@@ -76,9 +78,12 @@ import {
     craftTaskBehaviour,
     gatherTaskBehaviour,
     position3,
+    tileWorkKey,
     type Position3D,
     type WorldPlugin,
 } from '@godspace/core';
+import { CHOP_WORK_KIND } from '../lumber/lumberPlugin';
+import { openGatherJob } from '../tasks/gatherWork';
 import {
     createBlueprintRegistry,
     createSiteRegistry,
@@ -166,6 +171,27 @@ export const ISLAND_RECIPES: readonly Recipe[] = [
  * plan cursor's site placement pins stay stable).
  */
 export const TOOL_RECIPE_IDS: readonly string[] = ['axe', 'hammer'];
+
+/**
+ * R5/R6 — THE ISLAND'S WORK COSTS: the construction-time WORK-MINUTES each
+ * stock blueprint demands, re-priced from the generic @godspace/blueprint
+ * stock values (shelter 10 / house 40 / fort 120 / raft 30 / boat 60) onto
+ * the island's own time scale — a shelter is a few hours of honest labor
+ * (240), a house THREE DAYS (4320), and the long projects scale between
+ * them. The overrides are ISLAND-LOCAL: the shared package's stock specs
+ * stay untouched for every other distribution. They apply to the plugin's
+ * OWN registry instance (remove + define — `define` throws on a collision),
+ * so every NEW site placed here snapshots the island cost (`site.cost` at
+ * placement, @godspace/blueprint site/index.ts) while existing sites keep
+ * theirs — the same snapshot rule the staging costs already ride.
+ */
+export const ISLAND_BLUEPRINT_WORK: Record<string, number> = {
+    shelter: 240, // 4 hours
+    raft: 480, // 8 hours
+    house: 4320, // 3 days
+    boat: 1440, // 1 day
+    fort: 2880, // 2 days
+};
 
 /** Canvas type-glyphs for the structures — the scale-0 footprint entries
  * (features/tileDetails scaleView) and the unicode/svg type palettes
@@ -284,6 +310,22 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
     // grow) and takes the island's recipes, validated against the island's
     // own slice of the shared item catalog (materials, plugins/inventory).
     const blueprints = createBlueprintRegistry();
+    // R5/R6 — re-price the stock blueprints onto the island's time scale
+    // (see ISLAND_BLUEPRINT_WORK): remove + define, because `define` throws
+    // on an id collision. Only THIS registry instance changes — the shared
+    // package's stock specs stay generic for every other distribution.
+    // TWO PASSES (collect in the registry's own define order, then remove +
+    // re-define) so the re-priced entries keep the stock definition ORDER —
+    // the build rungs are generated from blueprints.blueprints() and the
+    // campaign's staging sequence depends on that order staying put.
+    const repriced = blueprints
+        .blueprints()
+        .filter((definition) => ISLAND_BLUEPRINT_WORK[definition.id] !== undefined)
+        .map((definition) => ({ ...definition, work: ISLAND_BLUEPRINT_WORK[definition.id] }));
+    arrayEach(repriced, ({ value: definition }) => {
+        blueprints.remove(definition.id);
+        blueprints.define(definition);
+    });
     const crafting = createCraftingRegistry({ stock: false, items: materials });
     arrayEach([...ISLAND_RECIPES], ({ value: recipe }) => {
         crafting.define({
@@ -686,6 +728,16 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
      */
     const mayCraft = (type: string | undefined): boolean =>
         !profiles || (type !== undefined && profiles.hasAbility(type, 'craft'));
+
+    /**
+     * The fell gate's ability unlock — the species' 'chop' ability (the same
+     * work-kind unlock the lumber plugin's chop reads). Felling wood for the
+     * site is chopping a tree: an entity that cannot chop cannot feed the
+     * shared chop job. Without profiles every hand may chop (the pre-entity
+     * behavior).
+     */
+    const mayChop = (type: string | undefined): boolean =>
+        !profiles || (type !== undefined && profiles.hasAbility(type, 'chop'));
 
     // ── the plan cursor: place or advance ────────────────────────────────────
 
@@ -1275,11 +1327,53 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                         if (MINED_ITEMS.includes(item) && profiles && !profiles.hasAbility(subject.actor.type ?? '', 'mine')) {
                             return false;
                         }
+                        // THE FORAGE GATE (R6) — the cell-taken renewables
+                        // (vine, frond) demand the species' 'forage'
+                        // ability, the same skill the tile job tags (the
+                        // lumber 'chop' pattern); without profiles every
+                        // hand may forage (the pre-entity fallback)
+                        if (!MINED_ITEMS.includes(item) && profiles && !profiles.hasAbility(subject.actor.type ?? '', 'forage')) {
+                            return false;
+                        }
                         // THE item must stand underfoot — otherwise the
                         // materials module travels toward it
                         return (
                             (inventory.cellStock(subject.actor.position.x, subject.actor.position.y)[item] ?? 0) > 0
                         );
+                    },
+                    // R6 — the fetch is a SHARED TILE JOB, not a private
+                    // countdown: the tile's unit for this material demands
+                    // TAKE_MINUTES WORK-minutes in the tasks plugin's tile-
+                    // work ledger (keyed `tileWorkKey(x, y, item)` — one job
+                    // per tile per resource, so vine and stone on one tile
+                    // are separate records). Every skilled hand's 1-minute
+                    // beat banks a minute; the minutes survive pre-emption,
+                    // death and walk-aways; ANY skilled contributor may
+                    // finish it, and the take pays out only on the ATOMIC
+                    // claim (the behavior plugin's gather effect sees the
+                    // beat payload and rolls a failed payout back). The
+                    // total labor per unit is exactly the old fetch's
+                    // minutes — nothing weakened, only shared.
+                    plan: (subject) => {
+                        const actor = subject.actor;
+                        const x = actor.position.x;
+                        const y = actor.position.y;
+                        openGatherJob(tasks.tileWork, {
+                            x,
+                            y,
+                            item,
+                            units: TAKE_MINUTES,
+                            skill: MINED_ITEMS.includes(item) ? 'mine' : 'forage',
+                        });
+                        return {
+                            kind: 'gather',
+                            label: `takes ${item}`,
+                            minutes: 1,
+                            // The beat carries its item AND its tile — the
+                            // claim takes exactly the job's kind, wherever
+                            // the actor wanders by completion time
+                            payload: { item, beat: true, x, y },
+                        };
                     },
                 };
                 registered.push(`fetch-${item}`);
@@ -1346,13 +1440,35 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                     if (!line) {
                         return undefined;
                     }
-                    // WOOD is felled off the trees — a standing tree
-                    // underfoot is the task (the harvest converts one tree
-                    // deposit into one wood item, atomically)
+                    // WOOD is felled off the trees — and the felling is the
+                    // SAME shared tile job the lumber plugin works (R6): one
+                    // chop record per tile (`tileWorkKey(x, y, 'chop')`),
+                    // every skilled contributor adding a work-minute, the
+                    // payout claimed atomically. A fell beat is ONE minute
+                    // of that standing labor — the crew (and any passing
+                    // lumber-chopper) push the same record forward.
                     if (line.item === 'wood') {
+                        // THE SKILL GATE — no 'chop' ability, no felling
+                        if (!mayChop(actor.type)) {
+                            return undefined;
+                        }
+                        const key = tileWorkKey(actor.position.x, actor.position.y, CHOP_WORK_KIND);
+                        // A standing job on this tile — join it
+                        if (tasks.tileWork.get(key)) {
+                            return { kind: 'fell', label: 'fells a tree', minutes: 1 };
+                        }
                         const stock = inventory.cellStock(actor.position.x, actor.position.y);
                         if ((stock.tree ?? 0) > 0) {
-                            return { kind: 'fell', label: 'fells a tree', minutes: FELL_MINUTES };
+                            // Open the job — the axe halves the demand at
+                            // open (the same R4 rule the lumber chop applies)
+                            const carriesAxe = (inventory.of(actor.id).axe ?? 0) > 0;
+                            tasks.tileWork.open({
+                                key,
+                                kind: CHOP_WORK_KIND,
+                                units: carriesAxe ? Math.max(1, Math.ceil(FELL_MINUTES / 2)) : FELL_MINUTES,
+                                skill: 'chop',
+                            });
+                            return { kind: 'fell', label: 'fells a tree', minutes: 1 };
                         }
                         const grove = nearestCell(actor, inventory.cellsWithItem('tree'));
                         if (!grove) {
@@ -1498,11 +1614,27 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                         return;
                     }
                     case 'fell': {
-                        // Tree → wood, atomically (the harvest revalidates
-                        // the standing tree and the bag room; a tree felled
-                        // by a co-worker during the wait means the harvest
-                        // silently fails — the worker re-plans next minute)
-                        inventory.harvest(actor, 'tree', 'wood');
+                        // ONE work-minute into the SHARED tile job (the same
+                        // record the lumber chop feeds — R6). The payout
+                        // fires only on the atomic claim: exactly one
+                        // contributor ever receives the finished job, and
+                        // the harvest revalidates the standing tree and the
+                        // bag room. A failed payout (a full bag, a
+                        // co-worker's last pool unit) puts the standing work
+                        // back for the next contributor — the minutes are
+                        // never lost, the worker re-plans next minute.
+                        const key = tileWorkKey(actor.position.x, actor.position.y, CHOP_WORK_KIND);
+                        const unit = tasks.tileWork.add(key, 1);
+                        if (!unit || unit.progress < unit.units) {
+                            return;
+                        }
+                        const claimed = tasks.tileWork.complete(key);
+                        if (!claimed) {
+                            return;
+                        }
+                        if (!inventory.harvest(actor, 'tree', 'wood')) {
+                            tasks.tileWork.put(claimed);
+                        }
                         return;
                     }
                     case 'deliver': {

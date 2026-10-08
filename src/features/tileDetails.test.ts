@@ -41,6 +41,8 @@ import {
     forestStandLine,
     forestTreeLine,
     occupantLine,
+    tileProgress,
+    progressLine,
     scaleView,
     treeIconOpacity,
     TREE_ICON_FULL_COVERAGE,
@@ -463,6 +465,9 @@ describe('tileSummary', () => {
             // No construction site touches this tile at tick 0 (the
             // construction plugin places its first project on the first tick)
             structures: [],
+            // No standing job at tick 0 (the tile-work ledger is empty
+            // before the first plan round)
+            work: [],
         });
     });
 
@@ -481,6 +486,7 @@ describe('tileSummary', () => {
             ground: [{ category: 'food', label: 'Foods', count: 2 }],
             occupants: [],
             structures: [],
+            work: [],
         });
     });
 
@@ -886,5 +892,49 @@ describe('dominantVisibleType — the depth-2 fold is exact and invalidates (R6)
         } as unknown as Parameters<typeof dominantVisibleType>[0];
         expect(best).toBe('b');
         expect(dominantVisibleType(stub, [{ x: 0, y: 0 }])).toBe('b');
+    });
+});
+
+describe('tileProgress / progressLine — the standing jobs (R6)', () => {
+    // A LOCAL driven handle — the shared tick-0 fixtures above never step,
+    // so the standing jobs are read from a controlled march (seed 7,
+    // deterministic)
+    it('reads the shared chop job off the tile-work ledger with exact minutes', () => {
+        const march = createIslandWorld({ seed: 7 });
+        // Tick 0 — nothing stands
+        expect(tileProgress(march, -2, 5)).toEqual([]);
+        // Minute 1: the woodless cast on treed tiles opens the shared jobs
+        march.world.step();
+        expect(tileProgress(march, -2, 5)).toEqual([{ label: 'chop', done: 0, total: 15 }]);
+        // Minutes 2–3: the beats land — one work-minute per completing beat
+        // task into the tile's standing job
+        march.world.step();
+        expect(tileProgress(march, -2, 5)).toEqual([{ label: 'chop', done: 1, total: 15 }]);
+        march.world.step();
+        expect(tileProgress(march, -2, 5)).toEqual([{ label: 'chop', done: 2, total: 15 }]);
+        // The display line reads the exact work minutes
+        expect(progressLine({ label: 'chop', done: 2, total: 15 })).toBe('chop 2/15');
+    });
+
+    it('lists the live site build work beside the tile jobs, and drops built sites', () => {
+        const march = createIslandWorld({ seed: 7 });
+        // Minute 1: the shelter site stands on the centrality-first tile
+        // (0,0) — staged, its ISLAND work cost (240) charged at placement
+        march.world.step();
+        expect(tileProgress(march, 0, 0)).toEqual([{ label: 'shelter', done: 0, total: 240 }]);
+        expect(progressLine({ label: 'shelter', done: 120, total: 240 })).toBe('shelter 120/240');
+        // A tile with neither a job nor a site reads empty
+        expect(tileProgress(march, -11, 0)).toEqual([]);
+    });
+
+    it('reads a shared GATHER job generically — the ledger kind is the label', () => {
+        // R6 — the gather jobs (plugins/tasks/gatherWork) ride the SAME
+        // ledger with the resource item as the kind, so the progress bars
+        // and the inspector need NO gather-specific wiring
+        const march = createIslandWorld({ seed: 7 });
+        march.tasks.tileWork.open({ key: 'tile:2,5:berry', kind: 'berry', units: 10, skill: 'forage' });
+        march.tasks.tileWork.add('tile:2,5:berry', 3);
+        expect(tileProgress(march, 2, 5)).toEqual([{ label: 'berry', done: 3, total: 10 }]);
+        expect(progressLine({ label: 'berry', done: 3, total: 10 })).toBe('berry 3/10');
     });
 });

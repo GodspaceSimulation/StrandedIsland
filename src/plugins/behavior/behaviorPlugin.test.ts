@@ -139,17 +139,26 @@ describe('behaviorPlugin — every living thing plans through the ladder', () =>
         place(world, 'bird-1', 'Kiki', 'bird', 0, 3);
         needs.satisfy('bird-1', { hunger: 45 }); // 65 ≥ 60 — the hunger rung fires
         world.step();
-        // No food in the beak, food underfoot — the GATHER is the task (the
-        // same 10-minute forage a castaway plans)
+        // No food in the beak, food underfoot — the forage is the tile's
+        // SHARED gather job (R6): 10 WORK-minutes for the 'berry' unit at
+        // (0,3); the gull's task is a 1-minute beat feeding it
         expect(tasks.taskOf('bird-1')).toEqual({
             id: 't-1',
             actorId: 'bird-1',
             behaviour: 'hunger',
             kind: 'gather',
             label: 'gathers',
-            minutes: 10,
-            total: 10,
-            remaining: 10,
+            minutes: 1,
+            payload: { itemId: 'berry', source: 'berry', beat: true, x: 0, y: 3 },
+            total: 1,
+            remaining: 1,
+        });
+        expect(tasks.tileWork.get('tile:0,3:berry')).toEqual({
+            key: 'tile:0,3:berry',
+            kind: 'berry',
+            units: 10,
+            progress: 0,
+            skill: 'forage',
         });
         for (let index = 0; index < 10; index++) {
             world.step();
@@ -206,25 +215,35 @@ describe('behaviorPlugin — every living thing plans through the ladder', () =>
         expect(tasks.taskOf('shark-1')).toBeUndefined();
         needs.satisfy('shark-1', { hunger: 55 }); // 65 ≥ 60 — the hunger rung fires
         world.step();
-        // Fish underfoot (every water cell stocks them) — the GATHER is
-        // the task, no ground travel involved
+        // Fish underfoot (every water cell stocks them) — the hunt is the
+        // tile's shared gather job (R6): 10 work-minutes on the 'fish' unit
+        // at (−12,−8); the shark's task is a 1-minute beat
         expect(tasks.taskOf('shark-1')).toEqual({
             id: 't-1',
             actorId: 'shark-1',
             behaviour: 'hunger',
             kind: 'gather',
             label: 'gathers',
-            minutes: 10,
-            total: 10,
-            remaining: 10,
+            minutes: 1,
+            payload: { itemId: 'fish', source: 'fish', beat: true, x: -12, y: -8 },
+            total: 1,
+            remaining: 1,
+        });
+        expect(tasks.tileWork.get('tile:-12,-8:fish')).toEqual({
+            key: 'tile:-12,-8:fish',
+            kind: 'fish',
+            units: 10,
+            progress: 0,
+            skill: 'forage',
         });
         for (let index = 0; index < 10; index++) {
             world.step();
         }
-        // The fish is in the gullet-bag; the eat is queued
+        // The fish is in the gullet-bag; the eat is queued (the ten beats
+        // consumed task ids t-1…t-10)
         expect(inventory.of('shark-1')).toEqual({ fish: 1 });
         expect(tasks.taskOf('shark-1')).toEqual({
-            id: 't-2',
+            id: 't-11',
             actorId: 'shark-1',
             behaviour: 'hunger',
             kind: 'eat',
@@ -827,8 +846,17 @@ describe('behaviorPlugin', () => {
         needs.satisfy('a', { thirst: 50 }); // thirst 70 ≥ 65 → the 3-minute collect first
         world.step();
         // Nothing recovers straight from the ground: the water goes INTO
-        // THE BAG first — the collection is the task
-        expect(tasks.taskOf('a')).toMatchObject({ kind: 'collect', label: 'collects water', remaining: 3 });
+        // THE BAG first — the collection is the tile's shared 3-work-minute
+        // gather job (R6), fed by 1-minute beats; the payout lands on the
+        // atomic claim at minute 4 exactly like the old single task
+        expect(tasks.taskOf('a')).toMatchObject({ kind: 'collect', label: 'collects water', remaining: 1 });
+        expect(tasks.tileWork.get('tile:1,-2:water')).toEqual({
+            key: 'tile:1,-2:water',
+            kind: 'water',
+            units: 3,
+            progress: 0,
+            skill: 'forage',
+        });
         world.step();
         world.step();
         world.step();
@@ -859,8 +887,9 @@ describe('behaviorPlugin', () => {
         needs.satisfy('a', { thirst: 50 }); // thirst 70 ≥ the 65 trigger
         world.step();
         // The thirst ladder reads the basin as a water source and plans the
-        // 3-minute COLLECT (the fresh water goes into the bag first)
-        expect(tasks.taskOf('a')).toMatchObject({ behaviour: 'thirst', kind: 'collect', label: 'collects water', remaining: 3 });
+        // beat on the tile's shared 3-work-minute water job (R6 — the
+        // fresh water goes into the bag on the atomic claim)
+        expect(tasks.taskOf('a')).toMatchObject({ behaviour: 'thirst', kind: 'collect', label: 'collects water', remaining: 1 });
         world.step();
         world.step();
         world.step();
@@ -1147,19 +1176,20 @@ describe('behaviorPlugin — the entity profiles: movement energy per kind', () 
         const { world, needs, tasks } = buildProfiledStack();
         spawn(world, 'a', 'Ael', 6, 2);
         // A boar one tile west — within the survival threat range (1). The
-        // flee runs AWAY (east), two fine steps to the wrap
+        // flee RUNS AWAY (east): the stride relocates a full tile in one
+        // minute (the profile's run row)
         world.coordinates.place(beast('boar-1', 'boar', 5, 2));
         world.step(); // minute 1: the flee task queues (priority 60)
-        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'flees', payload: { flee: true } });
-        world.step(); // minute 2: the first flee — an INTERIOR east step, no charge
-        expect(world.actors.get('a')).toMatchObject({ position: { x: 6, y: 2 } });
-        expect(world.subOf('a')).toEqual({ x: 12, y: -3 });
-        expect(needs.of('a').energy).toBe(99.88);
-        world.step(); // minute 3: the second flee WRAPS — the crossing charges RUN
+        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'flees', payload: { flee: true, tx: 7, ty: 2 } });
+        world.step(); // minute 2: the stride CROSSES a full tile — the RUN row charges
         expect(world.actors.get('a')).toMatchObject({ position: { x: 7, y: 2 } });
         // The run row: 3 energy a crossing (a walk would have burned 1);
-        // the species decay (0.06 × 3 = 0.18) ran alongside
-        expect(needs.of('a').energy).toBe(96.82);
+        // the species decay (0.06 × 2 = 0.12) ran alongside
+        expect(needs.of('a').energy).toBe(96.88);
+        // Minute 3: the stride opened a two-tile gap — the threat scan
+        // clears and the wider ladder takes the minute back
+        world.step();
+        expect(tasks.taskOf('a')?.behaviour).not.toBe('survival');
     });
 
     it('the behavior ladder carries no autonomous mine rung — the ability gates, conduct comes later', () => {
@@ -1220,13 +1250,199 @@ describe('behaviorPlugin — the entity profiles: movement energy per kind', () 
         // desperation line — it abandons ONE unit of cargo (LEAST
         // essential first: the shell heads the abandon order) so the hand
         // holds room, then falls through to the underfoot forage — the
-        // berry bush beside her is gathered (the 10-minute gather task).
+        // berry bush beside her is gathered (the beat on the tile's shared
+        // 10-work-minute gather job).
         expect(inventory.of('a')).toEqual({ flint: 1, sand: 1, dirt: 1, grass: 1, thatch: 1, wood: 1, vine: 1 });
-        expect(tasks.taskOf('a')).toMatchObject({ behaviour: 'hunger', kind: 'gather', label: 'gathers', remaining: 10 });
+        expect(tasks.taskOf('a')).toMatchObject({ behaviour: 'hunger', kind: 'gather', label: 'gathers', remaining: 1 });
         // Bram: below the line the decline is INTACT — the hand is left as
         // it was (a starvation does not outrank cargo until the doom line)
         // and the rung declines, so the ledger's filler plans a wander.
         expect(inventory.of('b')).toEqual({ shell: 1, flint: 1, sand: 1, dirt: 1, grass: 1, thatch: 1, wood: 1, vine: 1 });
         expect(tasks.taskOf('b')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 1 });
+    });
+});
+
+describe('behaviorPlugin — R6 shared tile gathering', () => {
+    /** The PROFILED stack — the 'forage' skill gate is live (the scenario's
+     * assembly, scenario/island.ts). Needs decay frozen except hunger so the
+     * hunger rung stays pinned. */
+    const buildProfiled = () => {
+        const profiles = entityPlugin();
+        const inventory = inventoryPlugin({ profiles, rainChancePerMinute: 0 });
+        const needs = needsPlugin({ profiles, thirstPerMinute: 0, energyPerMinute: 0, hungerPerMinute: 0 });
+        const relationship = relationshipPlugin();
+        const tasks = tasksPlugin();
+        const behavior = behaviorPlugin({ inventory, needs, relationship, tasks, profiles });
+        const world = createWorld({
+            seed: 7,
+            tickSize: 1,
+            plugins: [islandTerrainPlugin(), profiles, inventory, needs, relationship, tasks, behavior],
+        });
+        return { world, inventory, needs, tasks };
+    };
+
+    it('a pre-empted forage leaves its minutes standing — another hand finishes the SAME job', () => {
+        const { world, inventory, needs, tasks } = buildProfiled();
+        // The meadow grassland (0,3) seeds three berries — the shared job
+        // for the tile's 'berry' unit demands 10 work-minutes
+        spawn(world, 'a', 'Ael', 0, 3);
+        needs.satisfy('a', { hunger: 45 });
+        for (let index = 0; index < 5; index++) {
+            world.step();
+        }
+        // Beats completed minutes 2–5: four work-minutes stand in the job
+        expect(tasks.tileWork.get('tile:0,3:berry')).toMatchObject({ units: 10, progress: 4 });
+        // Ael walks away (a despawn — the harshest pre-emption): the queue
+        // cancels, the JOB stays
+        world.despawn('a');
+        expect(tasks.tileWork.get('tile:0,3:berry')).toMatchObject({ units: 10, progress: 4 });
+        // Bram picks the standing forage up — he never restarts it
+        spawn(world, 'b', 'Bram', 0, 3);
+        needs.satisfy('b', { hunger: 45 });
+        world.step(); // minute 6: Bram joins the standing unit
+        expect(tasks.taskOf('b')).toMatchObject({ behaviour: 'hunger', kind: 'gather', minutes: 1 });
+        expect(tasks.tileWork.get('tile:0,3:berry')).toMatchObject({ progress: 4 });
+        // His beats complete minutes 7–12: 4 + 6 = 10 — the claim pays him
+        // the berry, and the job is gone
+        for (let index = 0; index < 6; index++) {
+            world.step();
+        }
+        expect(inventory.of('b').berry ?? 0).toBe(1);
+        // The berry sits in the bag (the eat is planned next minute) and the
+        // claimed job is gone — Bram is fooded, so no fresh job re-opens
+        expect(tasks.tileWork.get('tile:0,3:berry')).toBeUndefined();
+    });
+
+    it('two hands on one berry — the claim pays ONE berry, not two', () => {
+        const { world, inventory, needs, tasks } = buildProfiled();
+        spawn(world, 'a', 'Ael', 0, 3);
+        spawn(world, 'b', 'Bram', 0, 3);
+        needs.satisfy('a', { hunger: 45 });
+        needs.satisfy('b', { hunger: 45 });
+        world.step(); // minute 1: both join the ONE 'berry' job on the tile
+        expect(tasks.tileWork.get('tile:0,3:berry')).toMatchObject({ units: 10, progress: 0 });
+        // Minutes 2–6: both beats complete every minute → 5 × 2 = 10 — the
+        // first beat that reaches 10 claims; the co-worker's same-minute
+        // beat lands on the gone unit
+        for (let index = 0; index < 5; index++) {
+            world.step();
+        }
+        const berries = (inventory.of('a').berry ?? 0) + (inventory.of('b').berry ?? 0);
+        expect(berries).toBe(1);
+        // The finished job was claimed; a fresh one may stand at progress 0
+        // (the loser re-opens — never a second payout from the same labor)
+        expect(tasks.tileWork.get('tile:0,3:berry')?.progress).toBe(0);
+    });
+
+    it('the skill gate: a species without forage never opens the gather job', () => {
+        const { world, needs, tasks } = buildProfiled();
+        // A dog-shaped creature — no stock profile, so no 'forage' ability
+        // (the entity registry answers false for unknown species)
+        world.coordinates.place({
+            id: 'rex',
+            position: position3(0, 3),
+            kind: 'creature',
+            type: 'dog',
+            name: 'Rex',
+            marker: 'R',
+            state: 'perched',
+        });
+        needs.satisfy('rex', { hunger: 45 });
+        world.step();
+        // The hunger rung's underfoot gather DECLINES on the skill gate —
+        // no beat task and NO tile job opens on the berry cell
+        expect(tasks.taskOf('rex')?.kind).not.toBe('gather');
+        expect(tasks.tileWork.get('tile:0,3:berry')).toBeUndefined();
+    });
+
+    it('a beat completing OFF the committed tile never claims or transfers — the qualified on-tile beat finishes the job', () => {
+        const { world, inventory, needs, tasks } = buildProfiled();
+        // Ael forages the berry cell (0,3) — three berries on the tile
+        spawn(world, 'a', 'Ael', 0, 3);
+        needs.satisfy('a', { hunger: 45 });
+        // Minute 1 opens the shared 'berry' job; minutes 2–10 bank NINE
+        // on-tile work-minutes — the claim is one minute away
+        for (let index = 0; index < 10; index++) {
+            world.step();
+        }
+        expect(tasks.tileWork.get('tile:0,3:berry')).toMatchObject({ units: 10, progress: 9 });
+        // MID-BEAT DRIFT: the body is relocated to ANOTHER berry cell
+        // (0,5 — four berries) while its tenth (0,3) beat is in flight (a
+        // gull's drift, a flee stride — the gate reads the COARSE tile)
+        world.relocate('a', position3(0, 5));
+        world.step(); // minute 11: the in-flight beat completes OFF (0,3)
+        // THE ON-TILE GATE — the beat lands NOWHERE: no claim fires, so the
+        // (0,3) job keeps its stored progress (9, not claimed), the (0,3)
+        // stock stands (3), the WRONG tile (0,5) hands nothing over (4),
+        // and the bag stays empty (the bug paid the berry off (0,5)'s stock)
+        expect(tasks.tileWork.get('tile:0,3:berry')).toMatchObject({ progress: 9 });
+        expect(inventory.cellStock(0, 3).berry ?? 0).toBe(3);
+        expect(inventory.cellStock(0, 5).berry ?? 0).toBe(4);
+        expect(inventory.of('a').berry ?? 0).toBe(0);
+        // Back on the committed tile the qualified beats land again: a
+        // respawn (clean queue) joins the STANDING job and its on-tile
+        // beat banks the tenth minute — the claim pays from (0,3) itself
+        world.despawn('a');
+        spawn(world, 'a', 'Ael', 0, 3);
+        needs.satisfy('a', { hunger: 45 });
+        world.step(); // minute 12: the hunger rung JOINS the standing job
+        world.step(); // minute 13: the on-tile beat completes the job
+        expect(inventory.of('a').berry ?? 0).toBe(1);
+        expect(inventory.cellStock(0, 3).berry ?? 0).toBe(2);
+        // The claimed job is gone — and none re-opens: the berry in the
+        // bag takes the next plan (the eat rung outranks the forage)
+        expect(tasks.tileWork.get('tile:0,3:berry')).toBeUndefined();
+    });
+
+    it('the water collect beat obeys the same on-tile gate — a drifted body drinks no pool dry', () => {
+        const { world, inventory, needs, tasks } = buildProfiled();
+        // The shore pool cell (0,-6) stocks one water unit; the neighbour
+        // (1,-6) stocks one too — the wrong-tile victim if the gate missed
+        spawn(world, 'a', 'Ael', 0, -6);
+        needs.satisfy('a', { thirst: 45 });
+        // Minute 1 opens the shared 'water' job (3 work-minutes); minutes
+        // 2–3 bank TWO on-tile minutes — the claim is one minute away
+        world.step();
+        world.step();
+        world.step();
+        expect(tasks.tileWork.get('tile:0,-6:water')).toMatchObject({ units: 3, progress: 2 });
+        // Mid-beat drift to the neighbouring pool
+        world.relocate('a', position3(1, -6));
+        world.step(); // minute 4: the in-flight beat completes OFF (0,-6)
+        // The gate refuses: no claim, the job stands at 2, BOTH pools keep
+        // their unit, the bag holds no water
+        expect(tasks.tileWork.get('tile:0,-6:water')).toMatchObject({ progress: 2 });
+        expect(inventory.cellStock(0, -6).water ?? 0).toBe(1);
+        expect(inventory.cellStock(1, -6).water ?? 0).toBe(1);
+        expect(inventory.of('a').water ?? 0).toBe(0);
+    });
+
+    it('a queued beat whose contributor lacks the forage skill is refused at completion', () => {
+        const { world, inventory, tasks } = buildProfiled();
+        // A standing berry job on (0,3) — the skilled hands opened it
+        tasks.tileWork.open({ key: 'tile:0,3:berry', kind: 'berry', units: 10, skill: 'forage' });
+        // Rex the dog (no 'forage' ability) carries an in-flight gather
+        // beat ON the tile — the location gate would pass; the SKILL
+        // REVALIDATION is what refuses the beat (queued directly: the
+        // plan-time gate never lets the dog open one)
+        world.coordinates.place({
+            id: 'rex',
+            position: position3(0, 3),
+            kind: 'creature',
+            type: 'dog',
+            name: 'Rex',
+            marker: 'R',
+            state: 'perched',
+        });
+        tasks.ledger.queue('rex', 'hunger', {
+            kind: 'gather',
+            label: 'gathers',
+            minutes: 1,
+            payload: { itemId: 'berry', source: 'berry', beat: true, x: 0, y: 3 },
+        });
+        world.step(); // the pre-queued beat completes — refused by the gate
+        expect(tasks.tileWork.get('tile:0,3:berry')).toMatchObject({ progress: 0 });
+        expect(inventory.cellStock(0, 3).berry ?? 0).toBe(3);
+        expect(inventory.of('rex').berry ?? 0).toBe(0);
     });
 });

@@ -525,6 +525,64 @@ export const structureLine = (structure: TileStructure): string => {
     return parts.join(' · ');
 };
 
+// ── Tile progress — the standing work bars (R6) ──────────────────────────────
+
+/**
+ * One standing job on a tile, shaped for the progress bars the boards and
+ * the Tile Inspector draw (features/worldGrid.tsx, tilePanel.tsx):
+ *   • the SHARED TILE WORK jobs — the tasks plugin's tile-work ledger
+ *     (@godspace/core src/work): the chop/fell labor several entities
+ *     contribute to, keyed `tileWorkKey(x, y, kind)`;
+ *   • the construction SITES on the tile — their build work (`site.work`
+ *     against the placement `site.cost` snapshot), skipped once 'built'
+ *     (a finished structure wears its glyph, not a bar).
+ * Deterministic: ledger insertion order first, then site placement order.
+ */
+export type TileProgress = {
+    /** Display label — the work kind ('chop') or the blueprint id. */
+    label: string;
+    /** Work-minutes done. */
+    done: number;
+    /** Work-minutes required (always > 0). */
+    total: number;
+};
+
+/**
+ * Every standing job on the tile at (x, y) — the labor the world
+ * remembers. Empty when nothing is being worked (no ledger unit, no live
+ * site footprint on the tile).
+ */
+export const tileProgress = (island: IslandHandle, x: number, y: number): TileProgress[] => {
+    const progress: TileProgress[] = [];
+    // The shared tile-work jobs — the ledger keys are `tile:x,y:kind`, so
+    // the tile's own units are exactly the ones whose key matches the
+    // composed prefix (the same tileWorkKey the plugins open with)
+    island.tasks.tileWork.all().forEach((unit) => {
+        // Re-derive the tile part of the key — a unit belongs to this tile
+        // iff stripping its kind suffix lands on `tile:x,y:`
+        const prefix = `tile:${x},${y}:`;
+        if (unit.key.startsWith(prefix) && unit.key.length > prefix.length) {
+            progress.push({ label: unit.kind, done: unit.progress, total: unit.units });
+        }
+    });
+    // The construction sites covering the tile — their build work (the
+    // island view read of the same snapshot structureLine renders)
+    tileStructures(island, [{ x, y }]).forEach((structure) => {
+        if (structure.state !== 'built' && structure.workTotal > 0) {
+            progress.push({
+                label: structure.blueprintId,
+                done: structure.workDone,
+                total: structure.workTotal,
+            });
+        }
+    });
+    return progress;
+};
+
+/** Human readable progress line: "chop 7/15", "shelter 120/240". */
+export const progressLine = (progress: TileProgress): string =>
+    `${progress.label} ${progress.done}/${progress.total}`;
+
 // ── Whole-tile summary ───────────────────────────────────────────────────────
 
 /** Everything the Tile Inspector needs for one addressed tile, or null out of bounds. */
@@ -580,6 +638,12 @@ export type TileSummary = {
      * sweep; this is the tile's built vocabulary.
      */
     structures: TileStructure[];
+    /**
+     * The standing jobs on the tile (R6): the shared tile-work ledger units
+     * (chop/fell labor several entities contribute to) plus the live site
+     * build work — the progress bars' data (see tileProgress above).
+     */
+    work: TileProgress[];
 };
 
 /**
@@ -615,6 +679,10 @@ export const tileSummary = (island: IslandHandle, path: TilePath): TileSummary |
         ground: tileGround(island, path),
         occupants: tileOccupants(island, path),
         structures: tileStructures(island, path),
+        // R6 — the standing jobs of the tile's ROOT tile (the tile-work
+        // ledger and the site footprints are tile-addressed; deeper views
+        // read the same job through the root)
+        work: tileProgress(island, path[0].x, path[0].y),
     };
 };
 

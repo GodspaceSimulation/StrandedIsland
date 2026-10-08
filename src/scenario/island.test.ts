@@ -145,7 +145,8 @@ describe('createIslandWorld', () => {
         // the lumber rung ranks above the idle wander — the woodless cast
         // plans wood first: Ael and Bram came ashore on bare shore and
         // travel to the woods (1-minute fine steps), while the castaways
-        // standing on treed tiles queue the 15-minute chop. The first ledger
+        // standing on treed tiles open the 15-work-minute shared chop job
+        // and queue their first 1-minute beat. The first ledger
         // decrement lands at minute 2 — after ONE step every task still holds
         // time. Kiki glides once and the seeded rain of minute 1 pools water.
         expect(handle.world.ticker.elapsed()).toBe(1);
@@ -167,8 +168,11 @@ describe('createIslandWorld', () => {
         expect(handle.tasks.tasks().map((task) => ({ actorId: task.actorId, kind: task.kind, label: task.label, remaining: task.remaining }))).toEqual([
             { actorId: 'actor-1', kind: 'move', label: 'travels to trees', remaining: 1 },
             { actorId: 'actor-2', kind: 'move', label: 'travels to trees', remaining: 1 },
-            { actorId: 'actor-3', kind: 'chop', label: 'chops a tree', remaining: 15 },
-            { actorId: 'actor-4', kind: 'chop', label: 'chops a tree', remaining: 15 },
+            // R6 — the chop is a 1-minute BEAT on the tile's shared job (the
+            // 15-work-minute demand stands in the tasks plugin's tile-work
+            // ledger, not in the actor's countdown)
+            { actorId: 'actor-3', kind: 'chop', label: 'chops a tree', remaining: 1 },
+            { actorId: 'actor-4', kind: 'chop', label: 'chops a tree', remaining: 1 },
         ]);
         // The SECOND minute carries the first completing task: Ael
         // fine-steps exactly ONE Scale-0 tile east (an interior move — the
@@ -327,7 +331,9 @@ describe('createIslandWorld', () => {
         expect(handle.needs.of('actor-4').energy).toBe(30.800000000000026);
         // After the rest, the woodless Dune chops the tree standing on
         // Dune's tile (the lumber rung, priority 10 — below the rest rung)
-        expect(handle.tasks.taskOf('actor-4')).toMatchObject({ kind: 'chop', label: 'chops a tree', remaining: 6 });
+        // R6 — the chop is a 1-minute beat on the tile's shared job: the
+        // beat queued this minute is the head task (remaining 1)
+        expect(handle.tasks.taskOf('actor-4')).toMatchObject({ kind: 'chop', label: 'chops a tree', remaining: 1 });
         expect(handle.world.events.log().filter((event) => event.actorId === 'actor-4').map((event) => ({ kind: event.kind, message: event.message, time: event.time }))).toEqual([
             { kind: 'spawn', message: 'Dune washes ashore.', time: 0 },
         ]);
@@ -781,14 +787,22 @@ describe('createIslandWorld', () => {
         const handle = createIslandWorld({ seed: 7 });
         // THE FOREST IN THE MARCH — the ecology is mounted (the default):
         // the woods are static at the real-year pace (no recruitment, no
-        // spread, no visible wood growth over 6000 minutes), so the march's
+        // spread, no visible wood growth over the march), so the march's
         // completion is a construction-pace result — the crew chops pool
         // wood off the standing trees, the neighborhood-counted stands
         // never thinning enough to move the wood fetches' targets
+        //
+        // R5/R6 — the ISLAND work costs (ISLAND_BLUEPRINT_WORK: shelter 240,
+        // raft 480, house 4320, boat 1440, fort 2880 — 9360 work-minutes in
+        // total) stretch the march well past the old 6000-minute stock-cost
+        // horizon. The completion MINUTES are pacing results, so the drive
+        // runs until the plan is spent (a generous 30000-minute horizon);
+        // the pinned contract is the exact END STATE.
         const alive = (id: string) =>
             handle.world.actors.has(id) || handle.world.coordinates.entryOf(id) !== undefined;
         let stale = 0;
-        for (let minute = 1; minute <= 6000; minute++) {
+        const allBuilt = () => handle.construction.completedBlueprints().length === 5;
+        for (let minute = 1; minute <= 30000 && !allBuilt(); minute++) {
             handle.world.step();
             // NO STALE TASKS — every queued task's body still lives
             handle.tasks.tasks().forEach((task) => {
@@ -817,13 +831,13 @@ describe('createIslandWorld', () => {
         expect(stale).toBe(0);
         expect(deaths).toBe(0);
         expect(Array.from(handle.world.actors.keys())).toEqual(['actor-1', 'actor-2', 'actor-3', 'actor-4']);
-        // FIVE stock structures stand complete at the 6000-minute mark:
-        // the shelter (wood 2 + thatch 2, 10 work), the raft (wood 4 +
-        // rope 2, 30), the house (wood 4 + plank 4 + thatch 4 — TWELVE
-        // staging units through eight-unit bags, 40 work), the boat
-        // (plank 6 + rope 4 + cloth 2, 60 — built at minute 3428 of the
-        // captured zero-death reference run) and the fort (stone 8 + wood 4,
-        // 120 work — built at minute 3769, inside the horizon's tail).
+        // FIVE stock structures stand complete: the shelter (wood 2 +
+        // thatch 2, 240 work), the raft (wood 4 + rope 2, 480), the house
+        // (wood 4 + plank 4 + thatch 4 — TWELVE staging units through
+        // eight-unit bags, 4320 work — three days of honest labor), the
+        // boat (plank 6 + rope 4 + cloth 2, 1440) and the fort (stone 8 +
+        // wood 4, 2880 work) — the ISLAND work costs (ISLAND_BLUEPRINT_WORK)
+        // each site was charged at placement.
         expect(handle.construction.completedBlueprints()).toEqual(['shelter', 'raft', 'house', 'boat', 'fort']);
         expect(handle.construction.project()).toBeUndefined();
         expect(
@@ -839,11 +853,11 @@ describe('createIslandWorld', () => {
                 delivered: site.delivered,
             })),
         ).toEqual([
-            { id: 's-1', blueprintId: 'shelter', state: 'built', parent: [{ x: 0, y: 0 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 10, delivered: { wood: 2, thatch: 2 } },
-            { id: 's-2', blueprintId: 'raft', state: 'built', parent: [{ x: -7, y: 5 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 30, delivered: { wood: 4, rope: 2 } },
-            { id: 's-3', blueprintId: 'house', state: 'built', parent: [{ x: -1, y: 0 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 40, delivered: { wood: 4, thatch: 4, plank: 4 } },
-            { id: 's-4', blueprintId: 'boat', state: 'built', parent: [{ x: 7, y: 5 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 60, delivered: { plank: 6, rope: 4, cloth: 2 } },
-            { id: 's-5', blueprintId: 'fort', state: 'built', parent: [{ x: 1, y: 0 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 120, delivered: { stone: 8, wood: 4 } },
+            { id: 's-1', blueprintId: 'shelter', state: 'built', parent: [{ x: 0, y: 0 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 240, delivered: { wood: 2, thatch: 2 } },
+            { id: 's-2', blueprintId: 'raft', state: 'built', parent: [{ x: -7, y: 5 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 480, delivered: { wood: 4, rope: 2 } },
+            { id: 's-3', blueprintId: 'house', state: 'built', parent: [{ x: -1, y: 0 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 4320, delivered: { wood: 4, thatch: 4, plank: 4 } },
+            { id: 's-4', blueprintId: 'boat', state: 'built', parent: [{ x: 7, y: 5 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 1440, delivered: { plank: 6, rope: 4, cloth: 2 } },
+            { id: 's-5', blueprintId: 'fort', state: 'built', parent: [{ x: 1, y: 0 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0, work: 2880, delivered: { stone: 8, wood: 4 } },
         ]);
         // The staged materials cap exactly at the requirements — the shared
         // registry refuses over-staging, so the delivered ledgers never hold
@@ -860,7 +874,11 @@ describe('createIslandWorld', () => {
         expect(handle.world.structures?.blocksFineSpot(0, 0, shelterCells[1].x, shelterCells[1].y)).toBe(true);
         expect(handle.world.structures?.blocksFineSpot(0, 0, shelterCells[0].x, shelterCells[0].y)).toBe(false);
         // The vessels are not launched by the simulation — the launch is the
-        // god's control; both hulls stand built and launchable
+        // god's control; both hulls stand built and launchable. The launch
+        // stamps the TICKER's elapsed world minutes (R5 — the clock
+        // authority): the march's completion minute is a pacing result, so
+        // the pin ties both vessels to the live clock at the launch
+        const launchedAt = handle.world.ticker.elapsed();
         expect(handle.construction.vessels()).toEqual([]);
         const raftVessel = handle.construction.launch('s-2');
         expect(raftVessel).toEqual({
@@ -870,7 +888,7 @@ describe('createIslandWorld', () => {
             label: 'Raft',
             x: -7,
             y: 5,
-            launchedAt: 6000,
+            launchedAt,
         });
         const boatVessel = handle.construction.launch('s-4');
         expect(boatVessel).toEqual({
@@ -880,12 +898,12 @@ describe('createIslandWorld', () => {
             label: 'Boat',
             x: 7,
             y: 5,
-            launchedAt: 6000,
+            launchedAt,
         });
         // The launch log lines (world-scale happenings)
         expect(handle.world.events.log().filter((event) => event.kind === 'launch').map((event) => event.message)).toEqual([
             'The raft is launched into the water at (-7, 5).',
             'The boat is launched into the water at (7, 5).',
         ]);
-    }, 60000);
+    }, 180000);
 });

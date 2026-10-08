@@ -23,7 +23,7 @@ describe('entityPlugin — the stock species', () => {
         expect(entity.types()).toEqual(['bird', 'boar', 'human', 'shark']);
     });
 
-    it('defines the human: people walk, run, swim, mine, craft — and never fly', () => {
+    it('defines the human: people walk, run, swim, mine, chop, forage, craft — and never fly', () => {
         const entity = entityPlugin();
         const human = entity.profileOf('human');
         expect(human).toEqual({
@@ -33,7 +33,7 @@ describe('entityPlugin — the stock species', () => {
             stats: { hunger: 0.1, thirst: 0.15, energy: 0.06, health: 0 },
             start: { hunger: 20, thirst: 20, energy: 100, health: 100 },
             attributes: { strength: 8, stamina: 10, speed: 10, dexterity: 10 },
-            abilities: ['walk', 'run', 'swim', 'mine', 'craft'],
+            abilities: ['walk', 'run', 'swim', 'mine', 'chop', 'forage', 'craft'],
             // Speed 10 / stamina 10 = the TYPICAL baseline: walk 1 min + 1
             // energy per tile, run 1 min but 3 energy, swim 2 min (slower
             // than walking) at 2 energy — no fly row at all
@@ -56,7 +56,7 @@ describe('entityPlugin — the stock species', () => {
             stats: { hunger: 0.02, thirst: 0.03, energy: 0.05, health: 0 },
             start: { hunger: 10, thirst: 10, energy: 100, health: 100 },
             attributes: { strength: 2, stamina: 8, speed: 10, dexterity: 6 },
-            abilities: ['fly', 'walk'],
+            abilities: ['fly', 'walk', 'forage'],
             // Stamina 8 (below the typical 10) makes flight dear: 2 × 10/8
             // = 2.5 energy a tile; the ground hop burns 1.25
             movement: {
@@ -77,7 +77,7 @@ describe('entityPlugin — the stock species', () => {
             stats: { hunger: 0.03, thirst: 0, energy: 0.04, health: 0 },
             start: { hunger: 10, thirst: 0, energy: 100, health: 100 },
             attributes: { strength: 14, stamina: 12, speed: 14, dexterity: 4 },
-            abilities: ['swim'],
+            abilities: ['swim', 'forage'],
             // Speed 14 → 2 × 10/14 rounds to 1 minute a tile (a human swims
             // it in 2 — MUCH slower); stamina 12 → 2 × 10/12 = 1.67 energy
             movement: {
@@ -97,7 +97,7 @@ describe('entityPlugin — the stock species', () => {
             stats: { hunger: 0.05, thirst: 0.05, energy: 0.04, health: 0 },
             start: { hunger: 30, thirst: 20, energy: 100, health: 100 },
             attributes: { strength: 10, stamina: 12, speed: 6, dexterity: 4 },
-            abilities: ['walk', 'run'],
+            abilities: ['walk', 'run', 'forage'],
             // Speed 6 → 1 × 10/6 rounds to 2 minutes a tile — exactly the
             // roam pace the predators plugin has always run
             movement: {
@@ -121,6 +121,14 @@ describe('entityPlugin — the profile lookups', () => {
         expect(entity.hasAbility('shark', 'swim')).toBe(true);
         expect(entity.hasAbility('shark', 'walk')).toBe(false);
         expect(entity.hasAbility('boar', 'run')).toBe(true);
+        // THE FORAGE UNLOCK (R6) — every stock species gathers the cell it
+        // stands on (the tile-gather work gate, plugins/tasks/gatherWork);
+        // an unknown species holds nothing
+        expect(entity.hasAbility('human', 'forage')).toBe(true);
+        expect(entity.hasAbility('bird', 'forage')).toBe(true);
+        expect(entity.hasAbility('shark', 'forage')).toBe(true);
+        expect(entity.hasAbility('boar', 'forage')).toBe(true);
+        expect(entity.hasAbility('dog', 'forage')).toBe(false);
         // Unknown species: no abilities, no profile, no movement
         expect(entity.hasAbility('dog', 'walk')).toBe(false);
         expect(entity.profileOf('dog')).toBeUndefined();
@@ -142,7 +150,7 @@ describe('entityPlugin — the profile lookups', () => {
         expect(entity.attributesOf('shark')).toEqual({
             strength: 14, stamina: 12, speed: 14, dexterity: 4,
         });
-        expect(entity.abilitiesOf('boar')).toEqual(['walk', 'run']);
+        expect(entity.abilitiesOf('boar')).toEqual(['walk', 'run', 'forage']);
         expect(entity.movementOf('bird')).toEqual({
             fly: { minutesPerTile: 1, energyPerTile: 2.5 },
             walk: { minutesPerTile: 1, energyPerTile: 1.25 },
@@ -209,7 +217,7 @@ describe('entityPlugin — profile overrides', () => {
         });
         // Everything untouched keeps the stock shape
         expect(human?.inventorySize).toBe(8);
-        expect(human?.abilities).toEqual(['walk', 'run', 'swim', 'mine', 'craft']);
+        expect(human?.abilities).toEqual(['walk', 'run', 'swim', 'mine', 'chop', 'forage', 'craft']);
         expect(human?.stats).toEqual({ hunger: 0.1, thirst: 0.15, energy: 0.06, health: 0 });
     });
 

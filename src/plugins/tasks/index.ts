@@ -5,3 +5,4 @@
 
 export * from './taskLedger';
 export * from './tasksPlugin';
+export * from './gatherWork';

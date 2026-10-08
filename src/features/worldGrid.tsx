@@ -98,7 +98,7 @@ import {
     useTile,
     selectTile,
 } from './worldBridge';
-import { scaleView, treeIconOpacity } from './tileDetails';
+import { scaleView, treeIconOpacity, tileProgress, type TileProgress } from './tileDetails';
 
 /** The four representations tabs switch between. */
 type CanvasTab = 'data' | 'ascii' | 'unicode' | 'svg';
@@ -130,7 +130,56 @@ const Cell = styled<{ background: string; border: string }>('div', {
     fontSize: 13,
     fontWeight: 700,
     cursor: 'pointer',
+    // The progress bars (R6) anchor to the tile's bottom edge
+    position: 'relative',
 });
+
+// ── The tile progress bars (R6) ──────────────────────────────────────────────
+// A standing job on a tile (the shared tile-work ledger + the live site
+// build work, features/tileDetails tileProgress) wears a thin bar along the
+// tile's bottom edge. Multiple jobs on one tile STACK upward (the `offset`
+// prop, 5px per bar) so a tile under a chop AND a build reads both. The
+// fill width is a percentage STRING (the function value bypasses
+// styleStructure's rem conversion — a raw number would become '0.05rem').
+// Accessible: each track is a role="progressbar" with the exact
+// aria-valuenow/min/max of the work minutes.
+
+const WorkBarTrack = styled<{ offset: number }>('div', {
+    position: 'absolute',
+    left: 2,
+    right: 2,
+    bottom: ({ offset }) => `${2 + offset * 5}px`,
+    height: 3,
+    background: 'rgba(0,0,0,0.45)',
+    borderRadius: 2,
+});
+
+const WorkBarFill = styled<{ pct: number }>('div', {
+    width: ({ pct }) => `${Math.round(Math.min(1, Math.max(0, pct)) * 100)}%`,
+    height: '100%',
+    background: PALETTE.accent,
+    borderRadius: 2,
+});
+
+/** The DOM (ascii/unicode) progress bars of one tile — empty when idle. */
+const WorkBars = ({ x, y, progress }: { x: number; y: number; progress: TileProgress[] }) => (
+    <>
+        {progress.map((job, index) => (
+            <WorkBarTrack
+                key={`${job.label}-${index}`}
+                offset={index}
+                role="progressbar"
+                aria-valuenow={job.done}
+                aria-valuemin={0}
+                aria-valuemax={job.total}
+                aria-label={`${job.label} ${job.done}/${job.total}`}
+                data-testid={`work-bar-${x}-${y}-${job.label}`}
+            >
+                <WorkBarFill pct={job.total > 0 ? job.done / job.total : 0} />
+            </WorkBarTrack>
+        ))}
+    </>
+);
 
 // `opacity` is prop-driven: the standing DECORATIONS (the tree icon) fade by
 // the tile's true scale-0 tree coverage in the island view (features/
@@ -420,6 +469,11 @@ export const WorldGrid = () => {
         selectTile([...viewPath, { x: tile.x, y: tile.y }]);
     };
 
+    // R6 — the standing jobs of a tile (the shared tile-work ledger plus
+    // the live site build work): the progress bars every board draws so
+    // the god sees what work the world remembers at each tile
+    const progressFor = (x: number, y: number): TileProgress[] => tileProgress(island, x, y);
+
     // The zoom toggle at the ISLAND view needs an inspected tile — without
     // one there is nothing to zoom into (the button states that in its
     // hover title); at the interior view the toggle always can zoom out
@@ -505,6 +559,7 @@ export const WorldGrid = () => {
                                 inspected={inspectedTail}
                                 selected={selected}
                                 size={26}
+                                progressFor={progressFor}
                                 onTile={inspectTile}
                                 onHover={hoverTile}
                             />
@@ -527,6 +582,7 @@ export const WorldGrid = () => {
                                 // fades the tree decorations by the tile's TRUE scale-0
                                 // coverage; the interior view stands at full opacity
                                 islandView={slice === null}
+                                progressFor={progressFor}
                                 onTile={inspectTile}
                                 onHover={hoverTile}
                             />
@@ -544,6 +600,7 @@ export const WorldGrid = () => {
                                 // coverage fade applies to the island view only (the
                                 // interior view's drawn cells are trees by construction)
                                 islandView={slice === null}
+                                progressFor={progressFor}
                                 onTile={inspectTile}
                                 onHover={hoverTile}
                             />
@@ -588,6 +645,7 @@ const AsciiView = ({
     inspected,
     selected,
     size,
+    progressFor,
     onTile,
     onHover,
 }: {
@@ -597,6 +655,9 @@ const AsciiView = ({
     inspected: { x: number; y: number } | null;
     selected: string | null;
     size: number;
+    // R6 — the standing jobs of a tile (the shared tile-work ledger + the
+    // live site build work) — drawn as the bottom-edge progress bars
+    progressFor: (x: number, y: number) => TileProgress[];
     onTile: (tile: { x: number; y: number }, castawayId: string | undefined) => void;
     // R1 hover — selects this tile ONLY (never the actor pick, never a
     // zoom); see hoverTile in WorldGrid for the full R1/R2 contract
@@ -637,6 +698,9 @@ const AsciiView = ({
                                 {glyph.glyph}
                             </Marker>
                         ) : null}
+                        {/* R6 — the standing jobs' progress bars (the shared
+                            tile work + the live site build work) */}
+                        <WorkBars x={tile.x} y={tile.y} progress={progressFor(tile.x, tile.y)} />
                     </Cell>
                 );
             })}
@@ -662,6 +726,7 @@ const UnicodeView = ({
     selected,
     size,
     islandView,
+    progressFor,
     onTile,
     onHover,
 }: {
@@ -679,6 +744,9 @@ const UnicodeView = ({
     // scatters exactly the deposited units, one per cell), so its true
     // on-screen coverage is 100 %
     islandView: boolean;
+    // R6 — the standing jobs of a tile (the shared tile-work ledger + the
+    // live site build work) — drawn as the bottom-edge progress bars
+    progressFor: (x: number, y: number) => TileProgress[];
     onTile: (tile: { x: number; y: number }, castawayId: string | undefined) => void;
     // R1 hover — selects this tile ONLY (never the actor pick, never a
     // zoom); see hoverTile in WorldGrid for the full R1/R2 contract
@@ -774,6 +842,9 @@ const UnicodeView = ({
                                 {decorationGlyph}
                             </Marker>
                         ) : null}
+                        {/* R6 — the standing jobs' progress bars (the shared
+                            tile work + the live site build work) */}
+                        <WorkBars x={tile.x} y={tile.y} progress={progressFor(tile.x, tile.y)} />
                     </Cell>
                 );
             })}
@@ -911,6 +982,7 @@ const SvgView = ({
     inspected,
     selected,
     islandView,
+    progressFor,
     onTile,
     onHover,
 }: {
@@ -925,6 +997,9 @@ const SvgView = ({
     // features/tileDetails treeIconOpacity); the interior view stands at
     // full opacity (its drawn cells are trees by construction)
     islandView: boolean;
+    // R6 — the standing jobs of a tile (the shared tile-work ledger + the
+    // live site build work) — drawn as the bottom-edge progress bars
+    progressFor: (x: number, y: number) => TileProgress[];
     onTile: (tile: { x: number; y: number }, castawayId: string | undefined) => void;
     // R1 hover — selects this tile ONLY (never the actor pick, never a
     // zoom); see hoverTile in WorldGrid for the full R1/R2 contract
@@ -1022,6 +1097,29 @@ const SvgView = ({
                                 size={frame.size}
                             />
                         ) : null}
+                        {/* R6 — the standing jobs' progress bars (the shared
+                            tile work + the live site build work): a 2-unit
+                            strip along the tile's bottom edge, stacked 5
+                            units per job (the DOM views' twin). The <title>
+            carries the accessible read (aria-* is not SVG-native here) */}
+                        {progressFor(tile.x, tile.y).map((job, index) => (
+                            <rect
+                                key={`${job.label}-${index}`}
+                                x={column * frame.size + 2}
+                                y={row * frame.size + frame.size - 4 - index * 5}
+                                width={Math.max(
+                                    0,
+                                    Math.min(1, job.total > 0 ? job.done / job.total : 0) *
+                                        (frame.size - 4),
+                                )}
+                                height={2}
+                                rx={1}
+                                fill={PALETTE.accent}
+                                data-testid={`work-bar-svg-${tile.x}-${tile.y}-${job.label}`}
+                            >
+                                <title>{`${job.label} ${job.done}/${job.total}`}</title>
+                            </rect>
+                        ))}
                     </g>
                 );
             })}

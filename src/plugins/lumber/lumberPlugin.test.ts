@@ -4,16 +4,19 @@
 // rates. All outcomes were captured from reference runs — the task loop is
 // fully deterministic.
 //
-// The lumber model: wood is NOT a natural resource — the standing deposit
-// is the TREE, and wood exists only as the product of cutting a tree's wood
-// pool. The priority-10 'lumber' ledger behaviour sends a woodless actor to
-// the woods: a tree underfoot is chopped (15 minutes — the harvest converts
-// one pool wood into one wood item in the bag; the tree STANDS while wood
-// remains, and only a pool of 0 fells it); no tree underfoot means one fine
-// step toward the nearest treed tile (1 minute). The chop completion effect
-// lives in this plugin (the behaviour governs its own tasks); the move
-// tasks flow through the behavior plugin's move effect. The forest ecology
-// (plugins/forest) grows the pools back between chops.
+// The lumber model (R6): wood is NOT a natural resource — the standing
+// deposit is the TREE, and wood exists only as the product of cutting a
+// tree's wood pool. The priority-10 'lumber' ledger behaviour sends a
+// woodless, SKILLED (the species 'chop' ability) actor to the woods: the
+// felling is a PERSISTENT SHARED TILE JOB in the tasks plugin's tile-work
+// ledger (@godspace/core src/work), keyed `tileWorkKey(x, y, 'chop')` —
+// the job demands `chopMinutes` (15) WORK-minutes; every contributor adds
+// one work-minute per 1-minute beat task, the job survives every actor's
+// death/abort, and ANY skilled contributor may finish it (the payout is
+// claimed atomically — one wood per finished job, never duplicated). A
+// tree underfoot with no standing job OPENS it (the axe halves the demand
+// at open, R4); no tree means one fine step toward the nearest treed tile.
+// The forest ecology (plugins/forest) grows the pools back between chops.
 
 import { describe, it, expect } from 'vitest';
 import { position3 } from '@godspace/core';
@@ -23,6 +26,7 @@ import { inventoryPlugin } from '../inventory/inventoryPlugin';
 import { forestPlugin } from '../forest/forestPlugin';
 import { needsPlugin } from '../needs/needsPlugin';
 import { relationshipPlugin } from '../relationship/relationshipPlugin';
+import { entityPlugin } from '../entity/entityPlugin';
 import { tasksPlugin } from '../tasks/tasksPlugin';
 import { behaviorPlugin } from '../behavior/behaviorPlugin';
 import { lumberPlugin } from './lumberPlugin';
@@ -35,20 +39,32 @@ const spawn = (world: ReturnType<typeof createWorld>, id: string, name: string, 
 
 // Full stack with rain disabled and needs frozen — the lumber behaviour is
 // the only thing that moves the actor. The FOREST ECOLOGY mounts (the
-// scenario's default) — the chop cuts wood off the tree pools.
-const buildStack = () => {
+// scenario's default) — the chop cuts wood off the tree pools. `withEntity`
+// mounts the species registry so the 'chop' ability gate is live.
+const buildStack = (withEntity = false) => {
     const terrain = islandTerrainPlugin();
-    const inventory = inventoryPlugin({ rainChancePerMinute: 0 });
+    const entity = withEntity ? entityPlugin() : undefined;
+    const inventory = inventoryPlugin({ rainChancePerMinute: 0, ...(entity ? { profiles: entity } : {}) });
     const needs = needsPlugin({ hungerPerMinute: 0, thirstPerMinute: 0, energyPerMinute: 0 });
     const relationship = relationshipPlugin();
     const tasks = tasksPlugin();
-    const behavior = behaviorPlugin({ inventory, needs, relationship, tasks });
+    const behavior = behaviorPlugin({
+        inventory,
+        needs,
+        relationship,
+        tasks,
+        ...(entity ? { profiles: entity } : {}),
+    });
     const forest = forestPlugin({ terrain, inventory });
-    const lumber = lumberPlugin({ inventory, tasks });
+    const lumber = lumberPlugin({
+        inventory,
+        tasks,
+        ...(entity ? { profiles: entity } : {}),
+    });
     const world = createWorld({
         seed: 7,
         tickSize: 1,
-        plugins: [terrain, inventory, forest, needs, relationship, tasks, behavior, lumber],
+        plugins: [terrain, ...(entity ? [entity] : []), inventory, forest, needs, relationship, tasks, behavior, lumber],
     });
     return { world, inventory, needs, tasks, lumber, forest };
 };
@@ -70,38 +86,53 @@ describe('lumberPlugin', () => {
         ]);
     });
 
-    it('a woodless actor on a treed tile chops: the wood lands in the bag on completion', () => {
+    it('a woodless actor on a treed tile opens the shared job and beats it: the wood lands on completion', () => {
         const { world, inventory, tasks } = buildStack();
         // Forest (−7,0) mirrors its full 425-tree stand (the 0.8 interior
         // clamp)
         spawn(world, 'a', 'Ael', -7, 0);
         world.step();
-        // The 15-minute chop was planned at minute 1 — the tree is NOT
-        // consumed at plan time (the harvest lands on completion)
+        // Minute 1: the tile's chop JOB opens at 15 work-minutes and the
+        // actor's first 1-minute beat queues — the tree is NOT consumed at
+        // plan time (the harvest lands on the atomic claim)
         expect(tasks.taskOf('a')).toEqual({
             id: 't-1',
             actorId: 'a',
             behaviour: 'lumber',
             kind: 'chop',
             label: 'chops a tree',
-            minutes: 15,
-            total: 15,
-            remaining: 15,
+            minutes: 1,
+            total: 1,
+            remaining: 1,
+        });
+        expect(tasks.tileWork.get('tile:-7,0:chop')).toEqual({
+            key: 'tile:-7,0:chop',
+            kind: 'chop',
+            units: 15,
+            progress: 0,
+            skill: 'chop',
         });
         expect(inventory.of('a')).toEqual({});
-        for (let index = 0; index < 16; index++) {
+        // Minute 2: the first beat completes — one work-minute into the job
+        world.step();
+        expect(tasks.tileWork.get('tile:-7,0:chop')?.progress).toBe(1);
+        for (let index = 0; index < 14; index++) {
             world.step();
         }
-        // The chop completed at minute 16: one wood off a tree's POOL into
-        // the bag. The SOURCE tree was the tree on Ael's fine spot — a
-        // pool-1 sapling, so the cut FELS it (the mirror drops 425 → 424).
-        // The wetland shore's water stands beside the grove (water:2)
+        // The chop completed at minute 16 (fifteen beats): one wood off a
+        // tree's POOL into the bag and the job is GONE (claimed). The SOURCE
+        // tree was the tree on Ael's fine spot — a pool-1 sapling, so the
+        // cut FELS it (the mirror drops 425 → 424). The wetland shore's
+        // water stands beside the grove (water:2)
         expect(inventory.of('a')).toEqual({ wood: 1 });
-        // R4: the (−7,0) column is a meadow shore — the finite stone is gone
-        // (stone stands only on the highland rock sites); the tree mirror
-        // keeps its felled 424 band. The abundance tuning seeds berry 2 +
-        // mushroom 2; the minute-15 mushroom pulse adds the third mushroom
-        expect(inventory.cellStock(-7, 0)).toEqual({ dirt: 1, grass: 1, tree: 424, berry: 2, mushroom: 3, water: 2 });
+        expect(tasks.tileWork.get('tile:-7,0:chop')).toBeUndefined();
+        // R4/R7: the (−7,0) column is a meadow shore — the finite stone is
+        // gone (stone stands only on the highland rock sites); the tree
+        // mirror keeps its felled 424 band. The enriched abundance seeds
+        // berry 4 + mushroom 3 + the standing bush + a vine from the 0.6
+        // forest draw; the minute-15 mushroom pulse adds the fourth mushroom
+        // (the berry pulse at 20 has not fired yet at minute 16)
+        expect(inventory.cellStock(-7, 0)).toEqual({ dirt: 1, grass: 1, tree: 424, berry: 4, mushroom: 4, bush: 1, water: 2, vine: 1 });
         expect(world.cellAt(-7, 0)?.resources).toEqual({ dirt: 1, grass: 1, tree: 424 });
         // The felling is silent — a solo beat, not a story between entities
         expect(world.events.log().map((event) => event.kind)).toEqual(['spawn']);
@@ -119,10 +150,12 @@ describe('lumberPlugin', () => {
         }
         expect(inventory.of('a')).toEqual({ wood: 1 });
         // The wood leaves the bag (a trade or build spent it) — the gate
-        // re-opens on the next planning round
+        // re-opens on the next planning round and a FRESH job opens (the
+        // old one was claimed away)
         delete inventory.of('a').wood;
         world.step();
-        expect(tasks.taskOf('a')).toMatchObject({ kind: 'chop', remaining: 15 });
+        expect(tasks.taskOf('a')).toMatchObject({ kind: 'chop', minutes: 1, remaining: 1 });
+        expect(tasks.tileWork.get('tile:-7,0:chop')?.units).toBe(15);
         for (let index = 0; index < 15; index++) {
             world.step();
         }
@@ -133,6 +166,70 @@ describe('lumberPlugin', () => {
         expect(inventory.of('a')).toEqual({ wood: 1 });
         expect(inventory.cellStock(-7, 0).tree).toBe(424);
         expect(forest.standOf({ x: -7, y: 0 })).toEqual({ trees: 424, wood: 1686 });
+    });
+
+    it('R6: the job PERSISTS across actors — a dead chopper leaves its minutes standing', () => {
+        const { world, inventory, tasks } = buildStack();
+        spawn(world, 'a', 'Ael', -7, 0);
+        // Five beats complete (minutes 2–6): five work-minutes stand in the
+        // tile's job
+        for (let index = 0; index < 6; index++) {
+            world.step();
+        }
+        expect(tasks.tileWork.get('tile:-7,0:chop')?.progress).toBe(5);
+        // Ael dies mid-felling — the queue cancels, the JOB stays
+        world.despawn('a');
+        expect(tasks.taskOf('a')).toBeUndefined();
+        expect(tasks.tileWork.get('tile:-7,0:chop')).toEqual({
+            key: 'tile:-7,0:chop',
+            kind: 'chop',
+            units: 15,
+            progress: 5,
+            skill: 'chop',
+        });
+        // Bram picks the standing work up — he never restarts it
+        spawn(world, 'b', 'Bram', -7, 0);
+        world.step(); // minute 7: Bram joins the job (no re-open)
+        expect(tasks.taskOf('b')).toMatchObject({ kind: 'chop', minutes: 1 });
+        expect(tasks.tileWork.get('tile:-7,0:chop')?.progress).toBe(5);
+        // Ten more beats finish it: the claim pays Bram exactly one wood
+        for (let index = 0; index < 11; index++) {
+            world.step();
+        }
+        expect(inventory.of('b')).toEqual({ wood: 1 });
+        expect(tasks.tileWork.get('tile:-7,0:chop')).toBeUndefined();
+    });
+
+    it('R6: two contributors share one job — the claim pays ONE wood, not two', () => {
+        const { world, inventory, tasks } = buildStack();
+        // BOTH castaways stand on the treed tile from the start — every
+        // minute each beats the ONE shared job, so the 15-unit job lands in
+        // half the world time (the ledger counts LABOR-minutes, the ticker
+        // counts world minutes)
+        spawn(world, 'a', 'Ael', -7, 0);
+        spawn(world, 'b', 'Bram', -7, 0);
+        world.step(); // minute 1: Ael opens the job; Bram joins the same unit
+        expect(tasks.tileWork.get('tile:-7,0:chop')?.units).toBe(15);
+        // Minutes 2–8: both beats complete every minute → 7 × 2 = 14 work-
+        // minutes stand; minute 9: Ael's beat reaches 15 and claims
+        for (let index = 0; index < 7; index++) {
+            world.step();
+        }
+        expect(tasks.tileWork.get('tile:-7,0:chop')?.progress).toBe(14);
+        world.step();
+        // Exactly ONE wood exists across both bags — the atomic claim pays
+        // the finisher only. The claimed job is gone; the job that stands
+        // now is Bram's FRESH open (progress 0, the same 15-unit demand) —
+        // the finished work was never double-paid
+        const wood = (inventory.of('a').wood ?? 0) + (inventory.of('b').wood ?? 0);
+        expect(wood).toBe(1);
+        expect(tasks.tileWork.get('tile:-7,0:chop')).toEqual({
+            key: 'tile:-7,0:chop',
+            kind: 'chop',
+            units: 15,
+            progress: 0,
+            skill: 'chop',
+        });
     });
 
     it('a woodless actor with no tree underfoot travels toward the nearest treed tile', () => {
@@ -158,17 +255,18 @@ describe('lumberPlugin', () => {
             remaining: 1,
         });
         // The step west onto the treed (1,5) short-circuits the trek (a tree
-        // underfoot chops): by minute 40 the wood is in the bag and the
-        // grove's tree mirror holds 425 (T2's densified pure stand; the chop
-        // cut a pool wood — the 425-tree stand stands; the abundance-tuned
-        // berry/mushroom stocks (seeded 2 + 2) regrow on their rhythms —
-        // the minute-15 mushroom and minute-20 berry pulses add a unit
-        // each; R4: the meadow is no stone-bearing)
+        // underfoot opens the job): by minute 40 the wood is in the bag and
+        // the grove's tree mirror holds 425 (T2's densified pure stand; the
+        // chop cut a pool wood — the 425-tree stand stands; the enriched
+        // R7 stocks (seeded berry 4 + mushroom 3) regrow on their rhythms —
+        // the minute-15 mushroom and minute-20 berry pulses add a unit each;
+        // this grove cell missed the vine draw; R4: the meadow is no
+        // stone-bearing)
         for (let index = 0; index < 40; index++) {
             world.step();
         }
         expect(inventory.of('a')).toEqual({ wood: 1 });
-        expect(inventory.cellStock(1, 5)).toEqual({ dirt: 1, grass: 1, tree: 425, berry: 3, mushroom: 3 });
+        expect(inventory.cellStock(1, 5)).toEqual({ dirt: 1, grass: 1, tree: 425, berry: 5, mushroom: 4 });
         expect(world.cellAt(1, 5)?.biome).toBe('forest');
     });
 
@@ -183,31 +281,71 @@ describe('lumberPlugin', () => {
         expect(inventory.of('a')).toEqual({ wood: 1 });
     });
 
-    it('R4: a castaway carrying the crafted axe chops half-speed (the tool earns its input)', () => {
-        // Without the axe: the base 15-minute chop is planned on the treed tile
+    it('R6 skill gate: without the species chop ability the woods stay unworked', () => {
+        // The entity profiles mounted — 'human' carries 'chop', 'boar' does
+        // not. A boar-shaped sentient (kind forced sentient, type boar) must
+        // never open or join the job
+        const { world, tasks } = buildStack(true);
+        const boar: Actor = {
+            id: 'tusk',
+            name: 'Tusk',
+            kind: 'sentient',
+            type: 'boar',
+            position: position3(-7, 0),
+            marker: 'T',
+            condition: 'well',
+            // The engine's facet reader demands a profile on every spawned
+            // body (world.ts facetOf reads profile.sex) — the boar-shaped
+            // sentient carries the stock beast profile shape
+            profile: { sex: 'male' },
+        };
+        world.spawn(boar);
+        world.step();
+        // The chop gate declines — the wander filler takes the minute and
+        // NO tile job opens on the treed tile
+        expect(tasks.taskOf('tusk')?.kind).not.toBe('chop');
+        expect(tasks.tileWork.get('tile:-7,0:chop')).toBeUndefined();
+    });
+
+    it('R4: a castaway carrying the crafted axe opens the job at half the work-minutes', () => {
+        // Without the axe: the base 15-work-minute job opens on the treed tile
         const plain = buildStack();
         spawn(plain.world, 'a', 'Ael', -7, 0);
         plain.world.step();
-        expect(plain.tasks.taskOf('a')).toMatchObject({ behaviour: 'lumber', kind: 'chop', minutes: 15 });
-        // With the crafted axe in the bag: the chop's world-minute cost HALVES
-        // (ceil(15 / 2) = 8) — the axe (R4's early tool, plugins/construction)
-        // is not cosmetic, it speeds the lumber work it feeds
+        expect(plain.tasks.taskOf('a')).toMatchObject({ behaviour: 'lumber', kind: 'chop', minutes: 1 });
+        expect(plain.tasks.tileWork.get('tile:-7,0:chop')?.units).toBe(15);
+        // With the crafted axe in the bag: the job's WORK demand halves
+        // (ceil(15 / 2) = 8) — the axe (R4's early tool, plugins/
+        // construction) is not cosmetic, it speeds the lumber work it feeds
         const tool = buildStack();
         spawn(tool.world, 'a', 'Ael', -7, 0);
         tool.inventory.spawnKit('a', { axe: 1 });
         tool.world.step();
-        expect(tool.tasks.taskOf('a')).toMatchObject({ behaviour: 'lumber', kind: 'chop', minutes: 8 });
+        expect(tool.tasks.taskOf('a')).toMatchObject({ behaviour: 'lumber', kind: 'chop', minutes: 1 });
+        expect(tool.tasks.tileWork.get('tile:-7,0:chop')?.units).toBe(8);
+        // Eight beats land the wood: beats complete minutes 2–9
+        for (let index = 0; index < 8; index++) {
+            tool.world.step();
+        }
+        // The axe stays in the bag (it is a tool, not a harvest) — the bag
+        // holds the axe AND the claimed wood
+        expect(tool.inventory.of('a')).toEqual({ axe: 1, wood: 1 });
+        expect(tool.tasks.tileWork.get('tile:-7,0:chop')).toBeUndefined();
     });
 
-    it('removing the lumber plugin mid-chop cancels the task (the ledger update rule)', () => {
+    it('removing the lumber plugin mid-chop cancels the task but keeps the standing job', () => {
         const { world, tasks } = buildStack();
         spawn(world, 'a', 'Ael', -7, 0);
         world.step();
+        world.step(); // one beat lands
         expect(tasks.taskOf('a')?.kind).toBe('chop');
+        expect(tasks.tileWork.get('tile:-7,0:chop')?.progress).toBe(1);
         world.plugins.remove('lumber');
         // The update-on-remove rule: the behaviour is gone AND its queued
-        // tasks are cancelled — the actor is idle before any step ran
+        // tasks are cancelled — but the tile WORK belongs to the tasks
+        // environment, so the standing job survives the behaviour swap
         expect(tasks.ledger.behaviours().map((module) => module.id)).toEqual(['thirst', 'hunger', 'roost', 'rest', 'social', 'wander']);
+        expect(tasks.tileWork.get('tile:-7,0:chop')?.progress).toBe(1);
         // The idle filler takes over — the actor fine-wanders again
         for (let index = 0; index < 3; index++) {
             world.step();

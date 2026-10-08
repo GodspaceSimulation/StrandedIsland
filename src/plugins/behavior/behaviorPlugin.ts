@@ -40,10 +40,18 @@
 // above these):
 //   thirst  50 — thirst ≥ 65: drink from the BAG (2 min); no water carried
 //                                    → collect the cell's pool into the bag
-//                                    (3 min); no pool underfoot → travel one
+//                                    (R6: a 1-minute BEAT on the tile's
+//                                    shared 'water' gather job — 3 work-
+//                                    minutes total, any skilled hand may
+//                                    finish it, the take pays on the atomic
+//                                    claim); no pool underfoot → travel one
 //                                    fine step toward the nearest pool (1 min)
 //   hunger  40 — hunger ≥ 60       → eat from the bag (2 min), gather the
-//                                    cell's food (10 min), fish the water at
+//                                    cell's food (R6: a 1-minute BEAT on the
+//                                    tile's shared gather job for THAT item —
+//                                    10 work-minutes, persistent across
+//                                    pre-emption, one payout per finished
+//                                    job), fish the water at
 //                                    the body's feet when standing on a dry
 //                                    fishing shore (3 min — R5: cardinal-
 //                                    adjacent water stocking fish, the body
@@ -121,6 +129,16 @@
 //             does NOT go through here.
 //   social  — nothing: the exchange/gift already happened at plan time.
 //
+// TILE WORK VS PRIVATE CRAFT (R6) — the GATHERING kinds (collect/gather)
+// ride the tasks plugin's shared tile-work ledger (plugins/tasks/
+// gatherWork.ts): standing per-tile jobs any skilled hand can finish.
+// CRAFTING stays a PRIVATE, input-owned actor task on purpose: a craft
+// (frond→thatch, vine→rope, wood→plank) transforms materials that live in
+// ONE bag — there is no location-bound standing work for several hands to
+// share, and splitting it across the tile ledger would let a finisher claim
+// labor over inputs they do not own. The crafting registry applies it
+// atomically in the owning actor's task.
+//
 // Depends on the inventory, needs, relationship and tasks plugin APIs
 // (passed as options — see scenario/island.ts for the assembly).
 
@@ -132,8 +150,9 @@ import {
     type PluginContext,
     type WorldPlugin,
 } from '@godspace/core';
-import { itemDef } from '../inventory/items';
+import { itemDef, MINED_ITEMS } from '../inventory/items';
 import { inventoryTotal } from '../inventory/inventory';
+import { beatGatherJob, openGatherJob } from '../tasks/gatherWork';
 import {
     chebyshev,
     fineStep,
@@ -248,6 +267,15 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
     // The entity profiles — movement energy economics (run vs walk). Null:
     // the needs plugin's legacy flat point.
     const profiles = options.profiles ?? null;
+    // THE FORAGE GATE (R6) — gathering (food, water, vines, fronds, ground
+    // goods) is a skilled craft of the species carrying the 'forage'
+    // ability (the entity plugin's work-kind unlock, the same pattern as
+    // lumber's 'chop' and the inventory's 'mine'). Without profiles every
+    // hand may gather (the pre-entity behavior, mirroring the lumber and
+    // construction fallbacks). MINED items (stone/iron/flint) stay gated
+    // on 'mine' by the inventory take itself — never on forage.
+    const mayForage = (type: string | undefined): boolean =>
+        !profiles || (type !== undefined && profiles.hasAbility(type, 'forage'));
     const travel = options.travelMinutesPerTile ?? 1;
     const eatMinutes = options.eatMinutes ?? 2;
     const drinkMinutes = options.drinkMinutes ?? 2;
@@ -568,14 +596,37 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                     }
                     // 3) A pool underfoot — the COLLECTION is the task: the
                     //    water goes into the bag first (nothing recovers
-                    //    straight from the ground)
+                    //    straight from the ground). R6 — the collect is a
+                    //    SHARED TILE JOB: the tile's 'water' gather unit in
+                    //    the tasks plugin's tile-work ledger demands
+                    //    `collectMinutes` WORK-minutes; this beat adds one
+                    //    and the payout (the take) lands only on the atomic
+                    //    claim. The minutes survive any pre-emption and any
+                    //    skilled hand may finish the job. Unlimited ground
+                    //    water keeps the SAME specified duration per drawn
+                    //    unit — the job simply re-opens for the next one.
                     const stock = inventory.cellStock(actor.position.x, actor.position.y);
                     if ((stock.water ?? 0) > 0) {
+                        if (!mayForage(actor.type)) {
+                            return undefined;
+                        }
+                        const x = actor.position.x;
+                        const y = actor.position.y;
+                        openGatherJob(tasks.tileWork, {
+                            x,
+                            y,
+                            item: 'water',
+                            units: collectMinutes,
+                            skill: 'forage',
+                        });
                         return {
                             kind: 'collect',
                             label: 'collects water',
-                            minutes: collectMinutes,
-                            payload: { itemId: 'water' },
+                            minutes: 1,
+                            // The beat carries its TILE — the actor may walk
+                            // before the beat completes; the job they
+                            // committed to is the one they finish
+                            payload: { itemId: 'water', beat: true, x, y },
                         };
                     }
                     // 4) Go and find a pool — travel one fine step toward
@@ -663,7 +714,42 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                         (item) => (stock[item] ?? 0) > 0 && (itemDef(item).kind === 'food' || item === 'bush'),
                     );
                     if (gatherable !== undefined) {
-                        return { kind: 'gather', label: 'gathers', minutes: gatherMinutes };
+                        // R6 — the forage is a SHARED TILE JOB: the tile's
+                        // unit for THIS item (one job per tile per resource,
+                        // so a berry bush and a mushroom patch beside it are
+                        // separate records) demands `gatherMinutes` work-
+                        // minutes; every skilled contributor's 1-minute beat
+                        // adds one, the minutes survive pre-emption, and the
+                        // take pays out only on the atomic claim (never a
+                        // duplicate berry from two finishers).
+                        if (!mayForage(actor.type)) {
+                            return undefined;
+                        }
+                        const x = actor.position.x;
+                        const y = actor.position.y;
+                        // A BUSH job is a BERRY job — the bush is the SOURCE
+                        // plant, the product the claim pays is a berry (the
+                        // payout below routes it through the inventory's
+                        // bush path). The ledger record names the PRODUCT,
+                        // so the progress bar and the payout never disagree
+                        // on kind.
+                        const product = gatherable === 'bush' ? 'berry' : gatherable;
+                        openGatherJob(tasks.tileWork, {
+                            x,
+                            y,
+                            item: product,
+                            units: gatherMinutes,
+                            skill: MINED_ITEMS.includes(product) ? 'mine' : 'forage',
+                        });
+                        return {
+                            kind: 'gather',
+                            label: 'gathers',
+                            minutes: 1,
+                            // The beat names its item AND its tile — the
+                            // claim takes exactly what the job stands for
+                            // (no mismatched kind), wherever the actor wanders
+                            payload: { itemId: product, source: gatherable, beat: true, x, y },
+                        };
                     }
                     // R5 — THE FISHING SHORE: dry ground underfoot and fish
                     // in the water AT THE BODY'S FEET (a cardinal-adjacent
@@ -895,6 +981,25 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                 }
                 switch (task.kind) {
                     case 'move': {
+                        // THE RUNNING STRIDE (the survival flee's tile-level
+                        // move): a flee payload carrying tx/ty relocates the
+                        // body a FULL SCALE-0 tile in one completed task —
+                        // the profile's run row (one minute a tile,
+                        // threefold the burn). A fine-step flee could never
+                        // outpace a boar's two-minutes-a-tile gait (the
+                        // campaign oscillation maulings); the stride can.
+                        const tx = task.payload?.tx;
+                        const ty = task.payload?.ty;
+                        if (task.payload?.flee && typeof tx === 'number' && typeof ty === 'number') {
+                            // Re-validate at completion: the ground may have
+                            // changed under the mid-flight actor
+                            if (world.cellAt(tx, ty)?.passable !== true) {
+                                return;
+                            }
+                            world.relocate(actor.id, position3(tx, ty, actor.position.z));
+                            needs.moved(actor.id, 'run');
+                            return;
+                        }
                         const dx = Number(task.payload?.dx ?? 0);
                         const dy = Number(task.payload?.dy ?? 0);
                         // Re-validate at completion: the world may have
@@ -929,9 +1034,45 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                         // The planned pool item — the pool may have run dry
                         // during the wait, or a neighbour may have drunk it:
                         // re-take, or the collection silently failed (the
-                        // actor re-plans next minute)
+                        // actor re-plans next minute). R6 — a BEAT task
+                        // feeds the tile's shared gather job instead: the
+                        // minute banks into the ledger and the take happens
+                        // ONLY on the atomic claim (one unit per finished
+                        // job, never duplicated); a failed payout rolls the
+                        // finished job back for the next contributor.
                         const itemId = task.payload?.itemId;
-                        inventory.takeFromCell(actor, typeof itemId === 'string' ? itemId : 'water');
+                        const item = typeof itemId === 'string' ? itemId : 'water';
+                        if (task.payload?.beat) {
+                            const x = Number(task.payload?.x ?? actor.position.x);
+                            const y = Number(task.payload?.y ?? actor.position.y);
+                            // THE ON-TILE GATE — the beat works the tile it
+                            // was PLANNED on, so the body must still stand
+                            // there when the minute completes. The payout
+                            // closure below reads the actor's CURRENT cell
+                            // (takeFromCell), and a mid-beat relocation (a
+                            // gull's drift, a flee stride) would otherwise
+                            // harvest a DIFFERENT tile through this job's
+                            // claim. Off-tile the beat lands NOWHERE: no
+                            // minute banked, no claim, no take — the
+                            // standing job keeps its stored progress
+                            // untouched and the wrong tile keeps its stock.
+                            if (actor.position.x !== x || actor.position.y !== y) {
+                                return;
+                            }
+                            // THE SKILL REVALIDATION — abilities are species
+                            // reads that a registry remount can change
+                            // mid-beat; a hand that lost 'forage' banks
+                            // nothing (narrow and conservative: the minute
+                            // is refused, the standing work survives).
+                            if (!mayForage(actor.type)) {
+                                return;
+                            }
+                            beatGatherJob(tasks.tileWork, { x, y, item }, () =>
+                                inventory.takeFromCell(actor, item),
+                            );
+                            return;
+                        }
+                        inventory.takeFromCell(actor, item);
                         return;
                     }
                     case 'drink': {
@@ -970,14 +1111,57 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                         // payload item; see plugins/construction). The take
                         // revalidates stock, capacity and the mine gate;
                         // a depleted cell is a no-op.
-                        const itemId = task.payload?.item;
+                        const itemId = task.payload?.item ?? task.payload?.itemId;
+                        // R6 — a BEAT gather (the hunger rung's forage and
+                        // the construction fetches): bank the minute into
+                        // the tile's shared job for the NAMED item and pay
+                        // out only on the atomic claim. The payout takes
+                        // exactly the job's item (a 'berry' job never pays
+                        // a mushroom); a bush job plucks its berry through
+                        // the inventory's bush path. A failed take rolls the
+                        // finished job back — the labor stands.
+                        if (task.payload?.beat && typeof itemId === 'string') {
+                            const x = Number(task.payload?.x ?? actor.position.x);
+                            const y = Number(task.payload?.y ?? actor.position.y);
+                            // THE ON-TILE GATE (the collect beat's twin) —
+                            // the payout closures read the actor's CURRENT
+                            // cell, so a body that drifted off the
+                            // committed tile mid-beat must not harvest a
+                            // different tile through this job's claim.
+                            // Off-tile the beat lands NOWHERE — the
+                            // standing job keeps its stored progress and
+                            // both tiles keep their stocks.
+                            if (actor.position.x !== x || actor.position.y !== y) {
+                                return;
+                            }
+                            // THE SKILL REVALIDATION — a hand that lost the
+                            // 'forage' ability mid-beat banks nothing.
+                            // MINED products (stone/iron/flint) ride the
+                            // inventory take's own 'mine' gate at payout
+                            // (a failed payout rolls the job back), so the
+                            // forage recheck covers exactly the foraged
+                            // kinds — the narrow, conservative gate.
+                            if (!MINED_ITEMS.includes(itemId) && !mayForage(actor.type)) {
+                                return;
+                            }
+                            // A BUSH-sourced job pays through the inventory's
+                            // bush path (the berry is plucked off the standing
+                            // plant); every other job takes its own item
+                            const source = task.payload?.source;
+                            beatGatherJob(tasks.tileWork, { x, y, item: itemId }, () =>
+                                source === 'bush'
+                                    ? inventory.gather(actor) !== null
+                                    : inventory.takeFromCell(actor, itemId),
+                            );
+                            return;
+                        }
                         if (typeof itemId === 'string' && itemDef(itemId).kind !== 'food') {
                             inventory.takeFromCell(actor, itemId);
                             return;
                         }
-                        // The stockless FOOD gather (the hunger rung's tasks
-                        // carry no payload): the inventory re-validates the
-                        // stock and emits its own gather event; a depleted
+                        // The stockless FOOD gather (a legacy task carrying
+                        // no payload): the inventory re-validates the stock
+                        // and emits its own gather event; a depleted
                         // cell is a no-op
                         inventory.gather(actor);
                         return;

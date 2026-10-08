@@ -56,9 +56,13 @@ describe('tasksPlugin — no stale tasks for departed bodies', () => {
         spawn(world, 'a', 'Ael', 3, -4); // the berry+mushroom meadow stocks food
         needs.satisfy('a', { hunger: 45 }); // hunger 65 ≥ 60 — the gather queues
         world.step();
-        expect(tasks.taskOf('a')).toMatchObject({ kind: 'gather', remaining: 10 });
-        world.step(); // one minute of gathering
-        expect(tasks.taskOf('a')?.remaining).toBe(9);
+        // R6 — the gather is a BEAT on the tile's shared 10-work-minute
+        // gather job (plugins/tasks/gatherWork), not a private countdown
+        expect(tasks.taskOf('a')).toMatchObject({ kind: 'gather', remaining: 1 });
+        expect(tasks.tileWork.all().length).toBe(1);
+        world.step(); // one minute of gathering — the beat lands in the JOB
+        expect(tasks.taskOf('a')?.remaining).toBe(1); // the next beat re-planned
+        expect(tasks.tileWork.all()[0]).toMatchObject({ units: 10, progress: 1 });
         // The reservoir runs dry mid-task: the needs sweep kills the body
         // (the despawn + death events) and the queue cancels with it
         needs.satisfy('a', { health: -100 });
@@ -66,8 +70,30 @@ describe('tasksPlugin — no stale tasks for departed bodies', () => {
         expect(world.actors.has('a')).toBe(false);
         expect(tasks.taskOf('a')).toBeUndefined();
         expect(tasks.tasks()).toEqual([]);
-        // The interrupted gather never completed — no food ever landed
+        // The interrupted gather never completed — no food ever landed — but
+        // the PLANNED WORK stands: the dead chopper's minute survives in the
+        // tile's job for the next skilled hand (the R6 handoff contract)
         expect(inventory.of('a')).toEqual({});
+        expect(tasks.tileWork.all()[0]).toMatchObject({ units: 10, progress: 1 });
+    });
+
+    it('the tile-work ledger mounts with the environment and clears on dispose (R6)', () => {
+        const { world, tasks } = buildStack();
+        // The shared tile-work ledger rides the tasks plugin — the standing
+        // jobs the lumber chop and the construction fell feed
+        tasks.tileWork.open({ key: 'tile:1,2:chop', kind: 'chop', units: 15, skill: 'chop' });
+        tasks.tileWork.add('tile:1,2:chop', 5);
+        expect(tasks.tileWork.get('tile:1,2:chop')).toEqual({
+            key: 'tile:1,2:chop',
+            kind: 'chop',
+            units: 15,
+            progress: 5,
+            skill: 'chop',
+        });
+        // The environment swap wipes the standing jobs with the ledger —
+        // a new world never inherits the old world's half-felled trees
+        world.plugins.remove('tasks');
+        expect(tasks.tileWork.all()).toEqual([]);
     });
 
     it('the cancel passthrough wipes a queue directly (the god-side hook)', () => {

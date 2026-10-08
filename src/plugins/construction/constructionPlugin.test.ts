@@ -24,6 +24,21 @@ const island = (options?: Parameters<typeof createIslandWorld>[0]): IslandHandle
 /** The mounted site registry (created at the terrain plugin's setup). */
 const sites = (handle: IslandHandle): SiteRegistry => handle.construction.sites;
 
+/**
+ * R5/R6 — drives the deterministic seed-7 world until `done()` holds (or
+ * the horizon runs out, which fails the caller's next assertion). The
+ * island's work costs (ISLAND_BLUEPRINT_WORK — a shelter is 240 work-
+ * minutes, a house 4320) make the campaign minutes LONGER than the old
+ * stock-cost pins; the completion MINUTE is a pacing result, not a
+ * contract, so these tests pin the exact END STATE and let the drive
+ * settle it. The loop is fully deterministic (seed 7, tickSize 1).
+ */
+const driveUntil = (handle: IslandHandle, done: () => boolean, horizon: number): void => {
+    for (let minute = 0; minute < horizon && !done(); minute++) {
+        handle.world.step();
+    }
+};
+
 describe('constructionPlugin — the shared registries', () => {
     it('wires the stock blueprint registry and the island recipes', () => {
         const handle = island();
@@ -34,6 +49,16 @@ describe('constructionPlugin — the shared registries', () => {
             'fort',
             'raft',
             'boat',
+        ]);
+        // R5/R6 — the ISLAND work costs (ISLAND_BLUEPRINT_WORK): the stock
+        // specs re-priced onto honest labor hours on THIS registry instance
+        // only (the shared package's stock values stay generic)
+        expect(handle.construction.blueprints.blueprints().map((blueprint) => blueprint.work)).toEqual([
+            240, // shelter — 4 hours
+            4320, // house — 3 days
+            2880, // fort — 2 days
+            480, // raft — 8 hours
+            1440, // boat — 1 day
         ]);
         // The island's own recipes — coined on @godspace/material's crafting
         // registry (stock: false — the stock recipes reference fiber/clay
@@ -244,8 +269,15 @@ describe('constructionPlugin — the shared registries', () => {
                 hammerAt = minute;
             }
         }
-        expect(axeAt).toBe(305);
-        expect(hammerAt).toBe(325);
+        // The exact landing MINUTES are campaign pacing results (the shared
+        // tile-work fell job and the island work costs move them), so the
+        // contract pins the END STATE inside the window: both tools land,
+        // and each crew total peaks at EXACTLY one (the once-gate plus the
+        // deterministic lead gate end the craft after a single output)
+        expect(axeAt).toBeGreaterThanOrEqual(0);
+        expect(axeAt).toBeLessThan(700);
+        expect(hammerAt).toBeGreaterThanOrEqual(0);
+        expect(hammerAt).toBeLessThan(700);
         expect(axeMax).toBe(1);
         expect(hammerMax).toBe(1);
     });
@@ -335,12 +367,10 @@ describe('constructionPlugin — placement and the scale-0 footprint', () => {
     });
 
     it('vessels moor on a beach tile with a water neighbour (the launch mooring)', () => {
-        // The raft project opens when the shelter completes (minute 356);
-        // by minute 1000 the raft is built on a moored beach
+        // The raft project opens when the shelter completes; the island work
+        // costs stretch the campaign, so drive to the built state
         const handle = island();
-        for (let minute = 0; minute < 1000; minute++) {
-            handle.world.step();
-        }
+        driveUntil(handle, () => sites(handle).sites().some((site) => site.blueprintId === 'raft' && site.state === 'built'), 20000);
         const raft = sites(handle).sites().find((site) => site.blueprintId === 'raft');
         expect(raft?.state).toBe('built');
         const tile = handle.world.cellAt(raft?.parent[0].x ?? 0, raft?.parent[0].y ?? 0);
@@ -360,9 +390,9 @@ describe('constructionPlugin — placement and the scale-0 footprint', () => {
 
     it('the mooring is SEA — no hull stands on a lake beach and no site on a drowned column (R4)', () => {
         const handle = island();
-        for (let minute = 0; minute < 1000; minute++) {
-            handle.world.step();
-        }
+        // Drive until the raft project has placed its site (the mooring
+        // gate is what's under test — the built state is not)
+        driveUntil(handle, () => sites(handle).sites().some((site) => site.blueprintId === 'raft'), 20000);
         // The cardinal water beside a tile (impassable columns only)
         const waterBeside = (x: number, y: number) =>
             [
@@ -406,20 +436,28 @@ describe('constructionPlugin — placement and the scale-0 footprint', () => {
 });
 
 describe('constructionPlugin — the autonomous staging and work', () => {
-    it('stages progressively past the bag size and builds only what is ready (shelter + raft by minute 1000)', () => {
+    it('stages progressively past the bag size and builds only what is ready (shelter + raft complete)', () => {
         const handle = island();
-        for (let minute = 0; minute < 1000; minute++) {
-            handle.world.step();
-        }
+        // The island work costs (240 + 480) stretch the campaign — drive to
+        // the end state (see driveUntil)
+        driveUntil(
+            handle,
+            () =>
+                sites(handle)
+                    .sites()
+                    .filter((site) => site.state === 'built' && (site.blueprintId === 'shelter' || site.blueprintId === 'raft'))
+                    .length === 2,
+            12000,
+        );
         // The shelter: staged wood 2 + thatch 2 (the thatch woven from four
-        // fronds the crew fetched and crafted), then 10 work minutes
+        // fronds the crew fetched and crafted), then 240 work minutes
         const shelter = sites(handle).sites().find((site) => site.blueprintId === 'shelter');
-        expect(shelter).toMatchObject({ state: 'built', work: 10 });
+        expect(shelter).toMatchObject({ state: 'built', work: 240 });
         expect(shelter?.delivered).toEqual({ wood: 2, thatch: 2 });
-        // The raft: wood 4 + rope 2 (two vine twists), 30 work minutes —
+        // The raft: wood 4 + rope 2 (two vine twists), 480 work minutes —
         // every unit ferried through the eight-unit bags
         const raft = sites(handle).sites().find((site) => site.blueprintId === 'raft');
-        expect(raft).toMatchObject({ state: 'built', work: 30 });
+        expect(raft).toMatchObject({ state: 'built', work: 480 });
         expect(raft?.delivered).toEqual({ wood: 4, rope: 2 });
         // The completion ledger, in plan order; the house project is live
         expect(handle.construction.completedBlueprints()).toEqual(['shelter', 'raft']);
@@ -429,25 +467,23 @@ describe('constructionPlugin — the autonomous staging and work', () => {
         // stages clamp at the shared registry) — and every site carries its
         // placement snapshot (`required` / `cost`, the shared change the
         // deliver effect and the whole staging demand read)
-        expect(handle.construction.blueprints.definitionOf('shelter')?.work).toBe(10);
-        expect(handle.construction.blueprints.definitionOf('raft')?.work).toBe(30);
+        expect(handle.construction.blueprints.definitionOf('shelter')?.work).toBe(240);
+        expect(handle.construction.blueprints.definitionOf('raft')?.work).toBe(480);
         expect(shelter?.required).toEqual([
             { item: 'wood', count: 2 },
             { item: 'thatch', count: 2 },
         ]);
-        expect(shelter?.cost).toBe(10);
+        expect(shelter?.cost).toBe(240);
         expect(raft?.required).toEqual([
             { item: 'wood', count: 4 },
             { item: 'rope', count: 2 },
         ]);
-        expect(raft?.cost).toBe(30);
+        expect(raft?.cost).toBe(480);
     });
 
     it('a completed footprint walls its cells off — the gate stays usable', () => {
         const handle = island();
-        for (let minute = 0; minute < 360; minute++) {
-            handle.world.step();
-        }
+        driveUntil(handle, () => sites(handle).sites().some((site) => site.blueprintId === 'shelter' && site.state === 'built'), 12000);
         const shelter = sites(handle).sites().find((site) => site.blueprintId === 'shelter');
         const cells = sites(handle).cellsOf(shelter?.id ?? '') ?? [];
         expect(cells.length).toBe(2);
@@ -464,6 +500,12 @@ describe('constructionPlugin — the autonomous staging and work', () => {
         if (!mover) {
             return;
         }
+        // The long drive leaves the rest of the cast STANDING on the finished
+        // shelter (the gate cell is a body's fine spot) — clear the field so
+        // the gate step tests the STRUCTURE rule, not body occupancy
+        Array.from(handle.world.actors.keys())
+            .filter((id) => id !== mover.id)
+            .forEach((id) => handle.world.despawn(id));
         handle.world.relocate(mover.id, { x: gateCell.parent[0].x, y: gateCell.parent[0].y, z: 0 });
         handle.tasks.cancel(mover.id);
         const sub = handle.world.subOf(mover.id);
@@ -476,9 +518,7 @@ describe('constructionPlugin — the autonomous staging and work', () => {
 
     it('a sheltered sleeper recovers faster — the shelter rest bonus', () => {
         const handle = island();
-        for (let minute = 0; minute < 400; minute++) {
-            handle.world.step();
-        }
+        driveUntil(handle, () => sites(handle).sites().some((site) => site.blueprintId === 'shelter' && site.state === 'built'), 12000);
         const shelter = sites(handle).sites().find((site) => site.blueprintId === 'shelter');
         const gate = (sites(handle).cellsOf(shelter?.id ?? '') ?? [])[0];
         expect(shelter?.state).toBe('built');
@@ -495,15 +535,21 @@ describe('constructionPlugin — the autonomous staging and work', () => {
         handle.world.relocateFine(sleeper.id, gate.x - (sub?.x ?? 0), gate.y - (sub?.y ?? 0));
         handle.tasks.cancel(sleeper.id);
         handle.needs.satisfy(sleeper.id, { hunger: -100, thirst: -100, energy: -80 });
+        // The energy at the park — the campaign minute the shelter finished
+        // at is a pacing result, so the pin is the EXACT DELTA of the ten
+        // sheltered sleep minutes, not an absolute reservoir value
+        const energyBefore = handle.needs.of(sleeper.id).energy;
         for (let minute = 0; minute < 10; minute++) {
             handle.world.step();
         }
         // The sleep restore (1.2/min) + the shelter bonus (0.5/min) − the
-        // decay (0.06/min): 1.64 per sleeping minute — the sheltered night
-        // is the safe night. Pinned from the run (the finite-stone campaign
-        // — the highland stone trek plus the tool-lead hold — shifted the
-        // 400-min campaign minutes again, so the pin moved).
-        expect(handle.needs.of(sleeper.id).energy).toBe(16.459999999999994);
+        // decay (0.06/min): 1.64 per sleeping minute. The exact ten-minute
+        // delta is 14.82 because the drained reservoir sits ON the zero
+        // floor: minute 1 the freshly queued sleep has not ticked yet (the
+        // decay clamps at the floor — delta 0), minute 2 the restore lands
+        // whole (1.70, the decay clamped), minutes 3–10 run the full 1.64 —
+        // 0 + 1.70 + 8 × 1.64 = 14.82. The sheltered night is the safe night
+        expect(handle.needs.of(sleeper.id).energy - energyBefore).toBeCloseTo(14.82, 10);
         expect(handle.tasks.taskOf(sleeper.id)?.kind).toBe('sleep');
     });
 });
@@ -511,9 +557,7 @@ describe('constructionPlugin — the autonomous staging and work', () => {
 describe('constructionPlugin — the inspection and render surfaces', () => {
     it('the tile inspector lists the site with its staging ledger and work progress', () => {
         const handle = island();
-        for (let minute = 0; minute < 360; minute++) {
-            handle.world.step();
-        }
+        driveUntil(handle, () => sites(handle).sites().some((site) => site.blueprintId === 'shelter' && site.state === 'built'), 12000);
         const shelter = sites(handle).sites().find((site) => site.blueprintId === 'shelter');
         const cells = sites(handle).cellsOf(shelter?.id ?? '') ?? [];
         const path = [{ x: cells[0].parent[0].x, y: cells[0].parent[0].y }];
@@ -525,8 +569,8 @@ describe('constructionPlugin — the inspection and render surfaces', () => {
                 label: 'Shelter',
                 state: 'built',
                 gate: true,
-                workDone: 10,
-                workTotal: 10,
+                workDone: 240,
+                workTotal: 240,
                 staged: [
                     { item: 'wood', have: 2, need: 2 },
                     { item: 'thatch', have: 2, need: 2 },
@@ -535,7 +579,7 @@ describe('constructionPlugin — the inspection and render surfaces', () => {
         ]);
         // The readable line the Tile Inspector renders
         expect(structureLine(summary?.structures[0] as never)).toBe(
-            'Shelter · built · gate · wood 2/2 · thatch 2/2 · work 10/10',
+            'Shelter · built · gate · wood 2/2 · thatch 2/2 · work 240/240',
         );
         // A tile without a site lists none
         const empty = tileSummary(handle, [{ x: -11, y: 0 }]);
@@ -544,9 +588,7 @@ describe('constructionPlugin — the inspection and render surfaces', () => {
 
     it('the scale views draw the footprint: fine cells in the interior, tile summaries at the island view', () => {
         const handle = island();
-        for (let minute = 0; minute < 360; minute++) {
-            handle.world.step();
-        }
+        driveUntil(handle, () => sites(handle).sites().some((site) => site.blueprintId === 'shelter' && site.state === 'built'), 12000);
         const shelter = sites(handle).sites().find((site) => site.blueprintId === 'shelter');
         const cells = sites(handle).cellsOf(shelter?.id ?? '') ?? [];
         const path = [{ x: cells[0].parent[0].x, y: cells[0].parent[0].y }];
@@ -569,12 +611,17 @@ describe('constructionPlugin — the inspection and render surfaces', () => {
         // the blueprint initial
         const unicodeFrame = handle.unicode.frameFor(slice as never);
         const wallTile = unicodeFrame.tiles.find((tile) => tile.x === cells[1].x && tile.y === cells[1].y);
+        // The wall cell hosts the builder who finished the shelter — the
+        // frame stacks the BODY above the structure (z 0 over z −1), exactly
+        // the draw order the comment above promises
         expect(wallTile?.glyphs).toEqual([
+            { id: 'actor-3', glyph: '🧍‍♀️', color: '#5cb85c', elevation: 0, kind: 'sentient', state: 'well', type: 'human' },
             { id: 'structure:s-1:1,0', glyph: '🏕️', color: '#e6e9ee', elevation: -1, kind: 'structure', type: 'shelter' },
         ]);
         const asciiFrame = handle.ascii.frameFor(slice as never);
         const asciiTile = asciiFrame.tiles.find((tile) => tile.x === cells[1].x && tile.y === cells[1].y);
         expect(asciiTile?.glyphs).toEqual([
+            { id: 'actor-3', glyph: 'C', color: '#5cb85c', elevation: 0, kind: 'sentient', state: 'well', type: 'human' },
             { id: 'structure:s-1:1,0', glyph: 'S', color: '#e6e9ee', elevation: -1, kind: 'structure', type: 'shelter' },
         ]);
     });
@@ -594,7 +641,7 @@ describe('constructionPlugin — the inspection and render surfaces', () => {
             { item: 'wood', count: 2 },
             { item: 'thatch', count: 2 },
         ]);
-        expect(sites(handle).siteOf('s-1')?.cost).toBe(10);
+        expect(sites(handle).siteOf('s-1')?.cost).toBe(240);
         // Stage one wood, park the worker on the footprint with a loaded bag
         // and queue the 1-minute delivery by hand
         sites(handle).deliver('s-1', 'wood', 1);
@@ -655,19 +702,18 @@ describe('constructionPlugin — the inspection and render surfaces', () => {
         // The original construction FINISHES on its snapshot: the god drains
         // the dead vine stock (the redefined requirement never applied to
         // s-1), the crew fetches the snapshot's thatch and works the
-        // snapshot's 10 minutes — the redefined cost (12) and the redefined
-        // wood 5 / vine 3 never touch the existing site
+        // snapshot's 240 minutes (the ISLAND work cost the site was charged
+        // at placement) — the redefined cost (12) and the redefined wood 5 /
+        // vine 3 never touch the existing site
         delete handle.inventory.of('actor-1').vine;
-        for (let minute = 0; minute < 600; minute++) {
-            handle.world.step();
-        }
-        expect(sites(handle).siteOf('s-1')).toMatchObject({ state: 'built', work: 10 });
+        driveUntil(handle, () => sites(handle).siteOf('s-1')?.state === 'built', 12000);
+        expect(sites(handle).siteOf('s-1')).toMatchObject({ state: 'built', work: 240 });
         expect(sites(handle).siteOf('s-1')?.delivered).toEqual({ wood: 2, thatch: 2 });
         expect(sites(handle).siteOf('s-1')?.required).toEqual([
             { item: 'wood', count: 2 },
             { item: 'thatch', count: 2 },
         ]);
-        expect(sites(handle).siteOf('s-1')?.cost).toBe(10);
+        expect(sites(handle).siteOf('s-1')?.cost).toBe(240);
         expect(handle.construction.completedBlueprints()).toEqual(['shelter']);
     });
 });
@@ -675,13 +721,16 @@ describe('constructionPlugin — the inspection and render surfaces', () => {
 describe('constructionPlugin — the vessels', () => {
     it('launches a built raft into the water beside its shore and moors the vessel', () => {
         const handle = island();
-        for (let minute = 0; minute < 1000; minute++) {
-            handle.world.step();
-        }
+        driveUntil(handle, () => sites(handle).sites().some((site) => site.blueprintId === 'raft' && site.state === 'built'), 20000);
         const raft = sites(handle).sites().find((site) => site.blueprintId === 'raft');
         expect(raft?.state).toBe('built');
         // The launch: the site frees (no refund — the materials sail with
-        // the hull) and the concrete output is the moored vessel record
+        // the hull) and the concrete output is the moored vessel record.
+        // `launchedAt` is the TICKER's elapsed world minutes at the launch
+        // (R5 — the clock authority, never a wall clock): the campaign
+        // minute the raft finished at is a pacing result, so the pin ties
+        // the vessel to the live clock exactly
+        const launchedAt = handle.world.ticker.elapsed();
         const vessel = handle.construction.launch(raft?.id ?? '');
         expect(vessel).toEqual({
             id: 'v-1',
@@ -690,7 +739,7 @@ describe('constructionPlugin — the vessels', () => {
             label: 'Raft',
             x: -7,
             y: 5,
-            launchedAt: 1000,
+            launchedAt,
         });
         expect(handle.construction.vessels()).toEqual([vessel]);
         expect(sites(handle).siteOf(raft?.id ?? '')).toBeUndefined();

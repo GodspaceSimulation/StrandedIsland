@@ -209,9 +209,12 @@ const STOCK_PROFILES: Record<string, EntityProfile> = {
         stats: { hunger: 0.1, thirst: 0.15, energy: 0.06, health: 0 },
         start: { hunger: 20, thirst: 20, energy: 100, health: 100 },
         attributes: { strength: 8, stamina: 10, speed: 10, dexterity: 10 },
-        // People walk, run, swim (slower than they walk), mine stone/iron
-        // and may one day craft — but they cannot fly
-        abilities: ['walk', 'run', 'swim', 'mine', 'craft'],
+        // People walk, run, swim (slower than they walk), mine stone/iron,
+        // fell trees ('chop' — the lumber/fell work gate), forage the
+        // cell's renewables ('forage' — the shared tile-gather work gate,
+        // plugins/tasks/gatherWork) and may one day craft — but they
+        // cannot fly
+        abilities: ['walk', 'run', 'swim', 'mine', 'chop', 'forage', 'craft'],
         movement: undefined as unknown as Partial<Record<MoveKind, EntityMove>>,
         // Eight units on the back — the shoulders the island assumes
         inventorySize: 8,
@@ -225,8 +228,10 @@ const STOCK_PROFILES: Record<string, EntityProfile> = {
         stats: { hunger: 0.02, thirst: 0.03, energy: 0.05, health: 0 },
         start: { hunger: 10, thirst: 10, energy: 100, health: 100 },
         attributes: { strength: 2, stamina: 8, speed: 10, dexterity: 6 },
-        // Flight AND a ground hop — the only flyers of the island
-        abilities: ['fly', 'walk'],
+        // Flight AND a ground hop — the only flyers of the island. The
+        // gull also forages: the hunger rung's underfoot gather is gated
+        // on 'forage' (the tile-gather work skill)
+        abilities: ['fly', 'walk', 'forage'],
         movement: undefined as unknown as Partial<Record<MoveKind, EntityMove>>,
         // A bird can carry 2–3 things in its beak and talons
         inventorySize: 3,
@@ -239,8 +244,9 @@ const STOCK_PROFILES: Record<string, EntityProfile> = {
         stats: { hunger: 0.03, thirst: 0, energy: 0.04, health: 0 },
         start: { hunger: 10, thirst: 0, energy: 100, health: 100 },
         attributes: { strength: 14, stamina: 12, speed: 14, dexterity: 4 },
-        // Built for the water and nothing else
-        abilities: ['swim'],
+        // Built for the water and nothing else — but it forages the shoal
+        // underfoot (the hunger rung's gather gate, 'forage')
+        abilities: ['swim', 'forage'],
         movement: undefined as unknown as Partial<Record<MoveKind, EntityMove>>,
         // A gullet, not a bag — one swallowed thing
         inventorySize: 1,
@@ -254,8 +260,9 @@ const STOCK_PROFILES: Record<string, EntityProfile> = {
         // Speed 6 — the lumbering gait: walk = 2 minutes a tile (the
         // predators plugin derives its roam pace from exactly this)
         attributes: { strength: 10, stamina: 12, speed: 6, dexterity: 4 },
-        // Ground legs only, sprint when pressed
-        abilities: ['walk', 'run'],
+        // Ground legs only, sprint when pressed; an omnivore forages the
+        // cell it stands on (the hunger rung's gather gate, 'forage')
+        abilities: ['walk', 'run', 'forage'],
         movement: undefined as unknown as Partial<Record<MoveKind, EntityMove>>,
         // Jaws can drag a couple of things
         inventorySize: 2,

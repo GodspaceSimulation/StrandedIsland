@@ -14,12 +14,22 @@
 // plugins/inventory/inventoryPlugin.ts dispose).
 
 import { createTaskLedger, type ActiveTask, type TaskBehaviour, type TaskLedger } from './taskLedger';
+import { createTileWorkLedger, type TileWorkLedger } from '@godspace/core';
 import type { WorldPlugin } from '@godspace/core';
 import type { World } from '../../engine/world';
 
 export type TasksPlugin = WorldPlugin<World> & {
     /** The raw ledger (see taskLedger.ts) — behaviour registration, queues, tick. */
     ledger: TaskLedger;
+    /**
+     * THE TILE WORK LEDGER (@godspace/core src/work) — the persistent
+     * SHARED labor record per tile (felling a tree is many minutes several
+     * skilled entities contribute to; the work survives every actor's
+     * death, abort and walk-away). The scheduler counts WHO does WHAT next;
+     * this counts what the WORLD remembers. Lumber's chop and construction's
+     * fell both feed it, keyed `tileWorkKey(x, y, 'chop')`.
+     */
+    tileWork: TileWorkLedger;
     /** The actor's in-progress task (the queue head), or undefined. */
     taskOf(actorId: string): ActiveTask | undefined;
     /** Whether the actor has at least one queued task. */
@@ -40,6 +50,10 @@ export type TasksPlugin = WorldPlugin<World> & {
 
 export const tasksPlugin = (): TasksPlugin => {
     const ledger = createTaskLedger();
+    // The shared tile-work ledger (see the TasksPlugin type) — one job per
+    // tile per kind, standing across actors; the lumber/construction plugins
+    // feed it and the tile UI reads it
+    const tileWork = createTileWorkLedger();
     // The despawn subscription (wired in setup) — the handle the dispose
     // hook tears down again
     let unsubscribe: (() => void) | null = null;
@@ -49,6 +63,8 @@ export const tasksPlugin = (): TasksPlugin => {
         label: 'Task Ledger',
 
         ledger,
+
+        tileWork,
 
         // Passthroughs — the roster is the convenient entry point, the ledger
         // the raw one (tests and the god-view may read either)
@@ -84,6 +100,10 @@ export const tasksPlugin = (): TasksPlugin => {
             unsubscribe?.();
             unsubscribe = null;
             ledger.clear();
+            // The standing tile work goes with the environment too — a
+            // swapped-out world never inherits the old world's half-felled
+            // trees
+            tileWork.clear();
         },
 
         // One world-minute per tick hook call (engine/world.ts sub-stepping) —

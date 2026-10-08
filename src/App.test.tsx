@@ -1,4 +1,4 @@
-﻿// Tests for the god-view App (src/App.tsx).
+// Tests for the god-view App (src/App.tsx).
 // Every test pins <App seed={7} /> so assertions run against the
 // deterministic seed-7 island (default 25×17, centered coordinates — (0, 0)
 // is the canvas middle); the random-roll behaviour of an unpinned reload
@@ -32,7 +32,7 @@ describe('App', () => {
         const grid = screen.getByTestId('world-grid-unicode');
         expect((grid.children[212] as HTMLElement).textContent).toBe('🐦');
         expect((grid.children[212] as HTMLElement).title).toContain('Kiki · flying-2 · z 2');
-        // Ael came ashore at the island edge (−11,0) — tile (0+8)×25+(−11+12)
+        // Ael came ashore at the island edge (-11,0) — tile (0+8)×25+(-11+12)
         // = 201, the GENDERED human emoji (his profile sex is male), no altitude
         expect((grid.children[201] as HTMLElement).textContent).toBe('🧍‍♂️');
         expect((grid.children[201] as HTMLElement).title).toContain('Ael · well');
@@ -40,7 +40,7 @@ describe('App', () => {
 
     it('every castaway row carries the compact 4-bar wellbeing overview', () => {
         render(<App seed={7} />);
-        // Starting needs: hunger 20, thirst 20, energy 100, health 100 →
+        // Starting needs: hunger 20, thirst 20, energy 100, health 100 ?
         // wellbeing bars invert the pressure: fullness 80, hydration 80,
         // energy 100, health 100
         const stats = screen.getByTestId('actor-stats-Ael');
@@ -121,7 +121,7 @@ describe('App', () => {
             'Strength8', 'Stamina10', 'Speed10', 'Dexterity10',
         ]);
         // The ABILITIES — the species' capability set (no fly for people)
-        expect(screen.getByTestId('actor-abilities').textContent).toBe('walkrunswimminecraft');
+        expect(screen.getByTestId('actor-abilities').textContent).toBe('walkrunswimminechopforagecraft');
         // The bag's SIZE — the species-defined capacity with the kit inside
         expect(screen.getByTestId('actor-carry').textContent).toBe('Carries 3 / 8');
         // Deselect clears the inspector entirely
@@ -204,7 +204,7 @@ describe('App', () => {
             'Strength2', 'Stamina8', 'Speed10', 'Dexterity6',
         ]);
         // The bird's abilities: flight AND the ground hop, nothing else
-        expect(screen.getByTestId('actor-abilities').textContent).toBe('flywalk');
+        expect(screen.getByTestId('actor-abilities').textContent).toBe('flywalkforage');
         // The beak-bag: three units of carry, empty at birth
         expect(screen.getByTestId('actor-carry').textContent).toBe('Carries 0 / 3');
         expect(screen.getByTestId('actor-inventory').textContent).toContain('Empty hands.');
@@ -219,13 +219,13 @@ describe('App', () => {
         fireEvent.click(screen.getByTestId('unicode-tile-0-0'));
         fireEvent.click(screen.getByText('Kiki — bird · flying-2 · z 2'));
         expect(screen.getByTestId('actor-condition').textContent).toBe('Kiki · well');
-        expect(screen.getByTestId('actor-abilities').textContent).toBe('flywalk');
+        expect(screen.getByTestId('actor-abilities').textContent).toBe('flywalkforage');
     });
 
     it('the female profile reads in the inspector and draws the female emoji', () => {
         render(<App seed={7} />);
-        // Cove is the cast's woman: ♀ in the Entity Inspector, 🧍‍♀️ on the
-        // unicode canvas at (−2,5) — tile (5+8)×25+(−2+12) = 335
+// Cove is the cast's woman: ♀ in the Entity Inspector, 🧍‍♀️ on the
+        // unicode canvas at (-2,5) — tile (5+8)×25+(-2+12) = 335
         fireEvent.click(screen.getByTestId('actor-chip-Cove'));
         expect(screen.getByTestId('actor-profile').textContent).toBe('♀ female');
         expect(screen.getByTestId('world-grid-unicode').children[335].textContent).toBe('🧍‍♀️');
@@ -236,7 +236,7 @@ describe('App', () => {
         // for encounters): one minute in, Ael and Cove meet and a scenario
         // fires from the one-shot deck
         render(<App seed={7} terrain={{ width: 11, height: 7 }} />);
-        // Fresh world (tick 0): every pair is unacquainted → neutral (0)
+        // Fresh world (tick 0): every pair is unacquainted ? neutral (0)
         fireEvent.click(screen.getByTestId('actor-chip-Ael'));
         const fresh = screen.getByTestId('actor-relations');
         expect(
@@ -248,7 +248,7 @@ describe('App', () => {
         // pattern differs from the pre-construction reference. At the 0.8
         // water threshold the terrain/roll stream shifted and only TWO
         // scenarios play, both binding Ael to Cove: Spear Lessons +12
-        // (minute 1) and Quiet Distrust −8 (minute 46); the drift nets Ael's
+        // (minute 1) and Quiet Distrust -8 (minute 46); the drift nets Ael's
         // bonds to 0 / 3 / 0 — the DISPLAYED values round to 0 / 3 / 0.
         for (let tick = 0; tick < 60; tick++) {
             fireEvent.click(screen.getByTestId('step-button'));
@@ -288,7 +288,7 @@ describe('App', () => {
         // Scale 1 (the island) — one tick is 1 minute, the scale line names both
         expect(screen.getByTestId('tick-label').textContent).toContain('Scale 1');
         expect(screen.getByTestId('tick-label').textContent).toContain('× 1 min');
-        // Zoom into Ael's shore tile (−11,0): scale 0, the tile interior —
+        // Zoom into Ael's shore tile (-11,0): scale 0, the tile interior —
         // the tick is UNCHANGED (the view ladder never re-times the clock)
         fireEvent.click(screen.getByTestId('unicode-tile--11-0'));
         fireEvent.click(screen.getByTestId('zoom-toggle'));
@@ -309,7 +309,7 @@ describe('App', () => {
         render(<App seed={7} />);
         // Before any click the Tile Inspector waits for a pick
         expect(screen.getByTestId('tile-empty').textContent).toBe('Click a tile to inspect it.');
-        // Tile (−5,−7) — a quiet beach: no glyph. It surfaces as SAND (the
+        // Tile (-5,-7) — a quiet beach: no glyph. It surfaces as SAND (the
         // unlimited deposit decides the tile's look) with TWO coconuts on
         // the ground (the abundance tuning). Clicked on the default unicode
         // board.
@@ -339,7 +339,7 @@ describe('App', () => {
 
     it('clicking a sea tile shows the submerged voxel column with its fish stock', () => {
         render(<App seed={7} />);
-        // Tile (−12,−8) — the top-left corner: shallow seabed under one
+        // Tile (-12,-8) — the top-left corner: shallow seabed under one
         // water voxel, fish swim here; sea columns carry no deposits, so
         // the tile keeps its plain biome surface
         fireEvent.click(screen.getByTestId('unicode-tile--12--8'));
@@ -360,7 +360,7 @@ describe('App', () => {
 
     it('clicking a castaway tile opens both the tile inspector and the actor inspector', () => {
         render(<App seed={7} />);
-        // Tile (−11,0) — Ael's shore landing spot, unlimited sand + TWO
+        // Tile (-11,0) — Ael's shore landing spot, unlimited sand + TWO
         // coconuts on the ground (the abundance tuning)
         fireEvent.click(screen.getByTestId('unicode-tile--11-0'));
         // Tile layer: terrain + stock + Ael as the resident. Scale-0
@@ -410,7 +410,7 @@ describe('App', () => {
     it('the tile inspector follows every subsequent click', () => {
         render(<App seed={7} />);
         // First inspect Dune's landing spot (the rim-ranked pick moved with
-        // the R4 basins — (−5,−1) now)…
+        // the R4 basins — (-5,-1) now)…
         fireEvent.click(screen.getByTestId('unicode-tile--5--1'));
         expect(screen.getByTestId('tile-position').textContent).toBe('(-5, -1) · grass');
         expect(
@@ -461,7 +461,7 @@ describe('App', () => {
             );
             return rules.find((rule) => rule.includes('border:')) ?? '';
         };
-        // An ENTITY pick (roster chip → Ael selected): his unicode tile
+        // An ENTITY pick (roster chip ? Ael selected): his unicode tile
         // wears the TEAL accent border (the Entity Inspector's subject)
         fireEvent.click(screen.getByTestId('actor-chip-Ael'));
         const ael = screen.getByTestId('unicode-tile--11-0');
@@ -481,14 +481,14 @@ describe('App', () => {
         expect(ruleOf(ael)).toContain('border:2px solid #63b995');
     });
 
-    it('the ONE zoom toggle flips the two-rung ladder: island view ↔ tile interior', () => {
+    it('the ONE zoom toggle flips the two-rung ladder: island view ? tile interior', () => {
         render(<App seed={7} />);
         // Scale 1 — the island view (the default). There is no wider view
         // above the island, and zooming in needs an inspected tile (its
         // target) — with nothing picked the single toggle stands off
         expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 1');
         expect((screen.getByTestId('zoom-toggle') as HTMLButtonElement).disabled).toBe(true);
-        // Ael's shore tile (−11, 0) becomes the zoom target
+        // Ael's shore tile (-11, 0) becomes the zoom target
         fireEvent.click(screen.getByTestId('unicode-tile--11-0'));
         expect((screen.getByTestId('zoom-toggle') as HTMLButtonElement).disabled).toBe(false);
         // Toggle: the SAME unicode tab renders the tile's sub-grid — the
@@ -502,12 +502,12 @@ describe('App', () => {
         expect(screen.getByTestId('tile-position').textContent).toBe('(-11, 0) · (0, 0) · sand');
         // The zoomed tiles are the beach's interior: every subtile carries
         // the unlimited sand — the beach's look survives the zoom — and Ael
-        // stands at his fine spot (−8, 0) inside his tile's sub-grid
+        // stands at his fine spot (-8, 0) inside his tile's sub-grid
         const aelSubtile = screen.getByTestId('unicode-tile--8-0');
         expect(aelSubtile.textContent).toBe('🧍‍♂️');
         expect(aelSubtile.title).toContain('Ael · well');
         // The ground items become VISIBLE canvas objects in the interior
-        // view: the coconut lies at its scattered subtile (−11, 5), drawn as
+        // view: the coconut lies at its scattered subtile (-11, 5), drawn as
         // its emoji
         const coconut = screen.getByTestId('unicode-tile--11-5');
         expect(coconut.textContent).toBe('🥥');
@@ -566,16 +566,16 @@ describe('App', () => {
 
     it('ground items appear as canvas objects only in the interior view (scale 0)', () => {
         render(<App seed={7} />);
-        // Scale 1 (the island view): the ingressed meadow tile (1,−2)
+        // Scale 1 (the island view): the ingressed meadow tile (1,-2)
         // carries its localized tree fringe — the tree decoration draws at
         // the island view too (the fringe is a real standing stand; the
-        // 0.85-era (1,−4) tile became a lake at the lowered 0.8 threshold)
+        // 0.85-era (1,-4) tile became a lake at the lowered 0.8 threshold)
         expect((screen.getByTestId('unicode-tile-1--2').textContent)).toBe('🌳');
         // A BARE meadow tile shows nothing but terrain — no woods beside
-        // (0,−3), no fringe, no decoration (the berries stay list-only)
+        // (0,-3), no fringe, no decoration (the berries stay list-only)
         expect((screen.getByTestId('unicode-tile-0--3').textContent)).toBe('');
         // Zoom into the meadow: the interior view (scale 0) — its two berries
-        // stand at their scattered subtiles (1,−3) and (11,0) as visible
+        // stand at their scattered subtiles (1,-3) and (11,0) as visible
         // objects (the 0.8 berry scatter, regrow-capped)
         fireEvent.click(screen.getByTestId('unicode-tile-1--2'));
         fireEvent.click(screen.getByTestId('zoom-toggle'));
@@ -587,7 +587,7 @@ describe('App', () => {
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
         ).toEqual(['1 Berry']);
-        // Kiki zoomed at her own tile stands at her fine spot (4, −6) — no
+        // Kiki zoomed at her own tile stands at her fine spot (4, -6) — no
         // altitude superscript (the stone stock never becomes a canvas
         // object: tile-resource units ARE the subtile surfaces)
         fireEvent.click(screen.getByTestId('zoom-toggle'));
@@ -605,10 +605,10 @@ describe('App', () => {
 
     it('treed tiles draw the tree icon in unicode and the vector tree in svg', () => {
         render(<App seed={7} />);
-        // A treed tile with nobody standing on it: (4,−5) → tile
-        // (−5+8)×25+(4+12) = 91 — the unicode tab draws the 🌳 tree emoji
+        // A treed tile with nobody standing on it: (4,-5) ? tile
+        // (-5+8)×25+(4+12) = 91 — the unicode tab draws the 🌳 tree emoji
         // (the woods, visible at last; the decoration rides the frame data
-        // the canvas plugins expose; the 0.85-era (3,−6) tile 65 became a
+        // the canvas plugins expose; the 0.85-era (3,-6) tile 65 became a
         // beach). The tile's neighborhood-counted stand reads 383 trees at
         // T2's densified edge band.
         const treed = screen.getByTestId('unicode-tile-4--5');
@@ -616,13 +616,13 @@ describe('App', () => {
         expect(treed.querySelector('[data-testid="tree-icon-unicode"]')).not.toBeNull();
         expect(treed.title).toContain('tree ×383');
         // A castaway standing on his landing tile: Dune came ashore on
-        // (−5,−1) — the entity wins the tile, no tree icon
+        // (-5,-1) — the entity wins the tile, no tree icon
         expect(screen.getByTestId('unicode-tile--5--1').textContent).toBe('🧍‍♂️');
         // A bare meadow tile draws nothing — terrain is color-only (the
-        // no-flood rule the decorations never break; (0,−3) has no woods
+        // no-flood rule the decorations never break; (0,-3) has no woods
         // beside it, so no ingress fringe and no tree)
         expect(screen.getByTestId('unicode-tile-0--3').textContent).toBe('');
-        // ── The SVG twin — the vector tree icon ──────────────────────────
+        // -- The SVG twin — the vector tree icon --------------------------
         fireEvent.click(screen.getByTestId('canvas-tab-svg'));
         const board = screen.getByTestId('world-grid-svg') as SVGSVGElement;
         const tiles = board.querySelectorAll('g');
@@ -657,16 +657,16 @@ describe('App', () => {
             }
             return out;
         };
-        // ── The coverage fade (unicode) ─────────────────────────────────────
-        // The sparse ingress fringe (1,−2): 14 trees across the 425-cell
-        // sub-grid → coverage 0.033 → the 0.1 floor (a lone stand still
+        // -- The coverage fade (unicode) -------------------------------------
+        // The sparse ingress fringe (1,-2): 14 trees across the 425-cell
+        // sub-grid ? coverage 0.033 ? the 0.1 floor (a lone stand still
         // marks the tile)
         const fringe = screen
             .getByTestId('unicode-tile-1--2')
             .querySelector('[data-testid="tree-icon-unicode"]') as HTMLElement;
         expect(fringe.textContent).toBe('🌳');
         expect(ruleFor(fringe.className)).toContain('opacity:0.1');
-        // The dense edge wood (4,−5): 383 trees → coverage 0.901 → clamped
+        // The dense edge wood (4,-5): 383 trees ? coverage 0.901 ? clamped
         // to FULL strength (the fade only ever pulls sparse stands down)
         const dense = screen
             .getByTestId('unicode-tile-4--5')
@@ -679,17 +679,17 @@ describe('App', () => {
             .querySelector('span') as HTMLElement;
         expect(entity.textContent).toBe('🧍‍♂️');
         expect(ruleFor(entity.className)).not.toContain('opacity');
-        // ── The coverage fade (svg twin) ────────────────────────────────────
+        // -- The coverage fade (svg twin) ------------------------------------
         fireEvent.click(screen.getByTestId('canvas-tab-svg'));
         const board = screen.getByTestId('world-grid-svg') as SVGSVGElement;
         const tiles = board.querySelectorAll('g');
-        // (1,−2) → tile (−2+8)×25+(1+12) = 163 — the vector canopy carries
-        // the same 0.1 fade; (4,−5) → tile 91 stands at full 1
+        // (1,-2) ? tile (-2+8)×25+(1+12) = 163 — the vector canopy carries
+        // the same 0.1 fade; (4,-5) ? tile 91 stands at full 1
         expect(tiles[163].querySelector('[data-testid="tree-icon-svg-canopy"]')?.getAttribute('opacity')).toBe('0.1');
         expect(tiles[91].querySelector('[data-testid="tree-icon-svg-canopy"]')?.getAttribute('opacity')).toBe('1');
-        // ── The rock icon (unicode) ─────────────────────────────────────────
+        // -- The rock icon (unicode) -----------------------------------------
         fireEvent.click(screen.getByTestId('canvas-tab-unicode'));
-        // The highland rock site (−1,−1) — 3 standing stones, nobody on it:
+        // The highland rock site (-1,-1) — 3 standing stones, nobody on it:
         // the 🪨 marker stands while the stock does (the BINARY rule — no
         // fade: the stock-driven drop is its honesty mechanism)
         const rock = screen.getByTestId('unicode-tile--1--1');
@@ -697,10 +697,10 @@ describe('App', () => {
         const rockIcon = rock.querySelector('[data-testid="rock-icon-unicode"]') as HTMLElement;
         expect(rockIcon).not.toBeNull();
         expect(ruleFor(rockIcon.className)).not.toContain('opacity');
-        // ── The rock icon (svg twin) ────────────────────────────────────────
+        // -- The rock icon (svg twin) ----------------------------------------
         fireEvent.click(screen.getByTestId('canvas-tab-svg'));
         const svgTiles = (screen.getByTestId('world-grid-svg') as SVGSVGElement).querySelectorAll('g');
-        // (−1,−1) → tile (−1+8)×25+(−1+12) = 186 — the vector rock: main
+        // (-1,-1) ? tile (-1+8)×25+(-1+12) = 186 — the vector rock: main
         // stone + pebble, no text glyph
         expect(svgTiles[186].querySelector('[data-testid="rock-icon-svg-main"]')).not.toBeNull();
         expect(svgTiles[186].querySelector('[data-testid="rock-icon-svg-pebble"]')).not.toBeNull();
@@ -722,14 +722,14 @@ describe('App', () => {
             }
             return out;
         };
-        // Zoom into the sparse fringe (1,−2) — at the island view its icon
+        // Zoom into the sparse fringe (1,-2) — at the island view its icon
         // fades to the 0.1 floor…
         fireEvent.click(screen.getByTestId('unicode-tile-1--2'));
         fireEvent.click(screen.getByTestId('zoom-toggle'));
         expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 0');
         // …but its fine cells are trees BY CONSTRUCTION (the mirror scatters
         // exactly the deposited units, one per cell) — the drawn tree at the
-        // ingress spot (11,−8) stands at FULL strength: no opacity rule on
+        // ingress spot (11,-8) stands at FULL strength: no opacity rule on
         // its marker at all
         const fine = screen
             .getByTestId('unicode-tile-11--8')
@@ -753,10 +753,10 @@ describe('App', () => {
         expect(screen.queryByTestId('world-grid-svg')).toBeNull();
         expect(screen.queryByTestId('data-tables')).toBeNull();
 
-        // ── The default unicode view ─────────────────────────────────────
+        // -- The default unicode view -------------------------------------
         // Same 425 tiles at the emoji tile size; Kiki renders as the bird
         // emoji at the center (0,0) — tile 212 (no altitude superscript);
-        // Ael as the GENDERED human emoji (male) at his shore spot (−11,0)
+        // Ael as the GENDERED human emoji (male) at his shore spot (-11,0)
         // — tile 201
         const uni = screen.getByTestId('world-grid-unicode');
         expect(uni.children.length).toBe(425);
@@ -769,12 +769,12 @@ describe('App', () => {
         fireEvent.click(screen.getByTestId('unicode-tile--11-0'));
         expect(screen.getByTestId('actor-condition').textContent).toBe('Ael · well');
 
-        // ── ASCII tab — the letter twin ──────────────────────────────────
+        // -- ASCII tab — the letter twin ----------------------------------
         fireEvent.click(screen.getByTestId('canvas-tab-ascii'));
         expect(screen.getByTestId('world-grid').children.length).toBe(425);
         expect((screen.getByTestId('world-grid').children[201] as HTMLElement).textContent).toBe('A');
 
-        // ── SVG tab — the vector twin ─────────────────────────────────────
+        // -- SVG tab — the vector twin -------------------------------------
         fireEvent.click(screen.getByTestId('canvas-tab-svg'));
         const board = screen.getByTestId('world-grid-svg') as SVGSVGElement;
         // The viewBox spans 25×26 × 17×26 user units — the SAME 26px tile
@@ -790,7 +790,7 @@ describe('App', () => {
         expect(tiles[212].querySelector('text')?.textContent).toBe('🐦');
         // Empty sea tiles draw NO text — terrain shows through the rect fill
         // alone (the flood fix); the fill is the exact biome palette color
-        // (top-left corner: the shallows of tile (−12, −8))
+        // (top-left corner: the shallows of tile (-12, -8))
         expect(tiles[0].querySelector('text')).toBeNull();
         expect(tiles[0].querySelector('rect')?.getAttribute('fill')).toBe('#265d7d');
         // Native SVG hover notes ride every tile group
@@ -799,7 +799,7 @@ describe('App', () => {
         fireEvent.click(screen.getByTestId('svg-tile--11-0'));
         expect(screen.getByTestId('actor-condition').textContent).toBe('Ael · well');
 
-        // ── Data tab — the plain-tables view ──────────────────────────────
+        // -- Data tab — the plain-tables view ------------------------------
         fireEvent.click(screen.getByTestId('canvas-tab-data'));
         expect(screen.queryByTestId('world-grid')).toBeNull();
         const tables = screen.getByTestId('data-tables');
@@ -817,7 +817,7 @@ describe('App', () => {
         expect(screen.getByTestId('data-table-terrain').textContent).toContain('lake');
         expect(screen.getByTestId('data-table-canvas').textContent).toContain('425');
 
-        // ── Back to Unicode — the default view ────────────────────────────
+        // -- Back to Unicode — the default view ----------------------------
         fireEvent.click(screen.getByTestId('canvas-tab-unicode'));
         expect(screen.getByTestId('world-grid-unicode').children.length).toBe(425);
         expect((screen.getByTestId('world-grid-unicode').children[201] as HTMLElement).textContent).toBe('🧍‍♂️');
@@ -884,10 +884,10 @@ describe('App', () => {
         expect(screen.getByTestId('tile-forest').textContent).toBe('14 trees · 61 wood standing');
         fireEvent.click(screen.getByTestId('unicode-tile-0--3'));
         expect(screen.queryByTestId('tile-forest')).toBeNull();
-        // ── Scale 0: the tree card on the inspected fine spot ────────────
+        // -- Scale 0: the tree card on the inspected fine spot ------------
         fireEvent.click(screen.getByTestId('unicode-tile-4--5'));
         fireEvent.click(screen.getByTestId('zoom-toggle'));
-        // A tree of this wood stands at the fine spot (4,−7): the single
+        // A tree of this wood stands at the fine spot (4,-7): the single
         // tree in view reads "1 tree" (singular) with its standing wood
         // count ONCE — the card's pool is the standing count — and the
         // card (tile-forest-tree) adds only the age (in years) and the
@@ -900,8 +900,8 @@ describe('App', () => {
         expect(screen.getByTestId('tile-forest-tree').textContent).not.toContain('wood');
         // A bare fine cell of the same wood carries no card — the forest
         // layer resolves only for a TREED fine spot, so the row drops out.
-        // The first bare spot row-major on the densified (4,−5) stand is
-        // (−2,−8) (the (9,5) spot the 319-tree stand left bare now stands
+        // The first bare spot row-major on the densified (4,-5) stand is
+        // (-2,-8) (the (9,5) spot the 319-tree stand left bare now stands
         // treed)
         fireEvent.click(screen.getByTestId('unicode-tile--2--8'));
         expect(screen.queryByTestId('tile-forest')).toBeNull();
@@ -909,7 +909,7 @@ describe('App', () => {
 
     it('the header reroll regenerates the whole world — fresh seed, picked size', () => {
         // Pin the Math.random stream so both rolls are deterministic:
-        // 0.123456 → the INITIAL seed 123456, 0.654321 → the REROLL seed
+        // 0.123456 ? the INITIAL seed 123456, 0.654321 ? the REROLL seed
         // 654321 (a reroll NEVER reuses the previous seed)
         const roll = vi.spyOn(Math, 'random').mockReturnValue(0.123456);
         try {
@@ -949,14 +949,14 @@ describe('App', () => {
 
     it('every reload rolls a completely random seed when none is pinned', () => {
         // Pin the Math.random stream so the roll is deterministic in the
-        // test: 0.123456 × 1000000 → seed 123456
+        // test: 0.123456 × 1000000 ? seed 123456
         const roll = vi.spyOn(Math, 'random').mockReturnValue(0.123456);
         try {
             const first = render(<App />);
             // The rolled seed shows in the header subtitle
             expect(screen.getByTestId('world-seed').textContent).toBe('123456');
             // A remount is a reload: the next roll draws a different value
-            // (0.654321 → seed 654321) → a different island
+            // (0.654321 ? seed 654321) ? a different island
             roll.mockReturnValue(0.654321);
             first.unmount();
             render(<App />);
@@ -967,7 +967,7 @@ describe('App', () => {
         }
     });
 
-    // ── HOVER SELECTION — the god inspecting no longer needs a click ────────
+    // -- HOVER SELECTION — the god inspecting no longer needs a click --------
     //
     // Features (features/worldGrid.tsx): each tile renderer (ascii Cell,
     // unicode Cell, svg tile group) wires onMouseEnter to the shared
@@ -988,10 +988,10 @@ describe('App', () => {
     // React-managed node, assuming the out event already dispatched the
     // enter):
     //   - the pointer entering a tile from OUTSIDE the board is a plain
-    //     mouseover → fireEvent.mouseOver(tile) (no relatedTarget)
+    //     mouseover ? fireEvent.mouseOver(tile) (no relatedTarget)
     //   - moving between two tiles is driven by the OUT event of the tile
-    //     being left → fireEvent.mouseOut(a, { relatedTarget: b })
-    //   - leaving the board → fireEvent.mouseOut(tile, { relatedTarget:
+    //     being left ? fireEvent.mouseOut(a, { relatedTarget: b })
+    //   - leaving the board ? fireEvent.mouseOut(tile, { relatedTarget:
     //     someNonTileElement }) — the product fires no clear at all
 
     // R1 — the hover pick drives the Tile Inspector and the canvas highlight
@@ -1132,7 +1132,7 @@ describe('App', () => {
 
     // R2/R3 — hover selects the inspected tile AND the zoom target without
     // autozooming and without selecting the actor; the explicit button then
-    // zooms the hover target (seed-7 exact lineage: hover (−11,0) → zoom →
+    // zooms the hover target (seed-7 exact lineage: hover (-11,0) ? zoom ?
     // the pinned '(-11, 0) · (0, 0) · sand' interior line)
     it('hovering arms the zoom target without zooming and without selecting the actor; the button zooms the hover target', () => {
         render(<App seed={7} />);
@@ -1170,7 +1170,7 @@ describe('App', () => {
     });
 
     // R2 — the wheel relays on the hover target too: no click was ever
-    // involved (seed-7 exact: hover (−12,−8) → '(-12, -8) · shallows', and
+    // involved (seed-7 exact: hover (-12,-8) ? '(-12, -8) · shallows', and
     // its exact interior line is '(-12, -8) · (0, 0) · shallows')
     it('the wheel zoom rides the hover target — no click involved', () => {
         render(<App seed={7} />);
@@ -1289,7 +1289,7 @@ describe('App', () => {
         const ael = screen.getByTestId('unicode-tile--11-0');
         const sea = screen.getByTestId('unicode-tile--12--8');
         const bar = screen.getByTestId('scale-controls');
-        // First hover: one real write (null → [−11,0]) → exactly one extra render
+        // First hover: one real write (null ? [-11,0]) ? exactly one extra render
         fireEvent.mouseOver(ael);
         expect(screen.getByTestId('tile-position').textContent).toBe('(-11, 0) · sand');
         expect(renders).toBe(2);
@@ -1303,7 +1303,7 @@ describe('App', () => {
         expect(screen.getByTestId('tile-position').textContent).toBe('(-12, -8) · shallows');
         expect(renders).toBe(3);
         // Re-enter the SAME tile from outside: the handler fires, the path is
-        // structurally identical → the guard skips the write → NO extra render
+        // structurally identical ? the guard skips the write ? NO extra render
         fireEvent.mouseOver(sea);
         expect(screen.getByTestId('tile-position').textContent).toBe('(-12, -8) · shallows');
         expect(renders).toBe(3);
@@ -1311,5 +1311,116 @@ describe('App', () => {
         fireEvent.mouseOver(screen.getByTestId('unicode-tile--5--7'));
         expect(screen.getByTestId('tile-position').textContent).toBe('(-5, -7) · sand');
         expect(renders).toBe(4);
+    });
+});
+
+// R6 — the standing-job progress bars: the shared tile-work ledger and the
+// live site build work draw role="progressbar" tracks on every canvas board
+// (ascii/unicode DOM bars, SVG strips) and in the Tile Inspector. These
+// render tests drive the deterministic seed-7 march through a handle the
+// test owns (the wounded-body pattern above) — the bars are read from the
+// LIVE DOM (aria semantics), not from source strings.
+describe('App — the standing-job progress bars (R6)', () => {
+    it('the live chop job draws an accessible bar on the unicode board, updates per beat, and reads in the Tile Inspector', () => {
+        const island = createIslandWorld({ seed: 7 });
+        render(<Dashboard island={island} onReroll={() => undefined} />);
+        // Minute 1: the woodless cast opens the shared chop job on the
+        // treed tile (-2,5) — 15 work-minutes, nothing banked yet
+        act(() => {
+            island.world.step();
+            bumpRevision();
+        });
+        const bar = screen.getByTestId('work-bar--2-5-chop');
+        expect(bar.getAttribute('role')).toBe('progressbar');
+        expect(bar.getAttribute('aria-valuenow')).toBe('0');
+        expect(bar.getAttribute('aria-valuemin')).toBe('0');
+        expect(bar.getAttribute('aria-valuemax')).toBe('15');
+        expect(bar.getAttribute('aria-label')).toBe('chop 0/15');
+        // Minute 2: a beat completes — the SAME bar advances live
+        act(() => {
+            island.world.step();
+            bumpRevision();
+        });
+        expect(screen.getByTestId('work-bar--2-5-chop').getAttribute('aria-valuenow')).toBe('1');
+        expect(screen.getByTestId('work-bar--2-5-chop').getAttribute('aria-label')).toBe('chop 1/15');
+        // The Tile Inspector reads the same standing job: the exact line
+        // beside a track carrying the same aria triple
+        fireEvent.click(screen.getByTestId('unicode-tile--2-5'));
+        expect(screen.getByTestId('tile-work-chop').textContent).toBe('chop 1/15');
+        const track = (
+            screen.getByTestId('tile-work-chop').parentElement as HTMLElement
+        ).querySelector('[role="progressbar"]') as HTMLElement;
+        expect(track.getAttribute('aria-valuenow')).toBe('1');
+        expect(track.getAttribute('aria-valuemin')).toBe('0');
+        expect(track.getAttribute('aria-valuemax')).toBe('15');
+        expect(track.getAttribute('aria-label')).toBe('chop 1/15');
+    });
+
+    it('the ascii and SVG boards draw the chop bar and the live site progress; the SVG strip grows with the work', () => {
+        const island = createIslandWorld({ seed: 7 });
+        render(<Dashboard island={island} onReroll={() => undefined} />);
+        act(() => {
+            island.world.step();
+            bumpRevision();
+        });
+        // Minute 1 also STAGES the shelter on (0,0) — the site's 240-unit
+        // build work reads as a second standing bar beside the chop
+        // -- the ascii board: the same DOM track as the unicode view --
+        fireEvent.click(screen.getByTestId('canvas-tab-ascii'));
+        const asciiChop = screen.getByTestId('work-bar--2-5-chop');
+        expect(asciiChop.getAttribute('role')).toBe('progressbar');
+        expect(asciiChop.getAttribute('aria-valuenow')).toBe('0');
+        expect(asciiChop.getAttribute('aria-valuemax')).toBe('15');
+        const asciiSite = screen.getByTestId('work-bar-0-0-shelter');
+        expect(asciiSite.getAttribute('aria-valuenow')).toBe('0');
+        expect(asciiSite.getAttribute('aria-valuemax')).toBe('240');
+        expect(asciiSite.getAttribute('aria-label')).toBe('shelter 0/240');
+        // -- the SVG board: strips carrying the accessible <title> read --
+        fireEvent.click(screen.getByTestId('canvas-tab-svg'));
+        const svgChop = screen.getByTestId('work-bar-svg--2-5-chop');
+        expect(svgChop.tagName.toLowerCase()).toBe('rect');
+        expect(svgChop.querySelector('title')?.textContent).toBe('chop 0/15');
+        // Zero work — a zero-width strip (the bar never lies)
+        expect(svgChop.getAttribute('width')).toBe('0');
+        const svgSite = screen.getByTestId('work-bar-svg-0-0-shelter');
+        expect(svgSite.querySelector('title')?.textContent).toBe('shelter 0/240');
+        // Minute 2: the chop beat banks a work-minute — the strip grows to
+        // exactly 1/15 of the 22-unit inner tile width (the 26px frame)
+        act(() => {
+            island.world.step();
+            bumpRevision();
+        });
+        expect(screen.getByTestId('work-bar-svg--2-5-chop').getAttribute('width')).toBe(
+            String(Math.max(0, Math.min(1, 1 / 15) * (26 - 4))),
+        );
+        expect(
+            screen.getByTestId('work-bar-svg--2-5-chop').querySelector('title')?.textContent,
+        ).toBe('chop 1/15');
+    });
+
+    it('a shared GATHER job rides the same bars with zero gather-specific wiring — and updates live', () => {
+        const island = createIslandWorld({ seed: 7 });
+        // The ledger fixture (tileDetails.test.ts's twin): a berry job
+        // three minutes into its ten — no scenario drive needed
+        island.tasks.tileWork.open({ key: 'tile:2,5:berry', kind: 'berry', units: 10, skill: 'forage' });
+        island.tasks.tileWork.add('tile:2,5:berry', 3);
+        render(<Dashboard island={island} onReroll={() => undefined} />);
+        const bar = screen.getByTestId('work-bar-2-5-berry');
+        expect(bar.getAttribute('role')).toBe('progressbar');
+        expect(bar.getAttribute('aria-valuenow')).toBe('3');
+        expect(bar.getAttribute('aria-valuemax')).toBe('10');
+        expect(bar.getAttribute('aria-label')).toBe('berry 3/10');
+        // The Tile Inspector names the resource and the exact minutes
+        fireEvent.click(screen.getByTestId('unicode-tile-2-5'));
+        expect(screen.getByTestId('tile-work-berry').textContent).toBe('berry 3/10');
+        // Four more shared minutes land — the board bar and the inspector
+        // line both follow the ledger
+        act(() => {
+            island.tasks.tileWork.add('tile:2,5:berry', 4);
+            bumpRevision();
+        });
+        expect(screen.getByTestId('work-bar-2-5-berry').getAttribute('aria-valuenow')).toBe('7');
+        expect(screen.getByTestId('work-bar-2-5-berry').getAttribute('aria-label')).toBe('berry 7/10');
+        expect(screen.getByTestId('tile-work-berry').textContent).toBe('berry 7/10');
     });
 });

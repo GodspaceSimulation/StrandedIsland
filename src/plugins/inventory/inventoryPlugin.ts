@@ -82,10 +82,18 @@ export type InventoryPluginOptions = {
  * / seaweed 1 / vine 1 / bush 2) left the map picked bare within a day —
  * the caps are raised so a harvested cell refills toward a stock that READS
  * abundant, while every rhythm, eligibility rule and finite resource stays
- * exactly as tuned before. */
-const REGROW_CAPS: Record<string, number> = {
-    // Berries ripen in clusters — a meadow berry patch refills to a handful
-    berry: 5,
+ * exactly as tuned before.
+ *
+ * R7 — the caps MATCH the enriched forest seeding (see BIOME_STOCKS): berry
+ * 5 → 6 and mushroom 4 → 5 keep the equilibrium a clear step above the
+ * forest's seeded 4 / 3 (a picked cell refills PAST its starting abundance),
+ * and the vine cap 2 → 3 lets the denser 0.6-chance vine map re-hang richer
+ * per cell for the build chains. EXPORTED for the resource-profile tests
+ * (plugins/inventory/forest-resource.test.ts pins this tuning table). */
+export const REGROW_CAPS: Record<string, number> = {
+    // Berries ripen in clusters — a berry patch refills past a handful
+    // (R7: 5 → 6, matching the forest's richer 4-berry seeding)
+    berry: 6,
     // The water's two stocks: a cell holds a small shoal, not a single fish,
     // and seaweed mats the shallows. R5 — the fish cap is raised so the
     // lakes and the sea read ABUNDANTLY stocked (the shore fishery the
@@ -96,13 +104,16 @@ const REGROW_CAPS: Record<string, number> = {
     // Nut-bearing palms carry a small crown
     coconut: 3,
     water: 2,
-    // Mushrooms fruit in rings on the woods' floor
-    mushroom: 4,
+    // Mushrooms fruit in rings on the woods' floor (R7: 4 → 5, matching the
+    // forest's richer 3-mushroom seeding — the woods' floor reads abundant)
+    mushroom: 5,
     // The construction materials replenish (the build projects consume
     // dozens of vines and fronds over a campaign — finite stocks would
     // starve the later blueprints): a vine re-hangs on its own rhythm,
-    // a frond sheds beneath the standing trees (see the frond shed below)
-    vine: 2,
+    // a frond sheds beneath the standing trees (see the frond shed below).
+    // R7: vine 2 → 3 — the denser forest vine map (0.6 chance) re-hangs
+    // richer per cell, feeding the rope chains without new item ids.
+    vine: 3,
     frond: 1,
     // R2 — the berry bush regrows the berries it bears (the stand itself is a
     // permanent meadow/forest feature; only its berry stock draws down and
@@ -122,8 +133,12 @@ const REGROW_CAPS: Record<string, number> = {
  * so the view scale never moves it.) The vine rhythm fires late and
  * staggered so the early-game stock pins and the pre-construction runs are
  * untouched (a vine cell sits at its cap until harvested).
+ *
+ * R7 — the rhythms are PRESERVED exactly (the depletion/regrowth ecosystem
+ * keeps its clock; only the seeding, chances and caps were enriched).
+ * EXPORTED so the resource-profile tests can pin the untouched clock.
  */
-const REGROW_RHYTHM: Record<string, { every: number; offset: number }> = {
+export const REGROW_RHYTHM: Record<string, { every: number; offset: number }> = {
     berry: { every: 30, offset: 20 },
     fish: { every: 40, offset: 0 },
     coconut: { every: 60, offset: 10 },
@@ -191,10 +206,18 @@ const POOL_CHANCE_PER_CELL = 0.25;
  * mushroom 1 / coconut 1 left the foods nearly impossible to FIND — the
  * cast spent its days foraging); every regrowth cap above bounds how far
  * each stock refills, and the finite draws (shells, flints, stone, iron)
- * stay exactly as sparse as they were. */
-const BIOME_STOCKS: Record<string, Inventory> = {
+ * stay exactly as sparse as they were.
+ *
+ * R7 — THE FOREST IS THE ISLAND'S LARDER: the woods' per-cell seeding is
+ * enriched to berry 4 + mushroom 3 (from 2 + 2) so a surveyed forest reads
+ * FILLED with berries and more from the first minute; the meadow (3) and
+ * beach (2 coconuts) seeding stay exactly as tuned (the biome topology and
+ * the non-forest stocks are untouched). The regrowth caps above sit a clear
+ * step above these seeds, so a picked forest refills past its starting
+ * abundance. EXPORTED for the resource-profile tests. */
+export const BIOME_STOCKS: Record<string, Inventory> = {
     meadow: { berry: 3 },
-    forest: { berry: 2, mushroom: 2 },
+    forest: { berry: 4, mushroom: 3 },
     beach: { coconut: 2 },
     // Water cells hold fish AND seaweed — the sea's two stocks (salt
     // water is never a drinking pool)
@@ -202,8 +225,12 @@ const BIOME_STOCKS: Record<string, Inventory> = {
 
 /** Chance a surveyed FOREST cell hangs a vine — the woods' material
  * (regrowing on its own rhythm since the build projects consume it —
- * see REGROW_CAPS; a harvested vine re-hangs after the regrowth rest). */
-const VINE_CHANCE_PER_FOREST_CELL = 0.35;
+ * see REGROW_CAPS; a harvested vine re-hangs after the regrowth rest).
+ * R7: 0.35 → 0.6 — the woods hang vines THICK (the rope chains' stock);
+ * the draw still consumes exactly one stream value per forest cell in
+ * row-major order, so the shell/flint/seaweed pins downstream keep their
+ * exact stream positions — only the vine OUTCOMES multiply. */
+export const VINE_CHANCE_PER_FOREST_CELL = 0.6;
 
 /** Chance a surveyed SHALLOW cell keeps a washed-ashore seaweed — the
  * shallows' second sea stock beside the fish (seaweed regrows). */
@@ -217,11 +244,22 @@ const SHALLOW_SEAWEED_CHANCE = 0.5;
  * flint draws keep their exact stream order) and the placement is stable for
  * a given island (the same address carries the same bush, seed for seed).
  * A berry bush stands on the cell when its hash lands under the chance.
+ *
+ * R7 — the chance is BIOME-SPECIFIC: the forest undergrowth is THICK with
+ * berry bushes (0.6, the woods' standing berry reserve beside the enriched
+ * loose berries), while the meadow keeps its original 0.3 (the meadow stocks
+ * are untouched). The hash fold is unchanged, so every meadow bush that
+ * stood before still stands (0.3 ⊂ 0.6 — the forest raise only ADDS bushes,
+ * it never moves one), and the fold values are stable per address.
+ * EXPORTED for the resource-profile tests.
  */
-const BUSH_CHANCE = 0.3;
+export const BUSH_CHANCE_PER_MEADOW_CELL = 0.3;
+export const BUSH_CHANCE_PER_FOREST_CELL = 0.6;
 
-/** The fnv-1a coordinate hash, folded to [0,1) — the bush's placement roll. */
-const bushAt = (x: number, y: number): boolean => {
+/** The fnv-1a coordinate hash, folded to [0,1) — the bush's placement roll.
+ * EXPORTED so the placement map is independently testable (exact fold per
+ * address, seed for seed). */
+export const bushHash = (x: number, y: number): number => {
     let h = 2166136261;
     const mix = (n: number): void => {
         h ^= n + 0x9e3779b9 + (h << 6) + (h >>> 2);
@@ -231,8 +269,12 @@ const bushAt = (x: number, y: number): boolean => {
     h ^= h >>> 16;
     h = Math.imul(h, 2246822507);
     h ^= h >>> 13;
-    return ((h >>> 0) % 1000) / 1000 < BUSH_CHANCE;
+    return ((h >>> 0) % 1000) / 1000;
 };
+
+/** Whether a bush stands at (x, y) under the biome's seeding chance. */
+export const bushAt = (x: number, y: number, chance: number): boolean =>
+    bushHash(x, y) < chance;
 
 /** Whether an item id is a tile deposit resource (tree/stone/iron/sand/dirt). */
 const isTileResource = (itemId: string): itemId is TileResource =>
@@ -577,7 +619,14 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             // (bushAt — no random-stream draw, so the other pins are
             // untouched). The bush's stock is the berries it bears; foraging
             // plucks them and the regrowth sweep refills the stand.
-            if ((cell.biome === 'meadow' || cell.biome === 'forest') && bushAt(cell.x, cell.y)) {
+            // R7 — the chance is BIOME-SPECIFIC: the forest undergrowth seeds
+            // bushes at 0.6 (the woods' standing berry reserve beside the
+            // enriched loose berries), the meadow keeps its original 0.3.
+            // The fold is unchanged, so the raise only ADDS forest bushes.
+            const bushChance = cell.biome === 'forest'
+                ? BUSH_CHANCE_PER_FOREST_CELL
+                : BUSH_CHANCE_PER_MEADOW_CELL;
+            if ((cell.biome === 'meadow' || cell.biome === 'forest') && bushAt(cell.x, cell.y, bushChance)) {
                 stock.bush = (stock.bush ?? 0) + 1;
                 // Track the standing plant (the regrow pass's registry)
                 bushCells.add(`${cell.x},${cell.y}`);
