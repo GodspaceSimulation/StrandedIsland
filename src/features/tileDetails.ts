@@ -344,6 +344,47 @@ export const tileForest = (island: IslandHandle, path: TilePath): TileForest | u
     return undefined;
 };
 
+// ── Forest display lines — the human reads (tilePanel.tsx renders them) ─────
+
+/**
+ * One island year in world minutes — the tree card's age reads in years
+ * (the ecology's biological time unit, plugins/forest: 1440-minute days ×
+ * 365). One decimal keeps a young stand readable without float noise.
+ */
+export const YEAR_MINUTES = 1440 * 365;
+
+/** Count with its singular/plural noun: "1 tree", "3 trees". */
+const countNoun = (count: number, noun: string): string =>
+    `${count} ${noun}${count === 1 ? '' : 's'}`;
+
+/**
+ * The stand summary line: "425 trees · 1688 wood standing". The tree
+ * count singularizes at exactly one — a single tree in view reads
+ * "1 tree" (scale 0, or a stand thinned to one) — while plural stands
+ * keep "trees" untouched (the whole-stand summary behavior).
+ */
+export const forestStandLine = (forest: TileForest): string =>
+    `${countNoun(forest.trees, 'tree')} · ${forest.wood} wood standing`;
+
+/**
+ * The tree card line (scale 0 only): " · age 3.2 y · growing". The card's
+ * wood pool is NOT repeated here — tileForest (above) sets the view's wood
+ * to the card's pool at scale 0, so the stand line already reads it
+ * ("1 tree · 3 wood standing"); repeating "wood N" after "N wood standing"
+ * was the duplication. The card adds only what the stand line lacks: the
+ * age in years and the maturity state. Island views carry no card and read
+ * as the empty string.
+ */
+export const forestTreeLine = (forest: TileForest): string => {
+    const card = forest.tree;
+    if (!card) {
+        return '';
+    }
+    // Years to one decimal (deterministic rounding — the card is inspectable)
+    const years = Math.round((card.ageMinutes / YEAR_MINUTES) * 10) / 10;
+    return ` · age ${years} y · ${card.mature ? 'mature' : 'growing'}`;
+};
+
 // ── Structures — the construction sites' footprints ──────────────────────────
 
 /**

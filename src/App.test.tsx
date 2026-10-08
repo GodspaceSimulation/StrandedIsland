@@ -8,7 +8,7 @@ import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { App } from './App';
 import { Dashboard } from './features/dashboard';
-import { bumpRevision } from './features/worldBridge';
+import { bumpRevision, useTile } from './features/worldBridge';
 import { createIslandWorld } from './scenario/island';
 
 describe('App', () => {
@@ -750,25 +750,35 @@ describe('App', () => {
         expect(screen.getByTestId('tile-resources').textContent).toBe(
             'tree ×319 · stone ×∞ · dirt ×∞ · grass ×∞',
         );
-        expect(screen.getByTestId('tile-forest').textContent).toContain('319 trees');
-        expect(screen.getByTestId('tile-forest').textContent).toContain('wood standing');
+        // The stand summary reads in the plural for a whole stand (no
+        // singularization at 319) — the exact line (the card span is
+        // empty at the island view, so the row IS the stand line)
+        expect(screen.getByTestId('tile-forest').textContent).toBe(
+            '319 trees · 1241 wood standing',
+        );
         // No tree card at the island view (the summary shape)
         expect(screen.getByTestId('tile-forest-tree').textContent).toBe('');
         // An INGRESS meadow rides its fringe's forest layer; a BARE meadow
         // carries no forest layer at all
         fireEvent.click(screen.getByTestId('unicode-tile-1--2'));
-        expect(screen.queryByTestId('tile-forest')).not.toBeNull();
+        // The 10-tree fringe keeps its plural stand read
+        expect(screen.getByTestId('tile-forest').textContent).toBe('10 trees · 44 wood standing');
         fireEvent.click(screen.getByTestId('unicode-tile-0--3'));
         expect(screen.queryByTestId('tile-forest')).toBeNull();
         // ── Scale 0: the tree card on the inspected fine spot ────────────
         fireEvent.click(screen.getByTestId('unicode-tile-4--5'));
         fireEvent.click(screen.getByTestId('zoom-toggle'));
-        // A tree of this wood stands at the fine spot (4,−7) — the card
-        // reads its wood pool, age (in years) and maturity
+        // A tree of this wood stands at the fine spot (4,−7): the single
+        // tree in view reads "1 tree" (singular) with its standing wood
+        // count ONCE — the card's pool is the standing count — and the
+        // card (tile-forest-tree) adds only the age (in years) and the
+        // maturity, never a second "wood N"
         fireEvent.click(screen.getByTestId('unicode-tile-4--7'));
-        expect(screen.getByTestId('tile-forest-tree').textContent).toContain('wood 6');
-        expect(screen.getByTestId('tile-forest-tree').textContent).toContain('age 6.6 y');
-        expect(screen.getByTestId('tile-forest-tree').textContent).toContain('growing');
+        expect(screen.getByTestId('tile-forest').textContent).toBe(
+            '1 tree · 6 wood standing · age 6.6 y · growing',
+        );
+        expect(screen.getByTestId('tile-forest-tree').textContent).toBe(' · age 6.6 y · growing');
+        expect(screen.getByTestId('tile-forest-tree').textContent).not.toContain('wood');
         // A bare fine cell of the same wood carries no card — the forest
         // layer resolves only for a TREED fine spot, so the row drops out
         fireEvent.click(screen.getByTestId('unicode-tile-9-5'));
@@ -833,5 +843,346 @@ describe('App', () => {
             // Restore the real Math.random so no other test sees the fake
             roll.mockRestore();
         }
+    });
+
+    // ── HOVER SELECTION — the god inspecting no longer needs a click ────────
+    //
+    // Features (features/worldGrid.tsx): each tile renderer (ascii Cell,
+    // unicode Cell, svg tile group) wires onMouseEnter to the shared
+    // hoverTile callback, which runs the SAME address formula inspectTile
+    // uses on click (view path + the hovered subtile) through the shared
+    // selectTile (features/worldBridge.ts) — so hover and click always agree
+    // on the inspected address, and the hovered tile becomes the zoom target
+    // the ScaleBar toggle and wheel scroll descend into. Hover must NOT do
+    // what a click does on its own: no zoom (the button/wheel stay the only
+    // zoom triggers) and no actor pick (the Entity Inspector opens only from
+    // a click / resident row). The pick is STICKY: nothing fires on mouse
+    // leave, so the last hovered tile stays inspected. selectTile carries a
+    // structural no-op guard (worldBridge.ts): an identical re-selection
+    // writes nothing, so re-hovering the current tile re-renders nothing.
+    //
+    // Dispatch notes (verified against react-dom 18's enter/leave plugin —
+    // the mouseover handler skips events whose relatedTarget is a
+    // React-managed node, assuming the out event already dispatched the
+    // enter):
+    //   - the pointer entering a tile from OUTSIDE the board is a plain
+    //     mouseover → fireEvent.mouseOver(tile) (no relatedTarget)
+    //   - moving between two tiles is driven by the OUT event of the tile
+    //     being left → fireEvent.mouseOut(a, { relatedTarget: b })
+    //   - leaving the board → fireEvent.mouseOut(tile, { relatedTarget:
+    //     someNonTileElement }) — the product fires no clear at all
+
+    // R1 — the hover pick drives the Tile Inspector and the canvas highlight
+    // with NO click (unicode renderer, the default view)
+    it('hovering a tile inspects it without a click — the Tile Inspector and the amber highlight follow the pointer', () => {
+        render(<App seed={7} />);
+        // Before any hover: no pick at all — the wait-for-a-pick note and a
+        // standing-off zoom toggle (its pre-pick title now names the hover)
+        expect(screen.getByTestId('tile-empty').textContent).toBe('Click a tile to inspect it.');
+        const toggle = screen.getByTestId('zoom-toggle') as HTMLButtonElement;
+        expect(toggle.disabled).toBe(true);
+        expect(toggle.title).toBe('Hover over or select a tile to zoom into');
+
+        // Enter Ael's shore tile from OUTSIDE — a plain mouseover over the
+        // tile (react-dom synthesizes React's onMouseEnter from it). NO
+        // click anywhere.
+        const ael = screen.getByTestId('unicode-tile--11-0');
+        fireEvent.mouseOver(ael);
+        // The exact seed-7 lines a click would produce (hover and click share
+        // one selectTile path — worldGrid.tsx hoverTile mirrors inspectTile's
+        // address formula)
+        expect(screen.queryByTestId('tile-empty')).toBeNull();
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-11, 0) · sand');
+        expect(screen.getByTestId('tile-terrain-meta').textContent).toBe(
+            'height 3 · water line 3 · walkable',
+        );
+        expect(screen.getByTestId('tile-voxels').textContent).toBe('stone, dirt, sand');
+        expect(screen.getByTestId('tile-resources').textContent).toBe(
+            'stone ×∞ · sand ×∞ · dirt ×∞',
+        );
+        expect(
+            Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
+        ).toEqual(['Foods ×1', 'Materials ×4']);
+        expect(
+            Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
+        ).toEqual(['Ael — human · well']);
+        // The hovered tile wears the AMBER tile-pick border — the same paint
+        // a click pick wears (entity picks wear the teal, never amber). The
+        // exact class boundary (`.cls{`) keeps the reader immune to one
+        // class name prefix-matching a longer one elsewhere in the sheet.
+        const ruleOf = (element: Element): string => {
+            const css = Array.from(document.querySelectorAll('style'))
+                .map((tag) => tag.textContent ?? '')
+                .join('');
+            const rules = Array.from(element.classList).flatMap((className) =>
+                [...css.matchAll(new RegExp(`\\.${className}\\{[^}]*\\}`, 'g'))].map((match) => match[0]),
+            );
+            return rules.find((rule) => rule.includes('border:')) ?? '';
+        };
+        expect(ruleOf(ael)).toContain('border:2px solid #c98a2d');
+        // The hover armed the zoom target (but did not zoom — see below)
+        expect(toggle.disabled).toBe(false);
+        expect(toggle.title).toBe('Zoom into the inspected tile');
+
+        // RETARGET without a click: the pointer moves off Ael onto the
+        // shallows corner — the browser drives that with the OUT event on
+        // Ael carrying the corner as relatedTarget (the follow-up mouseover
+        // is skipped by react-dom). The pick follows the pointer and the
+        // paint swaps with it.
+        const sea = screen.getByTestId('unicode-tile--12--8');
+        fireEvent.mouseOut(ael, { relatedTarget: sea });
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-12, -8) · shallows');
+        expect(screen.getByTestId('tile-terrain-meta').textContent).toBe(
+            'height 2 · water line 3 · submerged',
+        );
+        expect(ruleOf(sea)).toContain('border:2px solid #c98a2d');
+        expect(ruleOf(ael)).toContain('border:1px solid rgba(0,0,0,0.3)');
+    });
+
+    // R1 — the ascii renderer runs the SAME hover selectTile path: its cells
+    // inspect identically to the unicode ones (one shared callback in
+    // worldGrid.tsx, three renderers)
+    it('the ascii renderer shares the hover selectTile path — its cells inspect exactly like the unicode ones', () => {
+        render(<App seed={7} />);
+        fireEvent.click(screen.getByTestId('canvas-tab-ascii'));
+        // Enter the quiet beach from outside (plain mouseover, no click)
+        const beach = screen.getByTestId('grid-tile--5--7');
+        fireEvent.mouseOver(beach);
+        // The exact seed-7 lines the unicode hover produced for the same pick
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-5, -7) · sand');
+        expect(screen.getByTestId('tile-terrain-meta').textContent).toBe(
+            'height 3 · water line 3 · walkable',
+        );
+        expect(screen.getByTestId('tile-voxels').textContent).toBe('stone, dirt, sand');
+        expect(screen.getByTestId('tile-resources').textContent).toBe(
+            'stone ×∞ · sand ×∞ · dirt ×∞',
+        );
+        expect(
+            Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
+        ).toEqual(['Foods ×1', 'Materials ×3']);
+        expect(
+            Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
+        ).toEqual(['No one here.']);
+        // The ascii cell wears the same amber tile-pick border as the unicode
+        // cells do (shared tileBorder rule in worldGrid.tsx)
+        const ruleOf = (element: Element): string => {
+            const css = Array.from(document.querySelectorAll('style'))
+                .map((tag) => tag.textContent ?? '')
+                .join('');
+            const rules = Array.from(element.classList).flatMap((className) =>
+                [...css.matchAll(new RegExp(`\\.${className}\\{[^}]*\\}`, 'g'))].map((match) => match[0]),
+            );
+            return rules.find((rule) => rule.includes('border:')) ?? '';
+        };
+        expect(ruleOf(beach)).toContain('border:2px solid #c98a2d');
+    });
+
+    // R1 — the svg renderer runs the same path; its twin of the amber border
+    // is the tile rect's stroke color (tileStroke in worldGrid.tsx)
+    it('the svg renderer shares the hover selectTile path — the hovered tile wears the amber stroke', () => {
+        render(<App seed={7} />);
+        fireEvent.click(screen.getByTestId('canvas-tab-svg'));
+        // Enter the shallows corner (plain mouseover on the tile group)
+        const sea = screen.getByTestId('svg-tile--12--8');
+        fireEvent.mouseOver(sea);
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-12, -8) · shallows');
+        expect(screen.getByTestId('tile-terrain-meta').textContent).toBe(
+            'height 2 · water line 3 · submerged',
+        );
+        expect(sea.querySelector('rect')?.getAttribute('stroke')).toBe('#c98a2d');
+        // ...while every other tile keeps the hairline stroke
+        expect(screen.getByTestId('svg-tile--11-0').querySelector('rect')?.getAttribute('stroke')).toBe(
+            'rgba(0,0,0,0.3)',
+        );
+        // Hover the bird's tile: Kiki lists as a RESIDENT of the pick, but
+        // the hover never opens the entity card — no actor selection for the
+        // bird (or any castaway), whatever renderer is showing
+        fireEvent.mouseOver(screen.getByTestId('svg-tile-0-0'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(0, 0) · stone');
+        expect(
+            Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
+        ).toEqual(['Kiki — bird · flying-2 · z 2']);
+        expect(screen.queryByTestId('actor-inventory')).toBeNull();
+        expect(screen.getByTestId('actor-panel-empty').textContent).toBe('Select an entity to inspect.');
+    });
+
+    // R2/R3 — hover selects the inspected tile AND the zoom target without
+    // autozooming and without selecting the actor; the explicit button then
+    // zooms the hover target (seed-7 exact lineage: hover (−11,0) → zoom →
+    // the pinned '(-11, 0) · (0, 0) · sand' interior line)
+    it('hovering arms the zoom target without zooming and without selecting the actor; the button zooms the hover target', () => {
+        render(<App seed={7} />);
+        // Nothing inspected yet: the toggle stands off (the same contract the
+        // wheel has)
+        expect((screen.getByTestId('zoom-toggle') as HTMLButtonElement).disabled).toBe(true);
+        // Hover Ael's shore tile (NO click) — the seed-7 hover line
+        fireEvent.mouseOver(screen.getByTestId('unicode-tile--11-0'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-11, 0) · sand');
+        // ...but the view never moves on its own — hover is NOT a zoom
+        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 1');
+        // ...and it is NOT an actor pick: the Entity Inspector stays closed
+        // even though a castaway stands on the hovered tile
+        expect(screen.queryByTestId('actor-inventory')).toBeNull();
+        expect(screen.getByTestId('actor-panel-empty').textContent).toBe(
+            'Select an entity to inspect.',
+        );
+        // The hover IS the zoom target: the toggle stands on
+        expect((screen.getByTestId('zoom-toggle') as HTMLButtonElement).disabled).toBe(false);
+        // The button descends into the hover target — the exact seed-7
+        // lineage the click flow produces, with no click anywhere
+        fireEvent.click(screen.getByTestId('zoom-toggle'));
+        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 0');
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-11, 0) · (0, 0) · sand');
+        expect(
+            Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
+        ).toEqual(['Nothing on the ground.']);
+        expect(
+            Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
+        ).toEqual(['No one here.']);
+        // Ael stands at his fine spot inside the interior view — and the
+        // zoomed view still owes the hover its no-actor contract
+        expect(screen.getByTestId('unicode-tile--8-0').textContent).toBe('🧍‍♂️');
+        expect(screen.queryByTestId('actor-inventory')).toBeNull();
+    });
+
+    // R2 — the wheel relays on the hover target too: no click was ever
+    // involved (seed-7 exact: hover (−12,−8) → '(-12, -8) · shallows', and
+    // its exact interior line is '(-12, -8) · (0, 0) · shallows')
+    it('the wheel zoom rides the hover target — no click involved', () => {
+        render(<App seed={7} />);
+        // Nothing picked: the wheel is NOT hijacked (the page keeps its
+        // scroll), same as before the hover feature
+        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 1');
+        fireEvent.wheel(screen.getByTestId('world-grid-unicode'), { deltaY: -120 });
+        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 1');
+        // Hover the shallows corner (NO click) — the seed-7 hover line
+        fireEvent.mouseOver(screen.getByTestId('unicode-tile--12--8'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-12, -8) · shallows');
+        // Scroll UP descends into the hover target — its exact interior line
+        fireEvent.wheel(screen.getByTestId('world-grid-unicode'), { deltaY: -120 });
+        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 0');
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-12, -8) · (0, 0) · shallows');
+        // Scroll DOWN pops back up the lineage — the PARENT tile is what the
+        // island view inspects
+        fireEvent.wheel(screen.getByTestId('world-grid-unicode'), { deltaY: 120 });
+        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 1');
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-12, -8) · shallows');
+        // At the ladder's top the wheel is inert again
+        fireEvent.wheel(screen.getByTestId('world-grid-unicode'), { deltaY: 120 });
+        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 1');
+    });
+
+    // R2 — at scale 0 the hover selects the FINE cell (the view path stays
+    // the parent), zoom-out pops the parent back, and a creature's fine cell
+    // is listed as a resident without ever opening the entity card
+    it('at scale 0 a fine-cell hover extends the lineage and keeps the parent; zoom-out pops the parent back', () => {
+        render(<App seed={7} />);
+        // Into Ael's shore via hover + button (no tile click)
+        fireEvent.mouseOver(screen.getByTestId('unicode-tile--11-0'));
+        fireEvent.click(screen.getByTestId('zoom-toggle'));
+        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 0');
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-11, 0) · (0, 0) · sand');
+        // Hover the coconut subtile: the lineage EXTENDS with the fine cell —
+        // the PARENT stays the first step (the hover never widens the view)
+        fireEvent.mouseOver(screen.getByTestId('unicode-tile--11-5'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-11, 0) · (-11, 5) · sand');
+        // The fine cell reads the item BY NAME (the scale-0 granularity)
+        expect(
+            Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
+        ).toEqual(['1 Coconut']);
+        // Zoom OUT (the wheel relay): the fine cell pops off — the PARENT
+        // tile is what the island view inspects, not the fine cell
+        fireEvent.wheel(screen.getByTestId('world-grid-unicode'), { deltaY: 120 });
+        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 1');
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-11, 0) · sand');
+
+        // The same fine-cell contract for a CREATURE at scale 0: Kiki's
+        // (0,0) tile zoomed in — hovering her fine spot lists her as the
+        // resident without opening the entity card
+        fireEvent.mouseOver(screen.getByTestId('unicode-tile-0-0'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(0, 0) · stone');
+        fireEvent.click(screen.getByTestId('zoom-toggle'));
+        expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 0');
+        // Her fine spot inside the (0,0) tile (the interior view's bird glyph)
+        expect(screen.getByTestId('unicode-tile-4--6').textContent).toBe('🐦');
+        fireEvent.mouseOver(screen.getByTestId('unicode-tile-4--6'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(0, 0) · (4, -6) · stone');
+        expect(
+            Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
+        ).toEqual(['Kiki — bird · flying-2 · z 2']);
+        expect(screen.queryByTestId('actor-inventory')).toBeNull();
+        expect(screen.getByTestId('actor-panel-empty').textContent).toBe(
+            'Select an entity to inspect.',
+        );
+    });
+
+    // R2 — the pick is STICKY on leave (nothing fires a clear), the zoom
+    // target stays armed, and a click still does both jobs the click always
+    // did: inspect the tile AND select its castaway
+    it('leaving the board keeps the last hover pick sticky; a click still selects the tile and its actor', () => {
+        render(<App seed={7} />);
+        // Hover the shallows corner
+        const sea = screen.getByTestId('unicode-tile--12--8');
+        fireEvent.mouseOver(sea);
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-12, -8) · shallows');
+        // The pointer leaves the board entirely (mouseOut, the target is a
+        // non-tile element): the product fires NOTHING on leave, so the pick
+        // STAYS and the zoom target stays armed
+        fireEvent.mouseOut(sea, { relatedTarget: screen.getByTestId('scale-controls') });
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-12, -8) · shallows');
+        expect((screen.getByTestId('zoom-toggle') as HTMLButtonElement).disabled).toBe(false);
+        // A click still carries the FULL old contract: tile inspect PLUS
+        // actor selection (hover alone never does the actor part)
+        fireEvent.click(screen.getByTestId('unicode-tile--11-0'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-11, 0) · sand');
+        expect(screen.getByTestId('actor-condition').textContent).toBe('Ael · well');
+        expect(screen.getByTestId('actor-inventory').textContent).toContain('2 Berries');
+    });
+
+    // R3 — the selectTile dedupe (worldBridge.ts): an identical re-selection
+    // writes nothing, so re-hovering the current tile re-renders nothing. A
+    // sibling counter subscribes to the tile signal: mount 1, first hover 2,
+    // retarget 3, sticky leave 3, deduped re-hover 3 (the guard's no-op),
+    // real move 4
+    it('re-hovering an already-inspected tile is a no-op — the selectTile dedupe skips the write', () => {
+        let renders = 0;
+        const Counter = () => {
+            // Subscribe to the same tile signal the Tile Inspector reads
+            void useTile();
+            renders += 1;
+            return null;
+        };
+        render(
+            <>
+                <App seed={7} />
+                <Counter />
+            </>,
+        );
+        expect(renders).toBe(1); // the mount
+        const ael = screen.getByTestId('unicode-tile--11-0');
+        const sea = screen.getByTestId('unicode-tile--12--8');
+        const bar = screen.getByTestId('scale-controls');
+        // First hover: one real write (null → [−11,0]) → exactly one extra render
+        fireEvent.mouseOver(ael);
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-11, 0) · sand');
+        expect(renders).toBe(2);
+        // Retarget off Ael onto the corner (the browser's out event): one more
+        // real write
+        fireEvent.mouseOut(ael, { relatedTarget: sea });
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-12, -8) · shallows');
+        expect(renders).toBe(3);
+        // Leave the board: nothing writes (the sticky pick)
+        fireEvent.mouseOut(sea, { relatedTarget: bar });
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-12, -8) · shallows');
+        expect(renders).toBe(3);
+        // Re-enter the SAME tile from outside: the handler fires, the path is
+        // structurally identical → the guard skips the write → NO extra render
+        fireEvent.mouseOver(sea);
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-12, -8) · shallows');
+        expect(renders).toBe(3);
+        // A DIFFERENT tile is a real move: exactly one more render
+        fireEvent.mouseOver(screen.getByTestId('unicode-tile--5--7'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(-5, -7) · sand');
+        expect(renders).toBe(4);
     });
 });

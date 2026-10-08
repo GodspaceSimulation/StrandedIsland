@@ -97,8 +97,35 @@ export const selectActor = (actorId: string | null) => {
 /** Read during render to subscribe to tile selection changes. */
 export const useTile = (): TilePath | null => tileSignal();
 
+/** Per-step structural equality for tile paths. Hover dedupe (selectTile)
+ * needs VALUE comparison, not reference equality: the copy-on-write below
+ * makes every write a fresh array, so re-hovering an unchanged address is a
+ * different array holding identical steps. (packages/godspace/core
+ * src/subtile/index.ts — TilePath is TileCoord[] of {x, y}.) */
+const isSameTilePath = (a: TilePath, b: TilePath): boolean =>
+    a.length === b.length && a.every((step, index) => step.x === b[index].x && step.y === b[index].y);
+
 /** God selects a tile to inspect by its full path (null clears). */
 export const selectTile = (path: TilePath | null) => {
+    // No-op guard (R3 of the hover feature): the tile pick is STICKY —
+    // nothing clears it when the mouse leaves a cell or the board — and
+    // every tile renderer fires a mouse-enter per cell, so hovering re-
+    // selects already-current addresses. signalState notifies every
+    // subscriber on EVERY value() write (packages/presource/react
+    // signal-state.ts valueFunction performs NO equality check), so an
+    // unguarded write would re-render the whole god view for an unchanged
+    // selection. Skip the write when the incoming address is structurally
+    // identical to the one already on the signal; real moves, the null
+    // clear and the mount reset still write. zoomIn/zoomOut/toggleZoom are
+    // untouched — they write the tileSignal directly and their paths always
+    // differ from a hover's last write, so the guard can never starve them.
+    // (.value() with no argument reads WITHOUT subscribing — event-handler
+    // safe; same pattern bumpRevision/moveScale/zoomIn use.)
+    const current = tileSignal.value();
+    const unchanged = current === null ? path === null : path !== null && isSameTilePath(current, path);
+    if (unchanged) {
+        return;
+    }
     // Copy on write — callers may keep mutating their path array
     tileSignal.value(path ? [...path] : null);
 };

@@ -38,6 +38,8 @@ import {
     tileResources,
     tileSummary,
     tileForest,
+    forestStandLine,
+    forestTreeLine,
     occupantLine,
     scaleView,
 } from './tileDetails';
@@ -322,6 +324,77 @@ describe('tileForest', () => {
         expect(tileForest(island, [{ x: 7, y: 3 }, bareSpot!])).toBeUndefined();
         // Deeper paths carry nothing
         expect(tileForest(island, [{ x: -7, y: 0 }, { x: -1, y: 6 }, { x: 0, y: 0 }])).toBeUndefined();
+    });
+});
+
+describe('forest display lines (forestStandLine / forestTreeLine)', () => {
+    // Regression for the duplicated count + broken grammar the Tile
+    // Inspector used to read at scale 0: "1 trees · 3 wood standing ·
+    // wood 3 · age 3.2 y · growing". The single-tree read must now be
+    // "1 tree · 3 wood standing · age 3.2 y · growing" — the wood count
+    // once (the standing count), the tree count singularized, the age
+    // and maturity kept.
+
+    it('singularizes a single tree and keeps the standing wood count', () => {
+        // The scale-0 shape tileForest produces (trees 1, wood = the
+        // card's pool) — the count reads "1 tree", never "1 trees"
+        expect(forestStandLine({ trees: 1, wood: 3 })).toBe('1 tree · 3 wood standing');
+        expect(forestStandLine({ trees: 1, wood: 8 })).toBe('1 tree · 8 wood standing');
+        // Plural stands keep the whole-stand summary behavior (N > 1 → "trees")
+        expect(forestStandLine({ trees: 425, wood: 1688 })).toBe('425 trees · 1688 wood standing');
+        expect(forestStandLine({ trees: 10, wood: 44 })).toBe('10 trees · 44 wood standing');
+    });
+
+    it('keeps the seeded stand summaries verbatim', () => {
+        // The seed-7 stands the tileForest block pins above — their human
+        // reads, captured against the deterministic island
+        expect(forestStandLine(tileForest(island, [{ x: -7, y: 0 }])!)).toBe(
+            '425 trees · 1688 wood standing',
+        );
+        expect(forestStandLine(tileForest(island, [{ x: 1, y: -2 }])!)).toBe(
+            '10 trees · 44 wood standing',
+        );
+        // The (4,−5) wood — the 319-tree stand App.test pins on the canvas
+        expect(forestStandLine(tileForest(island, [{ x: 4, y: -5 }])!)).toBe(
+            '319 trees · 1241 wood standing',
+        );
+    });
+
+    it('the tree card adds only age and maturity — never repeats the standing wood', () => {
+        // The pinned card of the (−7,0) stand (tileForest block above):
+        // wood 4, ageMinutes 2008964 → 3.8 y, not mature
+        expect(
+            forestTreeLine({
+                trees: 1,
+                wood: 4,
+                tree: { wood: 4, ageMinutes: 2008964, mature: false },
+            }),
+        ).toBe(' · age 3.8 y · growing');
+        // A mature card: the full pool of 8 at exactly eight island years
+        // (8 × 1440 × 365 minutes) reads "8 y · mature"
+        expect(
+            forestTreeLine({
+                trees: 1,
+                wood: 8,
+                tree: { wood: 8, ageMinutes: 4204800, mature: true },
+            }),
+        ).toBe(' · age 8 y · mature');
+        // The card carries no wood segment at all — the standing line
+        // already reads the pool (tileForest sets the view's wood to
+        // the card's pool at scale 0)
+        const card = { trees: 1, wood: 3, tree: { wood: 3, ageMinutes: 1681920, mature: false } };
+        expect(forestTreeLine(card)).not.toContain('wood');
+        // The island-view shape holds no card — the card line is empty
+        expect(forestTreeLine({ trees: 425, wood: 1688 })).toBe('');
+    });
+
+    it('the scale-0 read composes to the single expected line', () => {
+        // The exact shape the panel renders (stand line + card span),
+        // 3.2 island years: 3.2 × 1440 × 365 = 1,681,920 minutes
+        const forest = { trees: 1, wood: 3, tree: { wood: 3, ageMinutes: 1681920, mature: false } };
+        expect(forestStandLine(forest) + forestTreeLine(forest)).toBe(
+            '1 tree · 3 wood standing · age 3.2 y · growing',
+        );
     });
 });
 

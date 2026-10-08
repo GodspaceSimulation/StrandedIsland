@@ -33,29 +33,12 @@ import {
     voxelSummary,
     occupantLine,
     structureLine,
+    forestStandLine,
+    forestTreeLine,
     type TileOccupant,
     type TileStructure,
-    type TileForest,
 } from './tileDetails';
 import { itemLabel } from '../plugins/inventory/items';
-
-/**
- * One island year in world minutes — the tree card's age reads in years
- * (the ecology's biological time unit, plugins/forest: 1440-minute days ×
- * 365). One decimal keeps a young stand readable without float noise.
- */
-const YEAR_MINUTES = 1440 * 365;
-
-/** Human readable tree-card line: "wood 7 · age 4.0 y · mature". */
-const forestTreeLine = (forest: TileForest): string => {
-    const card = forest.tree;
-    if (!card) {
-        return '';
-    }
-    // Years to one decimal (deterministic rounding — the card is inspectable)
-    const years = Math.round((card.ageMinutes / YEAR_MINUTES) * 10) / 10;
-    return ` · wood ${card.wood} · age ${years} y · ${card.mature ? 'mature' : 'growing'}`;
-};
 
 /** Two-column detail row — the label is dim, the value plain. */
 const Row = styled('div', {
@@ -223,16 +206,19 @@ export const TilePanel = () => {
                         </VoxelStack>
                     </Row>
                     {/* The FOREST layer — the tree wood stats (plugins/
-                        forest): the island view lists the stand summary
-                        ("383 trees · 1234 wood standing"); at scale 0 a
-                        tree standing on the inspected fine spot adds its
-                        card — wood pool, age in years, maturity (the
-                        "selectable tree" stats, tile-forest-tree) */}
+                        forest), read through the tileDetails display lines:
+                        the island view lists the stand summary ("383 trees
+                        · 1234 wood standing"); at scale 0 the single tree
+                        in view reads "1 tree · N wood standing" and its
+                        card (tile-forest-tree) adds only the age in years
+                        and the maturity — the card's wood pool IS the
+                        standing count, so it is never repeated ("1 tree ·
+                        3 wood standing · age 3.2 y · growing") */}
                     {summary.forest ? (
                         <Row>
                             <RowName>Forest</RowName>
                             <VoxelStack data-testid="tile-forest">
-                                {summary.forest.trees} trees · {summary.forest.wood} wood standing
+                                {forestStandLine(summary.forest)}
                                 <span data-testid="tile-forest-tree">{forestTreeLine(summary.forest)}</span>
                             </VoxelStack>
                         </Row>

@@ -56,12 +56,16 @@
 // state + z. The elevation field stays in the frame data (inspectors read
 // it); only the drawn glyph dropped it.
 //
-// Hovering a tile shows the voxel column plus
-// every entity standing in that column. Clicking ANY tile inspects that
-// tile AT THE CURRENT SCALE (the selection extends the view path); when the
-// tile holds a castaway, the god's actor inspector opens for them too
-// (birds and other non-registry residents stay view-only). The data tab is
-// read-only — it shows the exact coordinates the other three draw as glyphs.
+// Hovering a tile shows the voxel column plus every entity standing in
+// that column AND selects the tile itself at the current scale (the hover
+// sets the SAME full address a click would — the existing zoom target the
+// wheel and the ScaleBar toggle descend into — but it never re-points the
+// actor inspector and never zooms; the pick is sticky and survives leaving
+// the board). Clicking ANY tile inspects that tile AT THE CURRENT SCALE
+// (the selection extends the view path); when the tile holds a castaway,
+// the god's actor inspector opens for them too (birds and other non-
+// registry residents stay view-only). The data tab is read-only — it shows
+// the exact coordinates the other three draw as glyphs.
 //
 // WHEEL ZOOM — scrolling the mouse over a tile board drives the same zoom
 // ladder the ScaleBar toggle drives: scroll up = Zoom In (descends into the
@@ -386,6 +390,23 @@ export const WorldGrid = () => {
         }
     };
 
+    // A tile HOVER selects it at the current scale without a click (R1 of the
+    // hover feature) — the SAME formula inspectTile uses on click: the view
+    // path (inspected.slice(0, depth - scale)) extended by the hovered
+    // subtile — so hover and click always agree on the tile's full address,
+    // and the hovered tile becomes the EXISTING zoom target the wheel scroll
+    // and the ScaleBar toggle descend into. Hover must NOT do what a click
+    // does on its own (R2): no zoomIn/zoomOut (the explicit wheel scroll and
+    // the ScaleBar button stay the only zoom triggers, so hover alone never
+    // moves the view — the wheel effect above then finds a fresh `inspected`
+    // to zoom into) and no selectActor (the gold actor pick still opens only
+    // on click/touch of a castaway). Nothing fires on mouse leave: the last
+    // hovered tile STAYS selected (sticky), which also keeps the wheel-zoom
+    // target valid between hovers.
+    const hoverTile = (tile: { x: number; y: number }) => {
+        selectTile([...viewPath, { x: tile.x, y: tile.y }]);
+    };
+
     // The zoom toggle at the ISLAND view needs an inspected tile — without
     // one there is nothing to zoom into (the button states that in its
     // hover title); at the interior view the toggle always can zoom out
@@ -410,7 +431,7 @@ export const WorldGrid = () => {
                             ? 'Zoom out one scale'
                             : inspected
                               ? 'Zoom into the inspected tile'
-                              : 'Select a tile to zoom into'
+                              : 'Hover over or select a tile to zoom into'
                     }
                     onClick={() => toggleZoom()}
                 >
@@ -472,6 +493,7 @@ export const WorldGrid = () => {
                                 selected={selected}
                                 size={26}
                                 onTile={inspectTile}
+                                onHover={hoverTile}
                             />
                         </BoardLayer>
                     ) : null}
@@ -489,6 +511,7 @@ export const WorldGrid = () => {
                                 // the layout
                                 size={26}
                                 onTile={inspectTile}
+                                onHover={hoverTile}
                             />
                         </BoardLayer>
                     ) : null}
@@ -501,6 +524,7 @@ export const WorldGrid = () => {
                                 inspected={inspectedTail}
                                 selected={selected}
                                 onTile={inspectTile}
+                                onHover={hoverTile}
                             />
                         </BoardLayer>
                     ) : null}
@@ -544,6 +568,7 @@ const AsciiView = ({
     selected,
     size,
     onTile,
+    onHover,
 }: {
     world: IslandHandle['world'];
     frame: AsciiFrame;
@@ -552,6 +577,9 @@ const AsciiView = ({
     selected: string | null;
     size: number;
     onTile: (tile: { x: number; y: number }, castawayId: string | undefined) => void;
+    // R1 hover — selects this tile ONLY (never the actor pick, never a
+    // zoom); see hoverTile in WorldGrid for the full R1/R2 contract
+    onHover: (tile: { x: number; y: number }) => void;
 }) => (
     <>
         <Grid columns={frame.columns} size={size} data-testid="world-grid">
@@ -576,6 +604,12 @@ const AsciiView = ({
                         title={tile.title}
                         data-testid={`grid-tile-${tile.x}-${tile.y}`}
                         onClick={() => onTile(tile, castaway?.id)}
+                        // R1 hover: mouseenter selects this tile only (tile
+                        // pick + zoom target, never the actor, never a zoom).
+                        // Native mouse-enter semantics — fires once per cell
+                        // entry and refires on re-entry; leave fires nothing
+                        // (the pick stays sticky)
+                        onMouseEnter={() => onHover(tile)}
                     >
                         {glyph ? (
                             <Marker color={glyph.color}>
@@ -607,6 +641,7 @@ const UnicodeView = ({
     selected,
     size,
     onTile,
+    onHover,
 }: {
     world: IslandHandle['world'];
     frame: UnicodeFrame;
@@ -615,6 +650,9 @@ const UnicodeView = ({
     selected: string | null;
     size: number;
     onTile: (tile: { x: number; y: number }, castawayId: string | undefined) => void;
+    // R1 hover — selects this tile ONLY (never the actor pick, never a
+    // zoom); see hoverTile in WorldGrid for the full R1/R2 contract
+    onHover: (tile: { x: number; y: number }) => void;
 }) => (
     <>
         <Grid columns={frame.columns} size={size} data-testid="world-grid-unicode">
@@ -643,6 +681,9 @@ const UnicodeView = ({
                         title={tile.title}
                         data-testid={`unicode-tile-${tile.x}-${tile.y}`}
                         onClick={() => onTile(tile, castaway?.id)}
+                        // R1 hover — same contract as the ascii Cell above
+                        // (tile pick + zoom target only; sticky on leave)
+                        onMouseEnter={() => onHover(tile)}
                     >
                         {glyph ? (
                             <Marker color={glyph.color}>
@@ -741,6 +782,7 @@ const SvgView = ({
     inspected,
     selected,
     onTile,
+    onHover,
 }: {
     world: IslandHandle['world'];
     frame: SvgFrame;
@@ -748,6 +790,9 @@ const SvgView = ({
     inspected: { x: number; y: number } | null;
     selected: string | null;
     onTile: (tile: { x: number; y: number }, castawayId: string | undefined) => void;
+    // R1 hover — selects this tile ONLY (never the actor pick, never a
+    // zoom); see hoverTile in WorldGrid for the full R1/R2 contract
+    onHover: (tile: { x: number; y: number }) => void;
 }) => (
     <>
         {/* The viewBox spans columns·size × rows·size user units — the SAME
@@ -781,6 +826,10 @@ const SvgView = ({
                         key={`${tile.x},${tile.y}`}
                         data-testid={`svg-tile-${tile.x}-${tile.y}`}
                         onClick={() => onTile(tile, castaway?.id)}
+                        // R1 hover — same contract as the DOM cells above;
+                        // the SVG-native <title> tooltip below coexists with
+                        // it (hover shows the column tooltip AND selects)
+                        onMouseEnter={() => onHover(tile)}
                     >
                         {/* SVG-native hover: <title> is the vector twin of
                             the DOM title attribute the other canvases use */}
