@@ -548,26 +548,56 @@ export type TileProgress = {
 };
 
 /**
- * Every standing job on the tile at (x, y) — the labor the world
+ * Every standing job on the tile addressed by `path` — the labor the world
  * remembers. Empty when nothing is being worked (no ledger unit, no live
  * site footprint on the tile).
+ *
+ * R1 — THE ADDRESS DISCIPLINE (the bars must sit on the tile that owns the
+ * work, at EVERY zoom level):
+ *   • the tile-work LEDGER is keyed by the tile's ROOT coordinates — the
+ *     plugins compose `tileWorkKey(actor.position.x, actor.position.y, kind)`
+ *     and actor.position is the root (island) coordinate space. So the
+ *     ledger read ALWAYS rides `path[0]`, the same rule tileSummary applies
+ *     (a deeper view reads its parent tile's standing jobs — a fine-cell
+ *     address is NOT a ledger key, and reading the ledger with fine
+ *     coordinates once painted a root tile's bar onto whichever interior
+ *     cell happened to share its numbers);
+ *   • the construction SITES resolve through the FULL path — at the island
+ *     view (length 1) any footprint cell on the tile, at the interior view
+ *     (length 2) the exact fine spot the footprint covers (siteCoversPath).
+ *
+ * `read.tileJobs` (default true) gates the LEDGER half: the Tile Inspector
+ * reads the tile's standing jobs at every zoom (the inspector's contract),
+ * while the zoomed INTERIOR board passes false — a ledger job belongs to
+ * the whole tile, and stamping it onto every fine cell of the interior view
+ * would claim per-cell work the ledger never tracks there.
  */
-export const tileProgress = (island: IslandHandle, x: number, y: number): TileProgress[] => {
+export const tileProgress = (
+    island: IslandHandle,
+    path: TilePath,
+    read?: { tileJobs?: boolean },
+): TileProgress[] => {
     const progress: TileProgress[] = [];
-    // The shared tile-work jobs — the ledger keys are `tile:x,y:kind`, so
-    // the tile's own units are exactly the ones whose key matches the
-    // composed prefix (the same tileWorkKey the plugins open with)
-    island.tasks.tileWork.all().forEach((unit) => {
-        // Re-derive the tile part of the key — a unit belongs to this tile
-        // iff stripping its kind suffix lands on `tile:x,y:`
-        const prefix = `tile:${x},${y}:`;
-        if (unit.key.startsWith(prefix) && unit.key.length > prefix.length) {
-            progress.push({ label: unit.kind, done: unit.progress, total: unit.units });
-        }
-    });
-    // The construction sites covering the tile — their build work (the
-    // island view read of the same snapshot structureLine renders)
-    tileStructures(island, [{ x, y }]).forEach((structure) => {
+    // The shared tile-work jobs — keyed by the ROOT tile (path[0]), never
+    // by the view-local tail. The ledger keys are `tile:x,y:kind`, so the
+    // tile's own units are exactly the ones whose key matches the composed
+    // prefix (the same tileWorkKey the plugins open with)
+    if ((read?.tileJobs ?? true) && path.length > 0) {
+        const root = path[0];
+        const prefix = `tile:${root.x},${root.y}:`;
+        island.tasks.tileWork.all().forEach((unit) => {
+            // Re-derive the tile part of the key — a unit belongs to this
+            // tile iff stripping its kind suffix lands on `tile:x,y:`
+            if (unit.key.startsWith(prefix) && unit.key.length > prefix.length) {
+                progress.push({ label: unit.kind, done: unit.progress, total: unit.units });
+            }
+        });
+    }
+    // The construction sites covering the addressed spot — their build work
+    // (the same snapshot structureLine renders; the FULL path resolves the
+    // footprint, so the interior view reads only the sites standing on the
+    // exact fine cell)
+    tileStructures(island, path).forEach((structure) => {
         if (structure.state !== 'built' && structure.workTotal > 0) {
             progress.push({
                 label: structure.blueprintId,
@@ -679,10 +709,12 @@ export const tileSummary = (island: IslandHandle, path: TilePath): TileSummary |
         ground: tileGround(island, path),
         occupants: tileOccupants(island, path),
         structures: tileStructures(island, path),
-        // R6 — the standing jobs of the tile's ROOT tile (the tile-work
-        // ledger and the site footprints are tile-addressed; deeper views
-        // read the same job through the root)
-        work: tileProgress(island, path[0].x, path[0].y),
+        // R6/R1 — the standing jobs: the tile-work ledger rides the ROOT
+        // tile (path[0] — the ledger's key space), the site build work the
+        // FULL path (the footprint resolves at the inspected granularity —
+        // the same read the structures section above makes, so the Work
+        // section and the Structures section agree on every zoom level)
+        work: tileProgress(island, path),
     };
 };
 
@@ -846,9 +878,10 @@ export const scaleView = (island: IslandHandle, viewPath: TilePath): ViewSlice |
 //     forest (opacity 1). A sub-grid that woods 90 % of its cells is, for
 //     the tile's color, indistinguishable from a full canopy; below it the
 //     icon fades proportionally, so a sparse woodland shows a faint icon.
-//   • MIN_OPACITY (0.1) — a floor: even a single tree among a hundred
-//     cells still marks the tile (the woods are findable), so the icon
-//     never vanishes while trees stand.
+//   • MIN_OPACITY (0.5) — a floor: even a single tree among a hundred
+//     cells still VISIBLY marks the tile (R2 — the woods must be findable
+//     and a stocked tile must never read as bare grass), so the icon never
+//     vanishes while trees stand.
 //   • ZERO trees → no icon at all: the resolver returns undefined and the
 //     view draws nothing (a clear-cut tile is bare — the same no-flood rule
 //     the decorations carry).
@@ -862,7 +895,7 @@ export const scaleView = (island: IslandHandle, viewPath: TilePath): ViewSlice |
 //
 // The helper is PURE (two numbers in, an opacity out) so the rule — and
 // its anchors — is testable without a world:
-//   treeIconOpacity(1, 100)   → 0.1     (one tree / 100 cells → the floor)
+//   treeIconOpacity(1, 100)   → 0.5     (one tree / 100 cells → the floor)
 //   treeIconOpacity(45, 100)  → 0.5     (45 % woods → half cover)
 //   treeIconOpacity(90, 100)  → 1       (90 % woods → full cover)
 //   treeIconOpacity(100, 100) → 1       (clamps at 1 — coverage > full)
@@ -871,8 +904,15 @@ export const scaleView = (island: IslandHandle, viewPath: TilePath): ViewSlice |
 /** The tree coverage at which the scale-1 icon reads as a full forest (opacity 1). */
 export const TREE_ICON_FULL_COVERAGE = 0.9;
 
-/** The minimum scale-1 tree icon opacity — a lone tree among many cells still marks the tile. */
-export const TREE_ICON_MIN_OPACITY = 0.1;
+/** The minimum scale-1 tree icon opacity — a stocked tile is ALWAYS visibly
+ * marked. R2: the old 0.1 floor left a sparse stand (the meadow-ingress
+ * fringe — a handful of trees among 425 cells) effectively invisible while
+ * the lumber rung happily chopped it ("chop on grass with no tree"). Half
+ * strength keeps the density fade honest (a lone tree reads fainter than a
+ * full canopy) while staying clearly visible; the icon itself remains
+ * stock-driven, so a treeless tile still draws NOTHING — the fade only ever
+ * marks trees that actually stand (no blanket forest appearance). */
+export const TREE_ICON_MIN_OPACITY = 0.5;
 
 /**
  * The opacity the ISLAND view (scale 1) draws a tile's standing tree icon

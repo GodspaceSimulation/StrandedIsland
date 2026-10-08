@@ -157,15 +157,17 @@ export type ForestPlugin = WorldPlugin<World> & {
     /** Whether the tree's pool has reached the mature cap. */
     matureOf(record: ForestTreeRecord): boolean;
     /**
-     * Cuts ONE wood off a tile's stand — the exact fine spot's tree first,
-     * else the deterministic nearest standing tree inside the same tile
-     * (grid metric, ties break to insertion order). Folds the tree's lazy
-     * growth into its baseline first (the fractional accumulator), then
-     * subtracts the wood; a pool of 0 fells the tree (record removed).
-     * Returns whether the source tree died; null when the tile holds no
+     * Cuts UP TO `units` wood (default 1) off a tile's stand — the exact
+     * fine spot's tree first, else the deterministic nearest standing tree
+     * inside the same tile (grid metric, ties break to insertion order).
+     * Folds the tree's lazy growth into its baseline first (the fractional
+     * accumulator), then subtracts the cut; a pool shorter than `units`
+     * pays only what stood (conservation — the R2 chop payout), and a pool
+     * of 0 fells the tree (record removed). Returns how many units left the
+     * tree and whether the source tree died; null when the tile holds no
      * standing tree at all.
      */
-    chop(parent: { x: number; y: number }, fine?: { x: number; y: number }): { felled: boolean } | null;
+    chop(parent: { x: number; y: number }, fine?: { x: number; y: number }, units?: number): { felled: boolean; taken: number } | null;
     /** A tile's stand summary (undefined when the tile holds no forest). */
     standOf(parent: { x: number; y: number }): ForestSummary | undefined;
     /** One tree's inspection card at an exact fine spot (undefined: bare). */
@@ -516,7 +518,7 @@ export const forestPlugin = (wiring: { terrain: IslandTerrainPlugin; inventory: 
         },
         matureOf: (record) => poolAt(record, minute) >= woodCap,
 
-        chop: (parent, fine) => {
+        chop: (parent, fine, units) => {
             const stand = terrain.forestOf(parent.x, parent.y);
             if (!stand || stand.trees.size === 0) {
                 // Nothing stands to cut — the harvest fails atomically
@@ -548,10 +550,15 @@ export const forestPlugin = (wiring: { terrain: IslandTerrainPlugin; inventory: 
             if (!record) {
                 return null;
             }
-            // Fold the pending growth into the baseline, then take ONE wood
-            // — the tree stands while wood remains, a pool of 0 fells it
+            // Fold the pending growth into the baseline, then cut UP TO
+            // `units` wood (default 1) — the tree stands while wood remains,
+            // a pool of 0 fells it. The payout is exactly what stood: a
+            // sapling's pool-1 tree cut with `units` 3 pays 1 and dies
+            // (conservation — one pool unit = one wood item, the R2 chop
+            // payout never prints wood out of thin air)
             const pool = foldAt(record, minute);
-            record.base = pool - 1;
+            const taken = Math.min(pool, Math.max(1, Math.floor(units ?? 1)));
+            record.base = pool - taken;
             if (record.base <= 0) {
                 // FELLED COMPLETE — the record leaves the stand and the
                 // standing-tree mirrors drop with it (the deposit count and
@@ -564,7 +571,7 @@ export const forestPlugin = (wiring: { terrain: IslandTerrainPlugin; inventory: 
                 stand.trees.delete(targetKey);
                 syncMirror(parent.x, parent.y, stand);
             }
-            return { felled: record.base <= 0 };
+            return { felled: record.base <= 0, taken };
         },
 
         standOf: (parent) => {

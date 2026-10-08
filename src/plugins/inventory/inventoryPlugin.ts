@@ -9,10 +9,12 @@
 // mushrooms in the meadows and woods, fish AND seaweed in the water (the
 // sea AND the impassable fresh basins — R4/R5, fished from the dry shore),
 // coconuts on beaches, iron lodes in the highlands, flints, vines, the
-// sea's fish and seaweed), grows the living stocks back over time, rains
-// fresh water onto the land in scattered pools, and exposes the gathering
-// + harvest + exchange actions that other plugins (behavior, lumber) and
-// the god-view drive.
+// sea's fish and seaweed), grows the living stocks back over time, keeps the
+// rain as WEATHER (the event — R4: rain no longer scatters drinking-water
+// pools onto the land; the fresh water stands in the lake/pond basins and
+// their dry shore ring, refilled on their own rhythm), and exposes the
+// gathering + harvest + exchange actions that other plugins (behavior,
+// lumber) and the god-view drive.
 //
 // TILE DEPOSITS: every canvas cell carries `resources` (engine/types.ts
 // TileResources) — written by the terrain generator, kept in sync here. The
@@ -38,7 +40,7 @@
 // pre-ecology behavior).
 
 import { arrayEach } from '@presource/core';
-import { randomKeyed, type Position3D } from '@godspace/core';
+import { type Position3D } from '@godspace/core';
 import type { Actor, TerrainCell, TileResource } from '../../engine/types';
 import { TILE_RESOURCES, UNLIMITED_TILE_RESOURCES } from '../../engine/types';
 import type { PluginContext, WorldPlugin } from '@godspace/core';
@@ -57,9 +59,11 @@ import {
 import type { EntityProfiles } from '../entity/entityPlugin';
 
 export type InventoryPluginOptions = {
-    /** Chance per world-minute that rain sweeps the island and pools gather
-     * on a scattered subset of the land. Default 0.0127 (≈ 0.76 rains per
-     * world hour). */
+    /** Chance per world-minute that a rain WEATHER event sweeps the island
+     * (the log/story read it). R4 — rain gathers no water any more: the
+     * fresh-water supply is the basins + their shore ring, so this option
+     * now shapes only the weather cadence. Default 0.0127 (≈ 0.76 rains
+     * per world hour). */
     rainChancePerMinute?: number;
     /**
      * The entity profiles (plugins/entity/entityPlugin.ts) — the per-type
@@ -168,12 +172,14 @@ const FROND_SELLER = 'tree';
 
 /**
  * R2 — THE FRESH-WATER REPLENISHMENT. Lakes and ponds (the interior
- * wetland basines the terrain generator carves) and the dry SHORE ring
+ * wetland basins the terrain generator carves) and the dry SHORE ring
  * beside them stock drinking water. The survey seeds that stock once; this
  * rhythm tops it back up (the basin never dries, so the stock refills on a
  * staggered world-minute cadence keyed off the same fine clock as the other
- * rhythms). `every` 30 with offset 15 staggers the refill away from the
- * rain-pool pulse (the rain runs on its own keyed streams).
+ * rhythm). `every` 30 with offset 15 staggers the refill away from the
+ * berry (offset 20) pulse. R4 — with the scattered rain pool gone this is
+ * the island's ONLY water replenishment: the basin's standing fresh water,
+ * gathered from the wetland or its dry shore.
  */
 const FRESH_WATER_RHYTHM = { every: 30, offset: 15 };
 
@@ -188,14 +194,6 @@ const FRESH_WATER_RHYTHM = { every: 30, offset: 15 };
  * refills away from the berry (offset 20) and vine (offset 30) pulses.
  */
 const BUSH_RHYTHM = { every: 40, offset: 25 };
-
-/**
- * Chance per rain event that ONE land cell gathers a drinking pool. Rain no
- * longer floods the whole island — pools form on a scattered subset, so
- * fresh water is a resource the cast must go and FIND (the behavior
- * plugin's thirst ladder travels to the nearest pool).
- */
-const POOL_CHANCE_PER_CELL = 0.25;
 
 /** What each biome stocks when the island is surveyed — THE RICHER MAP,
  * ABUNDANCE-TUNED. The tile deposits (trees, stone, iron, sand, dirt) come
@@ -306,15 +304,21 @@ export type InventoryAgent = {
 /**
  * The FOREST HARVEST PROVIDER — the plugins/forest ecology mounts itself
  * into the inventory (mountForest) so the harvest action can cut wood off
- * the trees' pools. One method: take one wood from a tile's stand — the
- * exact fine spot's tree first, else the deterministic nearest standing
- * tree inside the same tile; folds the tree's lazy growth, removes the
- * record when the pool hits 0. `felled` reports whether the source tree
- * died (the caller syncs the standing-tree mirrors). Null: no standing
- * tree on the tile (nothing to cut — the harvest fails atomically).
+ * the trees' pools. One method: cut UP TO `units` wood (default 1) off a
+ * tile's stand — the exact fine spot's tree first, else the deterministic
+ * nearest standing tree inside the same tile; folds the tree's lazy growth,
+ * removes the record when the pool hits 0. `taken` reports how many units
+ * actually left the tree (a pool shorter than `units` pays only what stood
+ * — the conservation rule behind the R2 chop payout), `felled` whether the
+ * source tree died (the caller syncs the standing-tree mirrors). Null: no
+ * standing tree on the tile (nothing to cut — the harvest fails atomically).
  */
 export type ForestEcology = {
-    chop(parent: { x: number; y: number }, fine: { x: number; y: number } | undefined): { felled: boolean } | null;
+    chop(
+        parent: { x: number; y: number },
+        fine: { x: number; y: number } | undefined,
+        units?: number,
+    ): { felled: boolean; taken: number } | null;
 };
 
 export type InventoryPlugin = WorldPlugin<World> & {
@@ -331,18 +335,24 @@ export type InventoryPlugin = WorldPlugin<World> & {
     /** Takes one `itemId` from the cell the agent stands on. */
     takeFromCell(agent: InventoryAgent, itemId: string): boolean;
     /**
-     * Cuts one unit of wood off a standing tree (depositId 'tree') into the
-     * agent's bag (yieldId 'wood'). With the forest ecology mounted: the
-     * tree's pool shrinks by one (the actor's fine spot's tree first, else
-     * the deterministic nearest in the tile) and the tree STANDS while wood
-     * remains — a fully felled tree (pool 0) leaves the record and the
-     * standing-tree mirrors. Without the provider: the legacy whole-tree
-     * consumption (one deposit unit per wood). Fails without side effects
+     * Cuts wood off a standing tree (depositId 'tree') into the agent's bag
+     * (yieldId 'wood'). `yieldCount` (default 1, the R2 chop payout passes
+     * 3) is the WANTED bundle — the harvest takes UP TO that many units and
+     * pays exactly what it cut (conservation: one pool unit = one wood item,
+     * so a sapling's pool-1 tree still yields exactly 1 wood and the
+     * inspector's standing-wood read never lies). With the forest ecology
+     * mounted: up to `yieldCount` units leave ONE tree's pool (the actor's
+     * fine spot's tree first, else the deterministic nearest in the tile)
+     * and the tree STANDS while wood remains — a fully felled tree (pool 0)
+     * leaves the record and the standing-tree mirrors. Without the
+     * provider: the legacy whole-tree consumption (one deposit unit per
+     * wood, up to `yieldCount` standing units). Fails without side effects
      * when the tile holds no trees (or the deposit is unlimited — those are
-     * gathered raw with takeFromCell, never converted). Capacity is gated
-     * BEFORE anything moves (atomicity: a full bag never fells).
+     * gathered raw with takeFromCell, never converted) or when the bag
+     * holds no room for even ONE unit. Capacity is gated BEFORE anything
+     * moves (atomicity: a full bag never fells).
      */
-    harvest(agent: InventoryAgent, depositId: string, yieldId: string): boolean;
+    harvest(agent: InventoryAgent, depositId: string, yieldId: string, yieldCount?: number): boolean;
     /** Gathers one available item from the agent's cell. Returns the item id. */
     gather(agent: InventoryAgent): string | null;
     /**
@@ -759,7 +769,7 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             return true;
         },
 
-        harvest: (actor, depositId, yieldId) => {
+        harvest: (actor, depositId, yieldId, yieldCount) => {
             const x = actor.position.x;
             const y = actor.position.y;
             // Unlimited deposits are raw ground — they are taken as
@@ -769,27 +779,36 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             }
             // THE CAPACITY GATE — checked BEFORE anything moves so a
             // full bag leaves the tile untouched (atomicity: a failed
-            // cut never wounds a tree)
-            if (!canHold(actor.id, { [yieldId]: 1 })) {
+            // cut never wounds a tree). R2 — the gate wants the whole
+            // bundle but never blocks a partial cut: the bag's room
+            // CLAMPS the wanted count, and only a bag with no room at
+            // all refuses (one unit of room still cuts one unit of wood)
+            const room = capacityOf(actor.id) - inventoryTotal(bagOf(actor.id));
+            const wanted = Math.max(1, Math.floor(yieldCount ?? 1));
+            const want = Math.min(wanted, room);
+            if (want < 1) {
                 return false;
             }
             const stock = stockOf(x, y);
             // ── The forest ecology path — wood comes off the tree's POOL ──
-            // One chop takes one wood; the tree STANDS while wood remains
-            // and only a fully felled tree (pool 0) leaves the record. The
-            // standing-tree mirrors sync inside the chop itself (the
+            // One completed chop cuts UP TO `want` units off ONE tree; the
+            // tree STANDS while wood remains and only a fully felled tree
+            // (pool 0) leaves the record. The payout is exactly what was
+            // CUT (conservation — a pool shorter than `want` pays less),
+            // the standing-tree mirrors sync inside the chop itself (the
             // ecology owns them — no ghosts, no stale deposits). The exact
             // fine spot's tree is cut first; a bare fine cell cuts the
             // deterministic nearest tree inside the same tile.
             if (depositId === 'tree' && forest) {
                 const fine = world?.subOf(actor.id);
-                const outcome = forest.chop({ x, y }, fine);
+                const outcome = forest.chop({ x, y }, fine, want);
                 if (!outcome) {
                     // No standing tree on the tile — nothing moved
                     return false;
                 }
                 // The wood lands in the bag — wood exists only as a yield
-                inventoryAdd(bagOf(actor.id), yieldId, 1);
+                // (exactly the units the chop took — never more)
+                inventoryAdd(bagOf(actor.id), yieldId, outcome.taken);
                 return true;
             }
             // ── THE BIOLOGICAL BOUNDARY — a living tree harvests ONLY
@@ -808,24 +827,29 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
                 return false;
             }
             // ── The legacy path (no forest ecology mounted, NO persistent
-            // stand underfoot) — one whole tree deposit unit per wood. This
-            // serves fixtures and older terrain whose trees are plain tile
-            // deposits with no biological records: taking one draws the
-            // tile's deposit down with the stock (nothing can resurrect it
-            // — no stand exists to restore from). The deposit must still be
-            // standing (a co-worker may have taken the last unit during the
-            // wait) — atomic: a failed check leaves stock, tile and bag
-            // untouched
-            if (!inventoryRemove(stock, depositId, 1)) {
+            // stand underfoot) — one whole tree deposit unit per wood, up
+            // to `want` standing units. This serves fixtures and older
+            // terrain whose trees are plain tile deposits with no
+            // biological records: taking one draws the tile's deposit down
+            // with the stock (nothing can resurrect it — no stand exists
+            // to restore from). The deposit must still be standing (a
+            // co-worker may have taken the last unit during the wait) —
+            // atomic: nothing moves unless at least ONE unit stands, and
+            // the payout is exactly the units drawn (never more)
+            const standing = stock[depositId] ?? 0;
+            const taken = Math.min(want, standing);
+            if (taken < 1 || !inventoryRemove(stock, depositId, taken)) {
                 return false;
             }
-            // The tree is gone from the tile — the deposit draws down. The
-            // tile's LOOK keeps its forest canopy: tileSurfaceKey reads the
-            // standing forest voxel, so even a legacy clearcut never
-            // re-skins the wood to its plain biome
-            drawDeposit(x, y, depositId);
+            // The trees are gone from the tile — the deposit draws down
+            // with them. The tile's LOOK keeps its forest canopy:
+            // tileSurfaceKey reads the standing forest voxel, so even a
+            // legacy clearcut never re-skins the wood to its plain biome
+            for (let unit = 0; unit < taken; unit++) {
+                drawDeposit(x, y, depositId);
+            }
             // The product lands in the bag — wood exists only as a yield
-            inventoryAdd(bagOf(actor.id), yieldId, 1);
+            inventoryAdd(bagOf(actor.id), yieldId, taken);
             // No log line — felling a tree is a solo beat, not a story
             // between entities (the log is a story teller)
             return true;
@@ -1057,27 +1081,15 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
                 });
             });
 
-            // Rain — fresh water pools gather on a SCATTERED subset of the
-            // land. Each cell's pool roll comes from its own keyed stream
-            // (world seed + minute + address), so the patchwork is fully
-            // deterministic per seed and the plugin's roll stream stays
-            // untouched by the sweep (the rain minute pins never drift).
-            // Water never appears under every foot at once — the cast must
-            // go and find the pools.
+            // R4 — RAIN IS WEATHER, NOT A WATER PICKUP. The rain roll still
+            // sweeps the island (the weather event stands — the story feed
+            // reads it), but it no longer scatters drinking-water pools
+            // onto ordinary inland tiles: the island's fresh water lives
+            // where the terrain HOLDS it — the lake/pond basins and their
+            // dry shore ring (the survey's freshWaterCells + the
+            // FRESH_WATER_RHYTHM replenishment below). No per-cell pool
+            // rolls, no scattered pickups the god never asked for.
             if (context.random() < rainChance) {
-                arrayEach(active.canvas.cells, ({ value: cell }) => {
-                    if (!cell.passable) {
-                        return;
-                    }
-                    const poolRoll = randomKeyed(
-                        active.seed,
-                        `pool:${minute}:${cell.x},${cell.y}`,
-                    )();
-                    if (poolRoll < POOL_CHANCE_PER_CELL) {
-                        const stock = stockOf(cell.x, cell.y);
-                        stock.water = Math.min(REGROW_CAPS.water, (stock.water ?? 0) + 1);
-                    }
-                });
                 active.events.emit({ kind: 'weather', message: 'Rain sweeps the island.' });
             }
 
@@ -1085,8 +1097,9 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             // (the lake/pond wetlands + their dry shore ring, tracked in
             // freshWaterCells by the survey) tops its water stock back up to
             // the cap on the FRESH_WATER_RHYTHM — the basin's supply is the
-            // island's standing fresh water, so a drawn-down pool refills on
-            // its own cadence (independent of the scattered rain-pool pulse).
+            // island's standing fresh water, so a drawn-down basin refills on
+            // its own cadence (R4 — with the rain pool gone this is the ONLY
+            // water replenishment on the island).
             if (minute % FRESH_WATER_RHYTHM.every === FRESH_WATER_RHYTHM.offset) {
                 freshWaterCells.forEach((key) => {
                     const [x, y] = key.split(',').map(Number);

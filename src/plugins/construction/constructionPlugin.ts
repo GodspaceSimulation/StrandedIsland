@@ -1632,7 +1632,10 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                         if (!claimed) {
                             return;
                         }
-                        if (!inventory.harvest(actor, 'tree', 'wood')) {
+                        // R2 — the same 3-wood chop payout the lumber rung
+                        // pays (this feeds the SAME shared tile job, R6 —
+                        // one job, one payout shape)
+                        if (!inventory.harvest(actor, 'tree', 'wood', 3)) {
                             tasks.tileWork.put(claimed);
                         }
                         return;

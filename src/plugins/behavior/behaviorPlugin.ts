@@ -87,9 +87,9 @@
 // NOTHING RECOVERS STRAIGHT FROM THE GROUND — the "go and find it" rule.
 // Water and food are world resources the actor must physically reach and
 // put INTO ITS INVENTORY first (collect → bag; gather → bag); the needs
-// only recover when an inventory item is CONSUMED (drink/eat). The rain no
-// longer floods every tile (the inventory plugin scatters pools), so the
-// thirst ladder genuinely has to travel.
+// only recover when an inventory item is CONSUMED (drink/eat). Rain is
+// weather only (R4 — the water stands in the lake/pond basins and their
+// dry shore ring), so the thirst ladder genuinely has to travel.
 //
 // Movement runs at SCALE 0 — the simulation ground: every move task walks
 // the actor ONE SUBTILE CELL inside its tile's sub-grid
@@ -631,10 +631,10 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                     }
                     // 4) Go and find a pool — travel one fine step toward
                     //    the nearest stocked cell. R4 — the pool targets are
-                    //    the PASSABLE water carriers (rain pools + the dry
-                    //    shore ring beside the basins): the impassable lake
-                    //    cells stock water nobody can stand in to collect,
-                    //    and the shore ring beside them stocks it too, so
+                    //    the PASSABLE water carriers (the dry shore ring
+                    //    beside the basins): the impassable lake cells stock
+                    //    water nobody can stand in to collect, and the shore
+                    //    ring beside them stocks it too, so
                     //    the trek never aims at water behind a wall. WATER
                     //    REALM: a body on an impassable cell has no ground
                     //    travel (its wrap needs dry land) — decline and let

@@ -23,7 +23,8 @@ export const materials: ItemRegistry = createItemRegistry();
 
 // Engine configuration of the shared catalog: the island coins ids the
 // stock list doesn't carry (berry — the catalog lists the plural 'berries';
-// water — the island's drinkable rain pool; iron and dirt — the tile
+// water — the island's drinkable fresh water from the lake/pond basins;
+// iron and dirt — the tile
 // deposits the catalog only lists in compound form, 'iron-ore'; tree — the
 // standing deposit the canvas paints green; frond — the palm undergrowth
 // the construction chains shed beneath the trees; grass — the ground cover

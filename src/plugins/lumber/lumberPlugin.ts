@@ -189,7 +189,12 @@ export const lumberPlugin = (options: LumberPluginOptions): LumberPlugin => {
                 if (!claimed) {
                     return;
                 }
-                const harvested = inventory.harvest(actor, 'tree', 'wood');
+                // R2 — THE CHOP PAYOUT: a finished job cuts UP TO 3 wood off
+                // the tree (the harvest pays exactly what it cut — a short
+                // pool pays short, the tree dies when the pool runs out).
+                // One work-minute of shared tile work, three times the
+                // wood: the woods feed the camp at a human pace.
+                const harvested = inventory.harvest(actor, 'tree', 'wood', 3);
                 if (!harvested) {
                     // The payout failed (a full bag, a co-worker's last
                     // pool unit) — the standing work returns for the next

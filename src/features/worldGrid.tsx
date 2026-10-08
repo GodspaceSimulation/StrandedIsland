@@ -173,6 +173,11 @@ const WorkBars = ({ x, y, progress }: { x: number; y: number; progress: TileProg
                 aria-valuemin={0}
                 aria-valuemax={job.total}
                 aria-label={`${job.label} ${job.done}/${job.total}`}
+                // R1 — the bar carries its OWN hover detail (the exact work
+                // minutes), the DOM twin of the SVG strip's <title>. Without
+                // it the track only ever surfaced the CELL's column tooltip
+                // and hovering the bar showed no job detail at all
+                title={`${job.label} ${job.done}/${job.total}`}
                 data-testid={`work-bar-${x}-${y}-${job.label}`}
             >
                 <WorkBarFill pct={job.total > 0 ? job.done / job.total : 0} />
@@ -471,8 +476,26 @@ export const WorldGrid = () => {
 
     // R6 — the standing jobs of a tile (the shared tile-work ledger plus
     // the live site build work): the progress bars every board draws so
-    // the god sees what work the world remembers at each tile
-    const progressFor = (x: number, y: number): TileProgress[] => tileProgress(island, x, y);
+    // the god sees what work the world remembers at each tile.
+    // R1 — THE BARS RIDE THE ADDRESS THAT OWNS THE WORK. The frame's tiles
+    // carry VIEW-LOCAL coordinates: at the island view they ARE the root
+    // (island) coordinates the ledger is keyed by (tileWorkKey composes
+    // actor.position — the root space); at the zoomed interior they are the
+    // parent tile's FINE cells, which are NOT ledger keys. So the read is
+    // composed as a path: the island view reads `[{x, y}]` (ledger + any
+    // footprint on the tile), the interior reads `[viewRoot, {x, y}]` —
+    // the inspector's own address shape (tileSummary), where the ledger
+    // half rides viewRoot = path[0] and the site half resolves the exact
+    // fine cell the footprint covers. The interior board passes
+    // tileJobs:false — a ledger job belongs to the WHOLE tile (the ledger
+    // holds no fine-cell state), so it is never stamped onto individual
+    // interior cells; the Tile Inspector still reads it at every zoom.
+    const progressFor = (x: number, y: number): TileProgress[] =>
+        tileProgress(
+            island,
+            viewPath.length > 0 ? [viewPath[0], { x, y }] : [{ x, y }],
+            { tileJobs: viewPath.length === 0 },
+        );
 
     // The zoom toggle at the ISLAND view needs an inspected tile — without
     // one there is nothing to zoom into (the button states that in its
