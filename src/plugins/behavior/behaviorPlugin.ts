@@ -124,9 +124,13 @@
 //   fish    — R5 — takes the planned fish from the adjacent water cell into
 //             the bag (the inventory's fish primitive re-validates the dry
 //             ground, the cardinal shore reach, the stock and the capacity).
-//   rest    — restores energy (the instant-rest recovery, once per completed
-//             rest). The sleep plugin restores its own tasks per-minute and
-//             does NOT go through here.
+//   rest    — restores energy (the instant-rest recovery, once per
+//             completed rest, through the needs plugin's recovery service
+//             — the R4 resource-backed route: the restore charges the
+//             body's hunger/thirst equally and caps at the energy
+//             headroom). The sleep plugin restores its own tasks
+//             per-minute through the same service and does NOT go
+//             through here.
 //   social  — nothing: the exchange/gift already happened at plan time.
 //
 // TILE WORK VS PRIVATE CRAFT (R6) — the GATHERING kinds (collect/gather)
@@ -1267,8 +1271,14 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                         // The instant-rest recovery, once per completed rest —
                         // the sleep plugin restores its own tasks per-minute
                         // instead (sleepPlugin tick), never through here.
+                        // R4 — the recovery rides the needs plugin's
+                        // RECOVERY SERVICE: the +12 request converts to an
+                        // actual restore charged equally against the body's
+                        // hunger and thirst (resource-backed, capped at the
+                        // energy headroom, blocked by an empty resource) —
+                        // the same service the sleep minutes pay into.
                         // No log line — resting is a solo beat, not a story.
-                        needs.satisfy(actor.id, { energy: REST_RECOVERY });
+                        needs.recovery(actor.id, REST_RECOVERY);
                         return;
                     }
                     case 'social': {

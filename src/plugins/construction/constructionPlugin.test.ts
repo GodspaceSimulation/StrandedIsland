@@ -15,6 +15,13 @@ import { createIslandWorld, type IslandHandle } from '../../scenario/island';
 import { fineStep } from '../../plugins/movement/fineMovement';
 import { scaleView, tileSummary, structureLine } from '../../features/tileDetails';
 import { inventoryWeight } from '../../plugins/inventory/items';
+import { isSeaWater } from '../../engine/types';
+import {
+    createSections,
+    repairPrice,
+    type StructureSection,
+} from './structureModel';
+import { footprintTouchesSeaWater, type FineTerrainResolver } from './fineSiting';
 import { position3 } from '@godspace/core';
 import type { SiteRegistry } from '@godspace/blueprint';
 
@@ -24,6 +31,9 @@ const island = (options?: Parameters<typeof createIslandWorld>[0]): IslandHandle
 
 /** The mounted site registry (created at the terrain plugin's setup). */
 const sites = (handle: IslandHandle): SiteRegistry => handle.construction.sites;
+
+/** The shelter rest bonus's per-minute rate (constructionPlugin's sweep). */
+const SHELTER_REST_BONUS = 0.5;
 
 /**
  * R5/R6 — drives the deterministic seed-7 world until `done()` holds (or
@@ -66,8 +76,33 @@ const topUp = (handle: IslandHandle, siteId: string, totals: Record<string, numb
  * factory (packages/godspace/core/src/task buildTaskBehaviour): the
  * payload carries the BLUEPRINT id (the effect resolves the site through
  * readySiteOf), not the site id.
+ *
+ * `stay` — an optional PER-ITERATION callback run right before the build
+ * task is queued (after the needs pin). The one-cell-bench fixtures pass a
+ * re-park closure: with no build rung registered for a blueprint defined
+ * after setup, the idle worker is grabbed by the lower rungs (wander 0 /
+ * lumber 10 — the probe showed the idle planning walking it one fine cell
+ * off the footprint after the first completion) and every later build
+ * minute is rejected by the effect's atSite revalidation. The re-park
+ * corrects the drift each minute, so every hand-queued minute lands.
+ * Callers without the hook keep the exact single-park behavior.
+ *
+ * THE NIGHT HORIZON — the sleep rung (30, the clock-forced night quota)
+ * strictly outranks the deliver shell (24): a hand-build window that
+ * crosses the 22:00–06:00 preferred window loses its quota minutes to the
+ * clock sleep (the T6/R4 rewrite — the old energy-only gate never slept a
+ * pinned-full body). One night's quota is 360 minutes, so the loop horizon
+ * carries one full quota night + slack beyond the work total; the loop
+ * still stops the moment the site reads built (a day-side window exits at
+ * work + 8 exactly as before).
  */
-const handBuild = (handle: IslandHandle, siteId: string, blueprintId: string, work: number): void => {
+const handBuild = (
+    handle: IslandHandle,
+    siteId: string,
+    blueprintId: string,
+    work: number,
+    stay?: () => void,
+): void => {
     const cells = sites(handle).cellsOf(siteId) ?? [];
     const worker = [...handle.world.actors.values()][0];
     expect(worker).toBeDefined();
@@ -117,7 +152,7 @@ const handBuild = (handle: IslandHandle, siteId: string, blueprintId: string, wo
        // (the probe shows one delta-0 step at the open), so the loop runs a
        // few minutes PAST the work total and stops the moment the site
        // reads built - extra minutes onto a finished site are rejected
-       for (let minute = 0; minute < work + 8 && sites(handle).siteOf(siteId)?.state !== 'built'; minute++) {
+       for (let minute = 0; minute < work + 8 + 400 && sites(handle).siteOf(siteId)?.state !== 'built'; minute++) {
            // The march leaves survivors DEPLETED (thirst/hunger past their
            // triggers, energy low) - the survival rungs (50/40/30) outrank
            // build (21), so the scheduler churns every hand-queued minute
@@ -128,6 +163,8 @@ const handBuild = (handle: IslandHandle, siteId: string, blueprintId: string, wo
             // Sweep again: a shark spawned since the last step is a threat
             // the moment the survival module scans (see clearThreats above)
             clearThreats();
+            // The bench fixtures' drift correction — before the rungs plan
+            stay?.();
             // THE PRIORITY SHELL: the minute is queued under the DELIVER rung
            // (24), not the build rung (21). The scheduler churns any task
            // outranked by a module that still plans - and the materials rung
@@ -135,12 +172,12 @@ const handBuild = (handle: IslandHandle, siteId: string, blueprintId: string, wo
            // EFFECTIVE raw, even on a fully staged site. The completion
            // effect dispatches on the spec's KIND ('build'), not the
            // behaviour id, so the shell only borrows the rung's priority
-           handle.tasks.ledger.queue(worker.id, 'deliver', [
-               { kind: 'build', label: `builds ${blueprintId}`, minutes: 1, payload: { blueprint: blueprintId } },
-           ]);
-           handle.world.step();
-       }
-   };
+            handle.tasks.ledger.queue(worker.id, 'deliver', [
+                { kind: 'build', label: `builds ${blueprintId}`, minutes: 1, payload: { blueprint: blueprintId } },
+            ]);
+            handle.world.step();
+        }
+    };
 
 describe('constructionPlugin — the shared registries', () => {
     it('wires the stock blueprint registry and the island recipes', () => {
@@ -284,6 +321,11 @@ describe('constructionPlugin — the shared registries', () => {
             // project always outranks a repair, and social (20) outranks it
             // too — maintenance is the last responsible duty before idling
             { id: 'maintain', priority: 15 },
+            // R3 (tool durability): the mend rung — a held tool worn past
+            // TOOL_REPAIR_TRIGGER mends for one wood + TOOL_REPAIR_WORK
+            // minutes, below the structure upkeep (15) and above the lumber
+            // chop (10): the crew mends its tools in the same idle gaps
+            { id: 'mend', priority: 14 },
             { id: 'lumber', priority: 10 },
             { id: 'wander', priority: 0 },
         ]);
@@ -305,7 +347,7 @@ describe('constructionPlugin — the shared registries', () => {
         // member carries an axe yet — the rung owes the craft to this actor
         handle.inventory.spawnKit('actor-1', { wood: 1, stone: 1 });
         expect(toolAxe?.appliesTo?.(subject as never)).toBe(true);
-        // THE ONCE-GATE: a DUREABLE concept — the moment any crew member
+        // the once-gate: a dureable concept — the moment any crew member
         // carries the axe the crew "has an axe" and the tool-craft rung stops
         // owing it (the build projects consume no tools, so this shared
         // gate is what ends the owed craft)
@@ -314,10 +356,10 @@ describe('constructionPlugin — the shared registries', () => {
     });
 
     it('R4: the tool-lead hold releases the moment the crew holds the tool (the reserve dies with the debt)', () => {
-        // THE HOLD'S OTHER HALF — owedToolInputsOf reserves the craft inputs
-        // ONLY while the tool is UNMET. Once any bag carries the tool the
+        // the hold's other half — owedToolInputsOf reserves the craft inputs
+        // only while the tool is unmet. once any bag carries the tool the
         // once-gate closes the owed craft, and the lead must go back to
-        // hauling: the protected units of a CLOSED craft would otherwise
+        // hauling: the protected units of a closed craft would otherwise
         // block its fetch/seek/fell/deliver forever on material the crew
         // now needs (the reserve outliving the debt).
         const handle = island();
@@ -328,18 +370,18 @@ describe('constructionPlugin — the shared registries', () => {
         const subject = { id: ael.id, actor: ael } as never;
         const deliver = handle.tasks.ledger.behaviours().find((module) => module.id === 'deliver');
         expect(deliver).toBeDefined();
-        // actor-1 is the AXE LEAD: its bag holds the axe's full input set
-        // (wood 1 + stone 1) and the crew carries no axe. The deliver rung
+        // actor-1 is the axe lead: its bag holds the axe's full input set
+        // (wood 1 + stone 1) and the crew carries no axe. the deliver rung
         // declines its input-only load — the seed-7 starvation protection,
         // intact: the unit the 5-minute craft waits on stays in the bag
         handle.inventory.spawnKit('actor-1', { wood: 1, stone: 1 });
         expect(deliver?.appliesTo?.(subject)).toBe(false);
-        // THE RELEASE — the axe lands in ANOTHER crew bag (the once-gate
+        // the release — the axe lands in another crew bag (the once-gate
         // closes; actor-1 never crafts it): the same wood unit is no longer
         // a protected input of an owed craft, and the shelter takes the haul
         handle.inventory.spawnKit('actor-2', { axe: 1 });
         expect(deliver?.appliesTo?.(subject)).toBe(true);
-        // And the hammer lead releases the same way: actor-1 now holds the
+        // and the hammer lead releases the same way: actor-1 now holds the
         // hammer's full input set (wood 2) and leads it while the hammer is
         // unmet — held, then released by one hammer
         handle.inventory.spawnKit('actor-1', { wood: 1 }); // wood 2 total — the hammer's input
@@ -349,8 +391,8 @@ describe('constructionPlugin — the shared registries', () => {
         expect(deliver?.appliesTo?.(subject)).toBe(true);
     });
 
-    it('R4: both early tools land in a crew bag in a NORMAL world — once each, inputs consumed', () => {
-        // A FRESH registry handle proves the tools are CRAFTED (their raw
+    it('R4: both early tools land in a crew bag in a normal world — once each, inputs consumed', () => {
+        // a fresh registry handle proves the tools are crafted (their raw
         // inputs are consumed, never spawned for free): the axe's log + stone
         // and the hammer's two logs come off the hand.
         const ledger = island();
@@ -372,32 +414,32 @@ describe('constructionPlugin — the shared registries', () => {
             ledger.construction.crafting.craft('hammer', { wood: 2 }).consumed,
         ).toEqual([{ item: 'wood', count: 2 }]);
 
-        // THE NORMAL-WORLD CAMPAIGN — the seed-7 handle carries only the
-        // STARTING_KIT (berry + flint), no injected tool inputs. The crew
-        // must gather the axe's STONE itself (the demand the R4 fix folds
-        // into the early fetches) and craft BOTH tools, each ONCE, well
-        // inside 700 minutes. Pinned from the run: hammer@325, axe@305, and
-        // each tool's crew total peaks at EXACTLY one (the once-gate plus
+        // the normal-world campaign — the seed-7 handle carries only the
+        // STARTING_KIT (berry + flint), no injected tool inputs. the crew
+        // must gather the axe's stone itself (the demand the R4 fix folds
+        // into the early fetches) and craft both tools, each once, well
+        // inside 700 minutes. pinned from the run: hammer@325, axe@305, and
+        // each tool's crew total peaks at exactly one (the once-gate plus
         // the deterministic lead gate end the craft after a single output).
-        // The finite-stone shift moved the axe late in the window (stone
+        // the finite-stone shift moved the axe late in the window (stone
         // now stands only on the 9 highland rock sites — the crew treks to
         // them instead of gathering stone underfoot, and the stone/wood
-        // combo must land in ONE bag for the 5-minute craft; the tool-lead
+        // combo must land in one bag for the 5-minute craft; the tool-lead
         // hold in the construction plugin keeps the lead actor's input bag
-        // intact while the ladder commits it — see owedToolInputsOf). The
+        // intact while the ladder commits it — see owedToolInputsOf). the
         // abundance tuning moved the axe further (657): the crew's needs
         // schedule now rides the richer food map (fuller bellies re-plan
         // the fetch order), so the stone trek lands later — the hammer
         // minute is untouched and both once-gates still clamp at one.
         // R4/R5 moved both (325/305): the impassable ponds reroute the treks
         // and the fishing shores feed the crew earlier, re-ordering the
-        // fetches once more. R5's WEIGHT capacity reorders the fetches again
+        // fetches once more. R5's weight capacity reorders the fetches again
         // (a 200-weight hand carries far more raw material, so the stone trek
         // for the axe lands later): the axe now lands ~804, the hammer ~157.
         // R1 (priority-aware placement) moved the shelter off-center to
         // (-4,-1): the crew's home base shifts away from the highland rock,
         // so the axe's stone trek lands much later — ~5410 under the fixed
-        // registry (the hammer, wood-only, still lands early at ~166). The
+        // registry (the hammer, wood-only, still lands early at ~166). the
         // window widens to 6000 to cover the rerouted trek.
         const handle = island();
         const crewTotal = (tool: string): number =>
@@ -422,10 +464,10 @@ describe('constructionPlugin — the shared registries', () => {
                 hammerAt = minute;
             }
         }
-        // The exact landing MINUTES are campaign pacing results (the shared
+        // the exact landing minutes are campaign pacing results (the shared
         // tile-work fell job and the island work costs move them), so the
-        // contract pins the END STATE inside the window: both tools land,
-        // and each crew total peaks at EXACTLY one (the once-gate plus the
+        // contract pins the end state inside the window: both tools land,
+        // and each crew total peaks at exactly one (the once-gate plus the
         // deterministic lead gate end the craft after a single output)
         expect(axeAt).toBeGreaterThanOrEqual(0);
         expect(axeAt).toBeLessThan(6000);
@@ -435,7 +477,7 @@ describe('constructionPlugin — the shared registries', () => {
         expect(hammerMax).toBe(1);
     }, 30000); // the 6000-minute drive outruns the 5s default under suite load
 
-    it('the craft rung\'s bag-room gate is the NET (post-craft) weight fit: a full hand holding the raws still crafts', () => {
+    it('the craft rung\'s bag-room gate is the net (post-craft) weight fit: a full hand holding the raws still crafts', () => {
         const handle = island();
         // The shelter opens on the first tick and still owes its thatch
         // (the craft-thatch rung's siteNeeds reads the active site live)
@@ -498,11 +540,13 @@ describe('constructionPlugin — placement and the scale-0 footprint', () => {
         expect(handle.construction.project()).toBe('shelter');
     });
 
-    it('the placement clearance skips a tile with a body standing in the footprint', () => {
+    it('the placement clearance moves the ANCHOR off a blocked fine cell (the fine spiral search, R2)', () => {
         const handle = island();
         // Park a body exactly on the shelter's SCORED tile's first footprint
         // cell (tile (-4,-1), fine (0,0)) before the first tick — the scan
-        // must skip that tile and take the next best-scoring feasible one
+        // no longer drops the whole tile: the fine anchor search (R2, the
+        // fineSiting spiral) tries the next anchor in its deterministic
+        // center-out order and places on the FIRST valid one
         handle.world.spawn({
             id: 'blocker',
             name: 'Bloc',
@@ -516,13 +560,16 @@ describe('constructionPlugin — placement and the scale-0 footprint', () => {
         const sub = handle.world.subOf('blocker');
         handle.world.relocateFine('blocker', 0 - sub.x, 0 - sub.y);
         handle.world.step();
-        // The shelter moved to the next best-scoring feasible dry tile
+        // The shelter STAYS on the scored tile — the legacy center anchor
+        // ((0,0), cells (0,0)+(1,0)) hits the body, so the spiral's next
+        // candidate ((-1,-1), cells (-1,-1)+(0,-1)) takes the placement
         const moved = sites(handle).sites()[0];
         expect(moved.blueprintId).toBe('shelter');
-        expect(moved.parent).not.toEqual([{ x: -4, y: -1 }]);
+        expect(moved.parent).toEqual([{ x: -4, y: -1 }]);
+        expect(moved.anchor).toEqual({ x: -1, y: -1 });
         expect(sites(handle).cellsOf(moved.id)).toEqual([
-            { parent: moved.parent, x: 0, y: 0, scale: 0, offset: { x: 0, y: 0 } },
-            { parent: moved.parent, x: 1, y: 0, scale: 0, offset: { x: 1, y: 0 } },
+            { parent: [{ x: -4, y: -1 }], x: -1, y: -1, scale: 0, offset: { x: 0, y: 0 } },
+            { parent: [{ x: -4, y: -1 }], x: 0, y: -1, scale: 0, offset: { x: 1, y: 0 } },
         ]);
     });
 
@@ -710,7 +757,7 @@ describe('constructionPlugin — the autonomous staging and work', () => {
         });
     });
 
-    it('a sheltered sleeper recovers faster — the shelter rest bonus', () => {
+    it('a sheltered sleeper recovers faster — the shelter rest bonus through the recovery service', () => {
         const handle = island();
         driveUntil(handle, () => sites(handle).sites().some((site) => site.blueprintId === 'shelter' && site.state === 'built'), 12000);
         const shelter = sites(handle).sites().find((site) => site.blueprintId === 'shelter');
@@ -731,22 +778,106 @@ describe('constructionPlugin — the autonomous staging and work', () => {
         const sub = handle.world.subOf(sleeper.id);
         handle.world.relocateFine(sleeper.id, gate.x - (sub?.x ?? 0), gate.y - (sub?.y ?? 0));
         handle.tasks.cancel(sleeper.id);
-        handle.needs.satisfy(sleeper.id, { hunger: -100, thirst: -100, energy: -80 });
-        // The energy at the park — the campaign minute the shelter finished
-        // at is a pacing result, so the pin is the EXACT DELTA of the ten
-        // sheltered sleep minutes, not an absolute reservoir value
-        const energyBefore = handle.needs.of(sleeper.id).energy;
+        // THE ZERO FLOOR — the energy drains to EXACTLY 0 (a delta past the
+        // reservoir clamps at the floor): minute 1's idle burn (the energy
+        // decay still runs while resting) is then invisible, so the deltas
+        // below are exact. The belly drains to the full lines.
+        handle.needs.satisfy(sleeper.id, { hunger: -100, thirst: -100, energy: -200 });
+        // The reservoirs at the park — the campaign minute the shelter
+        // finished at is a pacing result, so the pins are the EXACT DELTAS
+        // of the ten sheltered sleep minutes, not absolute reservoir values
+        const before = handle.needs.of(sleeper.id);
         for (let minute = 0; minute < 10; minute++) {
             handle.world.step();
         }
-        // The sleep restore (1.2/min) + the shelter bonus (0.5/min) − the
-        // decay (0.06/min): 1.64 per sleeping minute. The exact ten-minute
-        // delta is 16.46 because the drained reservoir sits ON the zero
-        // floor: minute 1 the queued sleep restore lands whole (1.70, the
-        // decay clamped at the floor), minutes 2–10 run the full 1.64 —
-        // 1.70 + 9 × 1.64 = 16.46. The sheltered night is the safe night
-        expect(handle.needs.of(sleeper.id).energy - energyBefore).toBeCloseTo(16.46, 10);
+        // THE T6 RECOVERY MODEL — both gains ride needs.recovery, and the
+        // minute's whole spend is the service's equal charge. The needs
+        // tick runs BEFORE the sleep planning, so the first minute is the
+        // awake metabolism + the bonus:
+        //   minute 1 (the plan minute): the awake belly decay (0.1 hunger /
+        //     0.15 thirst) applies — the head is still empty when the needs
+        //     tick reads it — the energy decay is INVISIBLE at the zero
+        //     floor, then the sleep module plans the nap and the shelter
+        //     bonus lands: +0.5 energy, +0.6 hunger, +0.65 thirst;
+        //   minutes 2–10 (the resting minutes): the sleep restore 1.2 + the
+        //     bonus 0.5 land through recovery — the EQUAL hunger/thirst
+        //     charge 1.7 each (the awake belly decay is suspended — the
+        //     charge is the whole spend) — and the energy nets 1.2 + 0.5 −
+        //     the idle burn 0.06 = +1.64.
+        // The exact ten-minute deltas: energy 0.5 + 9 × 1.64 = 15.26, hunger
+        // 0.6 + 9 × 1.7 = 15.9, thirst 0.65 + 9 × 1.7 = 15.95. The
+        // sheltered night is the safe night — and an honest one: the belly
+        // pays for it equally.
+        const after = handle.needs.of(sleeper.id);
+        expect(after.energy - before.energy).toBeCloseTo(15.26, 10);
+        expect(after.hunger - before.hunger).toBeCloseTo(15.9, 10);
+        expect(after.thirst - before.thirst).toBeCloseTo(15.95, 10);
         expect(handle.tasks.taskOf(sleeper.id)?.kind).toBe('sleep');
+    });
+
+    it('no awake bonus — a body whose head task is not a rest or a sleep gains nothing on a built gate', () => {
+        const handle = island();
+        driveUntil(handle, () => sites(handle).sites().some((site) => site.blueprintId === 'shelter' && site.state === 'built'), 12000);
+        const shelter = sites(handle).sites().find((site) => site.blueprintId === 'shelter');
+        const gate = (sites(handle).cellsOf(shelter?.id ?? '') ?? [])[0];
+        expect(shelter?.state).toBe('built');
+        const idler = [...handle.world.actors.values()][0];
+        expect(idler).toBeDefined();
+        if (!idler || !gate) {
+            return;
+        }
+        handle.world.relocate(idler.id, { x: gate.parent[0].x, y: gate.parent[0].y, z: 0 });
+        handle.tasks.cancel(idler.id);
+        const sub = handle.world.subOf(idler.id);
+        handle.world.relocateFine(idler.id, gate.x - (sub?.x ?? 0), gate.y - (sub?.y ?? 0));
+        handle.tasks.cancel(idler.id);
+        // Keep the body AWAKE on the gate with a long manual task whose
+        // kind is neither sleep nor rest (a zero-delta move — the parked
+        // body stays put); the needs stay pinned so no survival rung
+        // pre-empts the task and the body holds the gate for the window
+        handle.needs.satisfy(idler.id, { thirst: -100, hunger: -100, energy: 100, health: 100 });
+        handle.tasks.ledger.queue(idler.id, 'deliver', [
+            { kind: 'move', label: 'stands on the gate', minutes: 20, payload: { dx: 0, dy: 0 } },
+        ]);
+        for (let minute = 0; minute < 20; minute++) {
+            handle.needs.satisfy(idler.id, { thirst: -100, hunger: -100, energy: 100, health: 100 });
+            handle.world.step();
+        }
+        // THE AWAKE MINUTES: no bonus (the head task is a move) and the
+        // pin re-applied before every step — after the final step the
+        // energy reads exactly one decayed minute below full (the idle
+        // burn 0.06; the sweep never adds its 0.5). The body is exactly
+        // where it parked.
+        expect(handle.needs.of(idler.id).energy).toBeCloseTo(99.94, 10);
+        expect(handle.world.subOf(idler.id)).toEqual({ x: gate.x, y: gate.y });
+    });
+
+    it('the bonus route refuses a zero-resource and a capped body — nothing converts from nothing', () => {
+        const handle = island();
+        const idler = [...handle.world.actors.values()][0];
+        expect(idler).toBeDefined();
+        if (!idler) {
+            return;
+        }
+        // THE ZERO-SOURCE REFUSAL — the bonus rides needs.recovery (the
+        // exact call the sweep makes): a body whose charged resources sit
+        // ON the 100 line has no room to be charged, so the requested
+        // bonus yields 0 and mutates nothing — the sheltered minute never
+        // conjures energy from an empty source.
+        handle.needs.satisfy(idler.id, { hunger: 100, thirst: 100, energy: -40 });
+        const drained = handle.needs.of(idler.id);
+        expect(drained.hunger).toBe(100);
+        expect(drained.thirst).toBe(100);
+        expect(handle.needs.recovery(idler.id, SHELTER_REST_BONUS)).toBe(0);
+        expect(handle.needs.of(idler.id)).toEqual(drained);
+        // THE ENERGY-CAP REFUSAL — a full reservoir caps the restore at
+        // the 100 headroom: 0 energy moves and NOTHING is charged (no
+        // phantom cost on a body that cannot gain).
+        handle.needs.satisfy(idler.id, { hunger: -100, thirst: -100, energy: 200 });
+        const full = handle.needs.of(idler.id);
+        expect(full.energy).toBe(100);
+        expect(handle.needs.recovery(idler.id, SHELTER_REST_BONUS)).toBe(0);
+        expect(handle.needs.of(idler.id)).toEqual(full);
     });
 });
 
@@ -785,8 +916,7 @@ describe('constructionPlugin — the inspection and render surfaces', () => {
         ]);
         // R4 — a BUILT structure's line reads its SECTION HEALTH, not the
         // spent staging ledger (the sections wear; the ledger is history).
-        // Fresh at the build minute the wood section is whole (100/100) and
-        // the thatch has already worn a little under the march's clock
+        // The drive stops at the build minute, so both sections stand whole
         const line = structureLine(summary?.structures[0] as never);
         expect(line).toMatch(/^Shelter · built · gate · sections wood 100\/100 \+ thatch \d+\/60 · work 240\/240$/);
         // A tile without a site lists none
@@ -810,6 +940,15 @@ describe('constructionPlugin — the inspection and render surfaces', () => {
         handle.world.relocate(parked, { x: cells[1].parent[0].x, y: cells[1].parent[0].y, z: 0 });
         handle.tasks.cancel(parked);
         handle.world.relocateFine(parked, cells[1].x - (handle.world.subOf(parked)?.x ?? 0), cells[1].y - (handle.world.subOf(parked)?.y ?? 0));
+        handle.tasks.cancel(parked);
+        // THE WELL CONDITION — the ~5500-minute march leaves the survivor
+        // whatever condition its needs ran to (a pacing result — the probe
+        // caught 'weak'), so the body's canvas stamp is pinned deliberately:
+        // restore the reservoirs full and take ONE step (a step re-stamps
+        // the coordinate entry's condition; the idle planning queues but
+        // never RUNS a move inside the same step, so the parked cell holds)
+        handle.needs.satisfy(parked, { thirst: -100, hunger: -100, energy: 100, health: 100 });
+        handle.world.step();
         handle.tasks.cancel(parked);
         const path = [{ x: cells[0].parent[0].x, y: cells[0].parent[0].y }];
         // The interior view (scale 0): every covered fine cell of the
@@ -1144,12 +1283,13 @@ describe('constructionPlugin — R3/R4 maintenance, the quarry cut and R1 rock s
         const fresh = handle.construction.sectionsOf(shelterId);
         expect(fresh[0]).toMatchObject({ id: 'sec-1', tier: 'wood', maxHealth: 100 });
         expect(fresh[1]).toMatchObject({ id: 'sec-2', tier: 'thatch', maxHealth: 60 });
-        // 1000 world minutes = exactly 10 health off EVERY section (the
-        // wear clock is per-section and material-blind in its rate)
-        drivePinned(handle, workerId, 1000);
+        // 2880 world minutes = TWO full world days = exactly 2 health points
+        // off EVERY section (WEAR_MINUTES_PER_HEALTH 1440 — the wear clock is
+        // per-section and material-blind in its rate)
+        drivePinned(handle, workerId, 2880);
         const worn = handle.construction.sectionsOf(shelterId);
-        expect(worn[0].health).toBe(fresh[0].health - 10);
-        expect(worn[1].health).toBe(fresh[1].health - 10);
+        expect(worn[0].health).toBe(fresh[0].health - 2);
+        expect(worn[1].health).toBe(fresh[1].health - 2);
         // The thatch roof is the shortest fuse - it wears toward zero
         // while the wood frame still reads comfortably sound
         expect(worn[1].health).toBeLessThan(worn[0].health);
@@ -1157,56 +1297,60 @@ describe('constructionPlugin — R3/R4 maintenance, the quarry cut and R1 rock s
 
     it('R4 runtime: no material, no mending - an open repair never heals what the crew cannot carry', () => {
         const { handle, shelterId, workerId } = mechanicsShelter();
-        drivePinned(handle, workerId, 1500);
+        // One full world day: exactly 1 health point off the roof
+        drivePinned(handle, workerId, 1440);
         const worn = handle.construction.sectionsOf(shelterId);
         const order = handle.construction.orderRepair(shelterId, 'sec-2');
-        // The roof is missing 14-16 hp → ceil(missing/10) = 2 units, 10 work
+        // The roof is missing exactly 1 hp → ceil(1/10) = 1 unit, 5 work
         expect(order).toMatchObject({
             kind: 'repair',
             siteId: shelterId,
             sectionId: 'sec-2',
             item: 'thatch',
-            units: 2,
-            work: 10,
+            units: 1,
+            work: 5,
             staged: 0,
             workDone: 0,
             state: 'open',
         });
-        // 300 minutes with the order open and NOTHING to stage: thatch is
-        // a crafted part, no ground cell stocks it, and the craft rung
-        // serves only a live site (the plan is spent) - so the section
-        // keeps WEARING and never heals
-        drivePinned(handle, workerId, 300);
+        // 1440 more minutes (a second world day) with the order open and
+        // NOTHING to stage: thatch is a crafted part, no ground cell stocks
+        // it, and the craft rung serves only a live site (the plan is spent)
+        // - so the section keeps WEARING and never heals
+        drivePinned(handle, workerId, 1440);
         const after = handle.construction.sectionsOf(shelterId);
-        expect(after[1].health).toBe(worn[1].health - 3);
+        expect(after[1].health).toBe(worn[1].health - 1);
         expect(orderOf(handle, order?.id ?? '')).toMatchObject({ staged: 0, workDone: 0, state: 'open' });
     }, 60000);
 
     it('R4 runtime: the maintain rung mends a worn section through the SCHEDULER - bag subtracted, work spent, wear reset', () => {
         const { handle, shelterId, workerId, park } = mechanicsShelter();
-        drivePinned(handle, workerId, 1500);
+        // One world day: the roof misses exactly 1 health point
+        drivePinned(handle, workerId, 1440);
         park();
         const order = handle.construction.orderRepair(shelterId, 'sec-2');
-        handle.inventory.spawnKit(workerId, { thatch: 2 });
+        // missing 1 hp → ceil(1/10) = 1 unit of thatch, 5 work minutes
+        expect(order).toMatchObject({ item: 'thatch', units: 1, work: 5, state: 'open' });
+        handle.inventory.spawnKit(workerId, { thatch: 1 });
         // DEAD-material distinction: a mended wall is not the living woods.
         // Capture the forest stand on the shelter tile - a repair spends
         // BAG material and must never touch a standing stand.
         const anchor = sites(handle).siteOf(shelterId)?.parent[0];
         const standBefore = JSON.stringify(handle.forest.standOf(anchor ?? { x: 0, y: 0 }));
-        // PHASE 1 - the haul and the stage: the crew carries the two thatch
+        // PHASE 1 - the haul and the stage: the crew carries the one thatch
         // onto the footprint. Staged is NOT done: the order still owes its
         // work minutes, and the section stays worn.
         drivePinned(
             handle,
             workerId,
             120,
-            () => (orderOf(handle, order?.id ?? '')?.staged ?? 0) >= 2,
+            () => (orderOf(handle, order?.id ?? '')?.staged ?? 0) >= 1,
         );
         const staged = orderOf(handle, order?.id ?? '');
-        expect(staged).toMatchObject({ staged: 2, state: 'open' });
+        expect(staged).toMatchObject({ staged: 1, state: 'open' });
         expect(staged?.workDone).toBe(0);
         expect(handle.construction.sectionsOf(shelterId)[1].health).toBeLessThan(60);
-        // PHASE 2 - the work: ten one-minute stages commit the order; the
+        // PHASE 2 - the work: five one-minute stages commit the order; the
         // mended section stands SOUND (the wear clock resets on commit)
         drivePinned(
             handle,
@@ -1216,17 +1360,285 @@ describe('constructionPlugin — R3/R4 maintenance, the quarry cut and R1 rock s
         );
         expect(orderOf(handle, order?.id ?? '')).toMatchObject({
             state: 'done',
-            staged: 2,
-            workDone: 10,
-            work: 10,
+            staged: 1,
+            workDone: 5,
+            work: 5,
         });
         const after = handle.construction.sectionsOf(shelterId);
         expect(after[1].health).toBe(60);
-        // The bag paid in full: the two thatch left the hand into the wall
+        // The bag paid in full: the one thatch left the hand into the wall
         expect(handle.inventory.of(workerId).thatch ?? 0).toBe(0);
         // And the living woods never moved - repair is not growth
         expect(JSON.stringify(handle.forest.standOf(anchor ?? { x: 0, y: 0 }))).toBe(standBefore);
     }, 60000);
+
+    it('R3 economics: the maximal repair of every blueprint stays strictly below full replacement', () => {
+        // THE AUDIT PIN (R3) — for every island blueprint, restoring ALL its
+        // sections from TOTAL ruin (the worst repair bill possible) costs
+        // strictly less carried material AND strictly less work than
+        // rebuilding the whole structure. The exact numbers are derived from
+        // the live definitions (the literal staging totals) × the section
+        // anatomy × repairPrice — and pinned as literals so any pricing or
+        // weighting drift breaks the test.
+        const handle = island();
+        // The bill-to-bag fold SUMS repeated items (a house's three wood
+        // sections each price 10 wood — keyed overwriting would count one)
+        const asBag = (lines: Array<{ item: string; count: number }>) => {
+            const bag: Record<string, number> = {};
+            lines.forEach((line) => {
+                bag[line.item] = (bag[line.item] ?? 0) + line.count;
+            });
+            return bag;
+        };
+        const audited = (blueprintId: string) => {
+            const definition = handle.construction.blueprints.definitionOf(blueprintId);
+            if (!definition) {
+                throw new Error(`no definition for ${blueprintId}`);
+            }
+            // The worst repair: every section ruined (the wear clock long
+            // past zero health — repairPrice floors the missing read)
+            const ruined: StructureSection[] = createSections(blueprintId).map((section) => ({
+                ...section,
+                wornMinutes: 1_000_000_000,
+            }));
+            const prices = ruined.map((section) => repairPrice(section));
+            return {
+                repairWeight: inventoryWeight(asBag(prices.map((price) => ({ item: price.item, count: price.units })))),
+                repairWork: prices.reduce((sum, price) => sum + price.work, 0),
+                replacementWeight: inventoryWeight(asBag(definition.requires)),
+                replacementWork: definition.work,
+            };
+        };
+        expect(audited('shelter')).toEqual({ repairWeight: 212, repairWork: 80, replacementWeight: 2640, replacementWork: 240 });
+        expect(audited('house')).toEqual({ repairWeight: 612, repairWork: 180, replacementWeight: 53280, replacementWork: 4320 });
+        expect(audited('fort')).toEqual({ repairWeight: 3200, repairWork: 400, replacementWeight: 96000, replacementWork: 2880 });
+        expect(audited('raft')).toEqual({ repairWeight: 400, repairWork: 100, replacementWeight: 7360, replacementWork: 480 });
+        expect(audited('boat')).toEqual({ repairWeight: 600, repairWork: 150, replacementWeight: 14640, replacementWork: 1440 });
+        expect(audited('quarry')).toEqual({ repairWeight: 1000, repairWork: 150, replacementWeight: 12000, replacementWork: 480 });
+        expect(audited('furnace')).toEqual({ repairWeight: 1600, repairWork: 200, replacementWeight: 8400, replacementWork: 240 });
+    });
+
+    /**
+     * THE BENCH FIXTURE — a tiny hand-placed one-cell structure the tool
+     * tests build against: the stock plan is removed so the plan cursor
+     * stays spent, a `bench` blueprint (work as given) is defined, hand-
+     * placed on the first conflict-free land tile and topped up to ready.
+     * Returns the bench id AND a re-park closure for handBuild's `stay`
+     * hook (no build rung exists for a blueprint defined after setup, so
+     * the idle worker is otherwise grabbed by the lower rungs and walked
+     * off the one-cell footprint — see handBuild's `stay` note).
+     */
+    const handBench = (handle: IslandHandle, work: number): { benchId: string; park: () => void } => {
+        ['shelter', 'raft', 'house', 'boat', 'quarry', 'furnace', 'fort'].forEach((id) =>
+            handle.construction.blueprints.remove(id),
+        );
+        handle.construction.blueprints.define({
+            id: 'bench',
+            label: 'Bench',
+            cells: [{ x: 0, y: 0 }],
+            requires: [{ item: 'wood', count: 1 }],
+            work,
+        });
+        const spot = handle.world
+            .landCells()
+            .find((cell) =>
+                sites(handle).conflicts({ blueprintId: 'bench', parent: [{ x: cell.x, y: cell.y }], anchor: { x: 0, y: 0 } }).length === 0,
+            );
+        if (!spot) {
+            throw new Error('no conflict-free land tile for the bench');
+        }
+        const bench = sites(handle).place({
+            blueprintId: 'bench',
+            parent: [{ x: spot.x, y: spot.y }],
+            anchor: { x: 0, y: 0 },
+        });
+        topUp(handle, bench.id, { wood: 1 });
+        const benchCell = (sites(handle).cellsOf(bench.id) ?? [])[0];
+        const park = (): void => {
+            const worker = [...handle.world.actors.values()][0];
+            if (!worker || !benchCell) {
+                return;
+            }
+            handle.world.relocate(worker.id, { x: benchCell.parent[0].x, y: benchCell.parent[0].y, z: 0 });
+            handle.tasks.cancel(worker.id);
+            handle.world.relocateFine(
+                worker.id,
+                benchCell.x - (handle.world.subOf(worker.id)?.x ?? 0),
+                benchCell.y - (handle.world.subOf(worker.id)?.y ?? 0),
+            );
+            handle.tasks.cancel(worker.id);
+        };
+        return { benchId: bench.id, park };
+    };
+
+    /**
+     * The bench worker's kit: the crafted tools (axe + hammer — spawned
+     * here, the bench fixture starts from the bare STARTING_KIT) plus
+     * exactly the WOOD the wear-window needs to keep the lumber rung
+     * (10 — the bag's wood rack gate) closed. The march debris (berries,
+     * flints…) goes: a churning lumber rung walks the worker off the bench
+     * and every hand-queued minute is lost.
+     */
+    const benchKit = (handle: IslandHandle, workerId: string, wood: number): void => {
+        const bag = handle.inventory.of(workerId);
+        Object.keys(bag).forEach((key) => {
+            if (key !== 'axe' && key !== 'hammer' && key !== 'wood') {
+                delete bag[key];
+            }
+        });
+        handle.inventory.spawnKit(workerId, { axe: 1, hammer: 1, ...(wood > 0 ? { wood } : {}) });
+    };
+
+    it('R3 runtime: the hammer wears one health per build minute and BREAKS atomically at its last point', () => {
+        const handle = island({ plugins: { sharks: false, predators: false } });
+        const { benchId, park } = handBench(handle, 100);
+        const worker = [...handle.world.actors.values()][0];
+        expect(worker).toBeDefined();
+        if (!worker) {
+            return;
+        }
+        // Tools + a two-log wood rack in hand, the march debris out: the
+        // wood is INERT (the bench is fully staged — no rung fetches it)
+        // and holds the lumber rung closed; the woodless variant would let
+        // the lumber rung churn the hand-queued minutes (the probe). The
+        // replacement craft (the once-gate reopens at the break) never
+        // fires inside the window — the break lands on the LAST build
+        // minute and the loop exits at the built state before the tool
+        // rung can re-plan.
+        benchKit(handle, worker.id, 2);
+        // 100 successful build minutes = 100 hammer charges (1 health per
+        // committed build minute) — the 100th use breaks the tool inside
+        // the same synchronous effect step
+        handBuild(handle, benchId, 'bench', 100, park);
+        expect(sites(handle).siteOf(benchId)).toMatchObject({ state: 'built', work: 100 });
+        // THE ATOMIC BREAK — the hammer left the bag with its last health
+        expect(handle.inventory.of(worker.id).hammer ?? 0).toBe(0);
+        // The durability read: no hammer held → no view (the record died
+        // with the bag count, the canonical existence check)
+        expect(
+            handle.construction.tools().filter((view) => view.actorId === worker.id && view.tool === 'hammer'),
+        ).toEqual([]);
+        // The axe never builds — it stands untouched at full health
+        expect(handle.construction.tools().find((view) => view.actorId === worker.id && view.tool === 'axe')).toEqual({
+            actorId: worker.id,
+            tool: 'axe',
+            health: 100,
+            maxHealth: 100,
+            damage: 0,
+        });
+        // And the inert wood rack never left the bag (no rung fetched it)
+        expect(handle.inventory.of(worker.id).wood ?? 0).toBe(2);
+    }, 120000);
+
+    it('R3 runtime: the mend rung mends a worn hammer for one wood at the half-sound trigger', () => {
+        const handle = island({ plugins: { sharks: false, predators: false } });
+        const { benchId, park } = handBench(handle, 60);
+        const worker = [...handle.world.actors.values()][0];
+        expect(worker).toBeDefined();
+        if (!worker) {
+            return;
+        }
+        // Tools + exactly the mend raw: one wood (TOOL_REPAIR_MATERIAL —
+        // the rung gate opens only when the bag holds it; it also holds
+        // the lumber rung closed through the build window)
+        benchKit(handle, worker.id, 1);
+        // 60 build minutes wear the hammer 60 points — past the half-sound
+        // mend trigger (0.5 × 100) but short of break. The build minutes
+        // outrun the mend rung (the deliver-shell queue, 24 > 14), so the
+        // full wear banks BEFORE the mend gets its turn
+        handBuild(handle, benchId, 'bench', 60, park);
+        expect(sites(handle).siteOf(benchId)).toMatchObject({ state: 'built', work: 60 });
+        const wornView = handle.construction.tools().find((view) => view.actorId === worker.id && view.tool === 'hammer');
+        expect(wornView?.health).toBe(40);
+        // THE MEND — two one-minute stages commit: the wood leaves the bag
+        // and the damage ledger resets to full sound
+        drivePinned(
+            handle,
+            worker.id,
+            40,
+            () =>
+                (handle.inventory.of(worker.id).wood ?? 0) === 0 &&
+                (handle.construction.tools().find((view) => view.actorId === worker.id && view.tool === 'hammer')?.health ?? 0) === 100,
+        );
+        expect(handle.inventory.of(worker.id).wood ?? 0).toBe(0);
+        expect(handle.construction.tools().find((view) => view.actorId === worker.id && view.tool === 'hammer')).toEqual({
+            actorId: worker.id,
+            tool: 'hammer',
+            health: 100,
+            maxHealth: 100,
+            damage: 0,
+        });
+        // The hammer stays held — a mend never replaces the tool
+        expect(handle.inventory.of(worker.id).hammer ?? 0).toBe(1);
+    }, 120000);
+
+    it('R3 runtime: the axe wears on a successful fell payout through the maintain rung', () => {
+        const { handle, shelterId, workerId } = mechanicsShelter();
+        // The order owes one wood — the maintain rung fetches it by felling
+        const order = handle.construction.orderRepair(shelterId, 'sec-1');
+        expect(order).toMatchObject({ kind: 'repair', item: 'wood', units: 1, state: 'open' });
+        // The axe in hand, the bag otherwise empty (the wood payout has room)
+        emptyBag(handle, workerId);
+        // One body on the field: the claim race is this worker's alone
+        Array.from(handle.world.actors.keys())
+            .filter((id) => id !== workerId)
+            .forEach((id) => handle.world.despawn(id));
+        // Park the worker ON A RICH TREE'S OWN FINE CELL: the chop cuts the
+        // feller's exact spot's tree first, so the payout is EXACT — a pool
+        // of 3+ pays the full 3 (growth only adds, so the pool read at the
+        // park guarantees the cut minutes later), no matter how many
+        // minutes the shared job takes to accrue. No SEEDED tree is mature
+        // (cap 8) at the campaign's minutes — the maturity is an 8-YEAR
+        // climb — so the richness filter is the pool, not the mature flag.
+        let spot: { x: number; y: number; fine: { x: number; y: number } } | undefined;
+        for (const cell of handle.world.canvas.cells) {
+            if (spot) {
+                break;
+            }
+            const stand = handle.terrain.forestOf(cell.x, cell.y);
+            if (!stand || stand.trees.size === 0) {
+                continue;
+            }
+            for (const [fineKey] of stand.trees) {
+                const [fx, fy] = fineKey.split(',').map(Number);
+                const tree = handle.forest.treeAt(cell, { x: fx, y: fy });
+                if (tree && tree.wood >= 3) {
+                    spot = { x: cell.x, y: cell.y, fine: { x: fx, y: fy } };
+                    break;
+                }
+            }
+        }
+        if (!spot) {
+            throw new Error('no pool-3 tree stands on the island');
+        }
+        handle.world.relocate(workerId, { x: spot.x, y: spot.y, z: 0 });
+        handle.tasks.cancel(workerId);
+        const sub = handle.world.subOf(workerId);
+        handle.world.relocateFine(workerId, spot.fine.x - (sub?.x ?? 0), spot.fine.y - (sub?.y ?? 0));
+        handle.tasks.cancel(workerId);
+        // The feller's chop job runs its minutes (the axe halves the open
+        // at ceil(15/2) = 8) and the atomic claim pays the standing tree:
+        // the successful payout charges the held axe exactly
+        // toolWearPerUse('axe','fell') = 5 health for the tree
+        drivePinned(
+            handle,
+            workerId,
+            40,
+            () =>
+                (handle.construction.tools().find((view) => view.actorId === workerId && view.tool === 'axe')?.damage ?? 0) >= 5,
+        );
+        expect(handle.construction.tools().find((view) => view.actorId === workerId && view.tool === 'axe')).toEqual({
+            actorId: workerId,
+            tool: 'axe',
+            health: 95,
+            maxHealth: 100,
+            damage: 5,
+        });
+        // The payout landed: the mature tree's exact 3-wood cut is in the bag
+        expect(handle.inventory.of(workerId).wood ?? 0).toBe(3);
+        // The order is still open, unstaged — the stop fired before the haul
+        expect(orderOf(handle, order?.id ?? '')).toMatchObject({ staged: 0, state: 'open' });
+    }, 120000);
 
     it('R3 runtime: the ladder walks wood to stone to brick - and brick never fires without the kiln', () => {
         const { handle, shelterId, workerId, park } = mechanicsShelter();
@@ -1504,4 +1916,78 @@ describe('constructionPlugin — R3/R4 maintenance, the quarry cut and R1 rock s
         const first = handle.world.landCells()[0];
         expect(first.biome).not.toBe('highland');
     }, 60000);
+});
+
+describe('constructionPlugin — R2 the fine shoreline gates (runtime)', () => {
+    it('the raft places only where its fine footprint is DRY and touches navigable fine sea water', () => {
+        // The R2 fine gates at the scan's end: every resolved footprint cell
+        // of the placed raft reads DRY through the terrain plugin's fine
+        // resolver, and the footprint stands directly beside fine sea water
+        // (the same footprintTouchesSeaWater gate the scan itself applies —
+        // the hull always moors at the shoreline the launch rechecks)
+        const handle = island();
+        driveUntil(handle, () => sites(handle).sites().some((site) => site.blueprintId === 'raft'), 12000);
+        const raft = sites(handle).sites().find((site) => site.blueprintId === 'raft');
+        if (!raft) {
+            throw new Error('the raft was never placed');
+        }
+        const cells = (sites(handle).cellsOf(raft.id) ?? []).map((cell) => ({
+            parent: cell.parent[0],
+            x: cell.x,
+            y: cell.y,
+        }));
+        expect(cells.length).toBeGreaterThan(0);
+        const resolve: FineTerrainResolver = (tileX, tileY, fx, fy) =>
+            handle.terrain.cellFor([{ x: tileX, y: tileY }, { x: fx, y: fy }]);
+        // THE DRY GATE — no fine water cell is ever built over
+        cells.forEach((cell) => {
+            const terrain = resolve(cell.parent.x, cell.parent.y, cell.x, cell.y);
+            expect(terrain).toBeDefined();
+            expect(terrain?.passable).toBe(true);
+        });
+        // THE MOORING GATE — the footprint touches fine sea water (the
+        // wrapped off-tile neighbor reads the ADJACENT tile's fine cell)
+        const dims = { width: handle.world.canvas.width, height: handle.world.canvas.height };
+        expect(footprintTouchesSeaWater(cells, resolve, dims, (x, y) => handle.world.inBounds(x, y))).toBe(true);
+        // The coarse mooring holds behind the fine gate (the launch's own
+        // recheck — sea water beside the anchor tile)
+        const anchor = raft.parent[0];
+        const seaBeside = [
+            { x: anchor.x - 1, y: anchor.y },
+            { x: anchor.x + 1, y: anchor.y },
+            { x: anchor.x, y: anchor.y - 1 },
+            { x: anchor.x, y: anchor.y + 1 },
+        ].some((neighbor) => {
+            const cell = handle.world.cellAt(neighbor.x, neighbor.y);
+            return cell !== undefined && !cell.passable && isSeaWater(cell.biome);
+        });
+        expect(seaBeside).toBe(true);
+    }, 120000);
+
+    it('an island with no sea-moored beach places NO hull - the plan waits instead of defaulting onto a basin', () => {
+        // THE INFEASIBILITY RULE — with the fine gates there is no "best
+        // effort" placement: when no beach tile moors the salt, the vessel
+        // project simply never places and the plan cursor waits on it.
+        // The mutation turns every SEA column's biome to 'pond': the cells
+        // stay impassable water, but isSeaWater (the mooring rule the
+        // placement scan and the launch share) reads none of it as salt.
+        const handle = island();
+        handle.world.canvas.cells.forEach((cell) => {
+            if (!cell.passable && isSeaWater(cell.biome)) {
+                cell.biome = 'pond';
+            }
+        });
+        driveUntil(handle, () => sites(handle).sites().some((site) => site.blueprintId === 'shelter' && site.state === 'built'), 12000);
+        // The shelter still stands (its siting reads fresh basins as water,
+        // the same as before — the mutation only removes the SALT moorings)
+        expect(handle.construction.completedBlueprints()).toContain('shelter');
+        // No raft or boat site ever placed — and the plan stays wedged on
+        // the raft project rather than defaulting a hull onto a pond shore
+        expect(
+            sites(handle)
+                .sites()
+                .filter((site) => site.blueprintId === 'raft' || site.blueprintId === 'boat'),
+        ).toEqual([]);
+        expect(handle.construction.project()).toBe('raft');
+    }, 120000);
 });

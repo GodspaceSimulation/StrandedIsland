@@ -199,19 +199,29 @@ describe('predatorsPlugin — the entity profiles: the attribute-driven gait', (
         expect(needs.of('boar-1').energy).toBe(95.44999999999995);
     });
 
-    it('an exhausted boar grazes where it stands instead of lumbering on', () => {
+    it('an exhausted boar holds where it stands — no graze grant, the gait resumes over the line', () => {
         const { world, predators, needs } = buildStatStack();
         predators.release();
         // Drain the boar under the graze line
         needs.satisfy('boar-1', { energy: -81 }); // 19
         world.step(); // minute 1 — odd, the gait does not step (decay 18.96)
         expect(predators.predatorOf('boar-1')).toEqual({ id: 'boar-1', name: 'Tusk', marker: 'T', x: -5, y: 7 });
-        world.step(); // minute 2 — even: the pick runs, the GRAZE holds the boar
+        world.step(); // minute 2 — even: the pick runs, the EXHAUSTION HOLD keeps the boar put
         expect(predators.predatorOf('boar-1')).toEqual({ id: 'boar-1', name: 'Tusk', marker: 'T', x: -5, y: 7 });
-        // The graze recovery (+4) outpaces the decay (−0.04): 18.92 + 4
-        expect(needs.of('boar-1').energy).toBe(22.92);
-        world.step(); // minute 3 — odd, nothing
-        world.step(); // minute 4 — energy 22.88 > the line: the gait resumes
+        // NO GRAZE GRANT (R4): the held minute decays like any other — the
+        // plugin never grants energy directly, the recovery is the
+        // ledger's rest task in the full stack (the behavior ladder plans
+        // the spent boar at the tired line; the needs recovery service
+        // backs it out of equal hunger/thirst)
+        expect(needs.of('boar-1').energy).toBe(18.92);
+        world.step(); // minute 3 — odd, nothing: a second decay-only minute, still no recovery
+        expect(needs.of('boar-1').energy).toBe(18.880000000000003);
+        // Over the line (the god's hand stands in for the ledger's rest):
+        // the gait resumes on the next even minute
+        needs.satisfy('boar-1', { energy: 30 });
+        world.step(); // minute 4 — energy 48.84 > the line: the gait resumes
         expect(predators.predatorOf('boar-1')).toEqual({ id: 'boar-1', name: 'Tusk', marker: 'T', x: -6, y: 6 });
+        // The resumed stride paid the walk row: 48.84 − 0.83
+        expect(needs.of('boar-1').energy).toBe(48.010000000000005);
     });
 });

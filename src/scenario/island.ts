@@ -353,9 +353,20 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     // and the inventory plugin (the stock mirrors + the harvest entry); it
     // mounts its harvest provider into the inventory at setup.
     const forest = forestPlugin({ terrain, inventory }, options.forest ?? {});
-    const needs = needsPlugin({ profiles, ...options.needs });
-    const relationship = relationshipPlugin();
+    // The task ledger is declared BEFORE the needs plugin: the T6/R4 wiring
+    // below hands the ledger into the needs options (the resting-metabolism
+    // read), so the reference must already be initialized (the declared-after
+    // order threw the temporal-dead-zone "Cannot access 'tasks' before
+    // initialization" on every world creation).
     const tasks = tasksPlugin();
+    // T6/R4 WIRING — the needs sweep reads the task ledger's head kinds to
+    // run the RESTING metabolism (a body mid sleep/rest suspends its awake
+    // hunger/thirst decay; the recovery service's equal charge is the
+    // minute's whole spend — plugins/needs/needsPlugin.ts). The ledger rides
+    // along only while the tasks plugin is mounted; needsOptions spread
+    // first so an explicit option wins.
+    const needs = needsPlugin({ ...options.needs, profiles, tasks: toggles.tasks ? tasks : undefined });
+    const relationship = relationshipPlugin();
     const sleep = sleepPlugin({ needs, tasks });
     const story = storyPlugin({ needs, relationship });
     const behavior = behaviorPlugin({

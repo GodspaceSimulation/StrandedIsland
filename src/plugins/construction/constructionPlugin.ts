@@ -98,8 +98,10 @@ import {
     craftTaskBehaviour,
     gatherTaskBehaviour,
     position3,
+    subTileStep,
     tileWorkKey,
     type Position3D,
+    type TileCoord,
     type WorldPlugin,
 } from '@godspace/core';
 import { CHOP_WORK_KIND } from '../lumber/lumberPlugin';
@@ -107,6 +109,7 @@ import { openGatherJob } from '../tasks/gatherWork';
 import {
     createBlueprintRegistry,
     createSiteRegistry,
+    shiftPath,
     siteCellKey,
     type BlueprintRegistry,
     type BlueprintRequirement,
@@ -133,7 +136,24 @@ import type { TaskBehaviour, TaskEntity, TaskSpec, TaskSubject } from '../tasks/
 import { inventoryRemove } from '../inventory/inventory';
 import { itemWeight, inventoryWeight } from '../inventory/items';
 import { materials, MINED_ITEMS } from '../inventory/items';
+import {
+    mendTool,
+    toolDurabilityViews,
+    toolMendDue,
+    TOOL_REPAIR_MATERIAL,
+    TOOL_REPAIR_WORK,
+    useTool,
+} from '../inventory/toolDurability';
 import { fineSpotTaken, fineTargetStep, nearestCell, travelSpec, type FineMover } from '../movement/fineMovement';
+import {
+    footprintIsDry,
+    footprintTouchesSeaWater,
+    spiralAnchors,
+    type FineTerrainResolver,
+} from './fineSiting';
+// Type-only coupling — the resolver reads the terrain plugin's cellFor/depth
+// surface through the roster lookup (no runtime dependency, no wiring edit)
+import type { IslandTerrainPlugin } from '../terrain/islandTerrain';
 import {
     createSections,
     repairPrice,
@@ -307,6 +327,9 @@ const BUILD_PRIORITY = 21;
  * above the lumber chop (10): finished structures are mended only after
  * the plan's own staging and work are served. */
 const MAINTAIN_PRIORITY = 15;
+/** R3 — the hand tools' mend rung: below the structure upkeep (15), above
+ * the lumber chop (10) — a worn tool is mended in idle gaps, before break. */
+const MEND_PRIORITY = 14;
 
 /** World minutes one staging task occupies the deliverer at the gate. */
 const DELIVER_MINUTES = 1;
@@ -469,6 +492,14 @@ export type ConstructionPlugin = WorldPlugin<World> & {
      */
     orderUpgrade(siteId: string, sectionId: string): MaintenanceOrder | undefined;
     /**
+     * R3 — the durability views of the CREW's hand tools (one entry per
+     * tool a living sentient bag holds, health live — the wear ledger keyed
+     * entity+tool, plugins/inventory/toolDurability.ts). The inspector/
+     * integration read: an empty list when no tool is held or the plugin
+     * stands down.
+     */
+    tools(): Array<{ actorId: string; tool: string; health: number; maxHealth: number; damage: number }>;
+    /**
      * Launches a BUILT raft or boat: requires a water neighbour beside the
      * shore it stands on (the mooring), frees the site (no refund — the
      * materials sail with the hull) and records the moored vessel.
@@ -543,6 +574,16 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
     // The world arrives with setup — the plans, effects and hooks read
     // through it
     let world: World | null = null;
+
+    // R2 — the fine terrain resolver, resolved at SETUP from the world's
+    // plugin roster (the terrain plugin mounts before construction in the
+    // scenario's plugin list — scenario/island.ts; a terrainless world
+    // leaves this undefined and the placement scan falls back to the legacy
+    // coarse-only gates at the center anchor). Type-only coupling: the
+    // resolver reads the terrain plugin's EXISTING cellFor path API
+    // ([{tile},{fine}], plugins/terrain islandTerrain.ts) — no terrain
+    // change, no wiring edit.
+    let fineTerrain: FineTerrainResolver | undefined;
 
     // The plan cursor + the completed ledger (a launched vessel removes its
     // site, so completion is recorded explicitly, not re-derived)
@@ -970,6 +1011,27 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                 site.blueprintId === blueprintId &&
                 (site.state === 'building' || (site.state === 'staged' && sites.ready(site.id))),
         );
+
+    /**
+     * R3 — the first held tool worn past the mend trigger (TOOL_RECIPE_IDS
+     * order — deterministic), or undefined. Reads the durability ledger
+     * keyed entity+tool (plugins/inventory/toolDurability) with the LIVE bag
+     * count as the canonical existence check: a broken/lost tool never
+     * reads as mendable (its record died with the bag), a replacement starts
+     * fresh.
+     */
+    const mendableToolOf = (
+        active: World,
+        actorId: string,
+        bag: Record<string, number | undefined>,
+    ): string | undefined => {
+        for (const toolId of TOOL_RECIPE_IDS) {
+            if (toolMendDue(active, actorId, toolId, bag[toolId] ?? 0)) {
+                return toolId;
+            }
+        }
+        return undefined;
+    };
 
     /**
      * The craft gate's ability unlock — the species' 'craft' ability (the
@@ -1422,7 +1484,10 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
      * ranks the land cells by what the structure type WANTS (R1 — see the
      * scan comments; deterministic — ties keep the row-major order), and
      * places on the FIRST tile the shared registry accepts (the hooks veto
-     * water, occupied fine spots and standing bodies).
+     * water, occupied fine spots and standing bodies). R2 — the anchor is
+     * SEARCHED per tile over the whole fine grid (fineSiting spiralAnchors):
+     * the fine center stays the first candidate, terrain/occupancy and the
+     * vessels' fine mooring move it — never a hardcoded (0,0).
      */
     const placeOrAdvance = (): void => {
         for (;;) {
@@ -1478,7 +1543,10 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
         //   furnace — near the rock (its body and its firing draw stone and
         //     sand) and near camp;
         //   vessels — a beach tile WITH a sea mooring (the launch needs the
-        //     water where the hull stands), the one nearest camp.
+        //     water where the hull stands), the one nearest camp. R2 — the
+        //     hull's fine footprint must additionally touch navigable fine
+        //     sea water (the anchor rides the shoreline, the coarse gate
+        //     stays so the launch's own recheck always holds).
         const active = world;
         if (!active) {
             return;
@@ -1583,16 +1651,77 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                 return true;
             })
             .sort((left, right) => scoreOf(right) - scoreOf(left));
+        // R2 — THE FINE ANCHOR SEARCH: the anchor is no longer hardcoded at
+        // the fine (0,0) center. Each ranked tile is searched over its WHOLE
+        // fine grid (spiralAnchors' deterministic center-out order — the
+        // legacy center stays the first candidate, so an ordinary placement
+        // resolves exactly as before; blocked terrain, a standing body or a
+        // vessel's mooring requirement move the anchor off it). Validity:
+        //   1. the registry's own pre-check (hooks: dry land + nobody
+        //      standing in the cells; occupancy; self-overlap) — conflicts();
+        //   2. every footprint fine cell stands on DRY fine terrain (the
+        //      mixed-shore gate — a land tile's fine water cells are never
+        //      built over; skipped when no terrain plugin resolves fine
+        //      cells, the legacy terrainless world);
+        //   3. VESSELS: at least one footprint cell stands directly beside
+        //      NAVIGABLE fine sea water (biome shallows/ocean — the launch's
+        //      own salt rule, kept at fine scale; a lake/pond fine cell is
+        //      never a mooring). A fine step off the tile's edge wraps the
+        //      coarse boundary and reads the ADJACENT tile's fine cell, so
+        //      the hull always moors at the shore the launch rechecks.
+        const dims = { width: active.canvas.width, height: active.canvas.height };
+        const halfX = (dims.width - 1) / 2;
+        const halfY = (dims.height - 1) / 2;
+        const definitionCells = blueprints.definitionOf(blueprint)?.cells ?? [];
+        const anchors = spiralAnchors(halfX, halfY);
         for (let index = 0; index < ranked.length; index++) {
             const cell = ranked[index];
-            const spec: SiteSpec = {
-                blueprintId: blueprint,
-                parent: [{ x: cell.x, y: cell.y }],
-                anchor: { x: 0, y: 0 },
-            };
-            // The registry's own pre-check: hooks + occupancy + self-overlap
-            if (sites.conflicts(spec).length === 0) {
+            let placed = false;
+            for (const anchor of anchors) {
+                const spec: SiteSpec = {
+                    blueprintId: blueprint,
+                    parent: [{ x: cell.x, y: cell.y }],
+                    anchor,
+                };
+                // The registry's own pre-check: hooks + occupancy + self-overlap
+                if (sites.conflicts(spec).length !== 0) {
+                    continue;
+                }
+                // Resolve the footprint's fine addresses once (definition
+                // order, the registry's own resolution semantics — the wrap
+                // and the parent shift ride subTileStep/shiftPath so the
+                // gates read the EXACT addresses the site would store)
+                const resolved = definitionCells.map((offset) => {
+                    const stepped = subTileStep(dims.width, dims.height, anchor.x, anchor.y, offset.x, offset.y);
+                    return {
+                        parent: shiftPath([{ x: cell.x, y: cell.y }], dims, stepped.parent.dx, stepped.parent.dy)[0],
+                        x: stepped.x,
+                        y: stepped.y,
+                    };
+                });
+                // The fine-scale terrain gates (skipped without a resolver —
+                // the legacy terrainless world places at the coarse gates)
+                if (fineTerrain) {
+                    if (!footprintIsDry(resolved, fineTerrain)) {
+                        continue;
+                    }
+                    if (
+                        shoreOnly &&
+                        !footprintTouchesSeaWater(
+                            resolved,
+                            fineTerrain,
+                            dims,
+                            (x, y) => active.inBounds(x, y),
+                        )
+                    ) {
+                        continue;
+                    }
+                }
                 sites.place(spec);
+                placed = true;
+                break;
+            }
+            if (placed) {
                 // ONE placement per pass — the next project waits its turn
                 break;
             }
@@ -1643,7 +1772,16 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
             seen.add(actor.id);
             const task = tasks.taskOf(actor.id);
             if ((task?.kind === 'sleep' || task?.kind === 'rest') && sheltered(actor.id, actor.position)) {
-                needs.satisfy(actor.id, { energy: SHELTER_REST_PER_MINUTE });
+                // THE RECOVERY ROUTE (T6) — the bonus is a REST gain, so it
+                // rides needs.recovery like the sleep restore itself: the
+                // actual gain is capped by the energy headroom and by the
+                // charged resources' room (an empty source yields nothing —
+                // the bonus never conjures energy from a full belly line),
+                // and the equal hunger/thirst charge makes the sheltered
+                // minute's whole spend honest. A body whose head task is
+                // anything else (awake on the gate) gains nothing — the
+                // gate above already declined it.
+                needs.recovery(actor.id, SHELTER_REST_PER_MINUTE);
             }
         });
         active.coordinates.all().forEach((entry) => {
@@ -1653,7 +1791,7 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
             seen.add(entry.id);
             const task = tasks.taskOf(entry.id);
             if ((task?.kind === 'sleep' || task?.kind === 'rest') && sheltered(entry.id, entry.position)) {
-                needs.satisfy(entry.id, { energy: SHELTER_REST_PER_MINUTE });
+                needs.recovery(entry.id, SHELTER_REST_PER_MINUTE);
             }
         });
     };
@@ -1693,6 +1831,35 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
         },
 
         orders: () => orders.map((order) => ({ ...order })),
+
+        // R3 — the crew's hand-tool durability views (the declared
+        // inspector/integration read): one entry per tool a living sentient
+        // bag holds, health live off the wear ledger (keyed entity+tool,
+        // plugins/inventory/toolDurability). The walk is the registry's
+        // actor order × the TOOL_RECIPE_IDS order — deterministic. An
+        // unbound plugin (or an empty cast) answers the empty list.
+        tools: () => {
+            const active = world;
+            if (!active) {
+                return [];
+            }
+            const views: Array<{
+                actorId: string;
+                tool: string;
+                health: number;
+                maxHealth: number;
+                damage: number;
+            }> = [];
+            active.actors.forEach((actor) => {
+                const bag = inventory.of(actor.id);
+                toolDurabilityViews(active, actor.id, (toolId) => bag[toolId] ?? 0, TOOL_RECIPE_IDS).forEach(
+                    (view) => {
+                        views.push({ actorId: actor.id, ...view });
+                    },
+                );
+            });
+            return views;
+        },
 
         orderRepair: (siteId, sectionId) => {
             const section = structureRecords
@@ -1790,6 +1957,21 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
         setup: (context) => {
             const active = context.world;
             world = active;
+
+            // R2 — resolve the fine terrain resolver from the world's plugin
+            // roster (the scenario mounts the terrain plugin BEFORE
+            // construction, so its setup — and its sub-grid machinery — is
+            // live). A terrainless world (the toggled-off scenario) leaves
+            // the resolver undefined: the placement scan then keeps the
+            // legacy coarse-only gates and the center anchor.
+            const terrainPlugin = active.plugins.get('island-terrain') as
+                | (Pick<IslandTerrainPlugin, 'cellFor' | 'depth'> & WorldPlugin<World>)
+                | undefined;
+            fineTerrain =
+                terrainPlugin && terrainPlugin.depth() > 0
+                    ? (tileX, tileY, fx, fy) =>
+                          terrainPlugin.cellFor([{ x: tileX, y: tileY }, { x: fx, y: fy }])
+                    : undefined;
 
             // The site registry rebuilds against the LIVE canvas — the grid
             // is the sub-grid dims the whole zoom ladder shares (the
@@ -2426,6 +2608,63 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                 },
             });
 
+            // MEND 14 (R3) — the hand tools' autonomous upkeep, BELOW the
+            // structure maintenance (15) and the live projects, ABOVE the
+            // lumber chop (10): a worn tool is mended in the same gaps the
+            // crew idles through, before it can break mid-campaign. The gate
+            // reads the durability ledger (plugins/inventory/toolDurability —
+            // keyed entity+tool beside the canonical bag counts): a held
+            // tool worn past TOOL_REPAIR_TRIGGER (half sound) mends for one
+            // wood + TOOL_REPAIR_WORK minutes — strictly cheaper than
+            // crafting the replacement in both weight and work (the axe's
+            // craft costs wood+stone at 5 minutes; the hammer's wood 2).
+            // Deterministic: the first TOOL_RECIPE_IDS tool that is due.
+            registered.push('mend');
+            tasks.behaviour({
+                id: 'mend',
+                label: 'Mend',
+                priority: MEND_PRIORITY,
+                appliesTo: (subject) => {
+                    if (subject.actor.kind === 'creature') {
+                        return false;
+                    }
+                    // The mend is handwork — the same craft ability gate
+                    if (!mayCraft(subject.actor.type)) {
+                        return false;
+                    }
+                    const active = world;
+                    if (!active) {
+                        return false;
+                    }
+                    const bag = inventory.of(subject.actor.id);
+                    // THE MATERIAL GATE (R3) — the mend is one wood +
+                    // TOOL_REPAIR_WORK minutes: a hand without the raw never
+                    // opens the order (the rung waits for the wood, exactly
+                    // like the structure repair's staging)
+                    if ((bag[TOOL_REPAIR_MATERIAL] ?? 0) <= 0) {
+                        return false;
+                    }
+                    return mendableToolOf(active, subject.actor.id, bag) !== undefined;
+                },
+                plan: (subject) => {
+                    const active = world;
+                    if (!active) {
+                        return undefined;
+                    }
+                    const bag = inventory.of(subject.actor.id);
+                    const tool = mendableToolOf(active, subject.actor.id, bag);
+                    if (tool === undefined) {
+                        return undefined;
+                    }
+                    return {
+                        kind: 'mend',
+                        label: `mends the ${tool}`,
+                        minutes: TOOL_REPAIR_WORK,
+                        payload: { tool },
+                    };
+                },
+            });
+
             // ── the construction effects: what each completed kind DOES ────
             unsubscribeEffects = tasks.ledger.onComplete((task) => {
                 const active = world;
@@ -2502,7 +2741,17 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                         // one job, one payout shape)
                         if (!inventory.harvest(actor, 'tree', 'wood', 3)) {
                             tasks.tileWork.put(claimed);
+                            return;
                         }
+                        // R3 — the tool wear rides the SUCCESSFUL payout (a
+                        // tree actually felled): the feller's held axe spends
+                        // toolWearPerUse('axe','fell') — 5 health per tree —
+                        // through the durability ledger (keyed entity+tool,
+                        // plugins/inventory/toolDurability). The canonical
+                        // bag count gates the charge (an unheld axe is never
+                        // worn) and the atomic break removes the last-health
+                        // tool inside the same synchronous step.
+                        useTool(active, actor.id, 'axe', 'fell', inventory.of(actor.id));
                         return;
                     }
                     case 'deliver': {
@@ -2579,6 +2828,15 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                         // ONE world minute of work per completed task — the
                         // per-minute stage the shared registry accrues
                         sites.workOn(site.id, BUILD_MINUTES);
+                        // R3 — the tool wear rides the SUCCESSFUL build
+                        // stage (a construction minute actually committed):
+                        // the builder's held hammer spends
+                        // toolWearPerUse('hammer','build') — 1 health per
+                        // build minute — through the durability ledger. The
+                        // canonical bag count gates the charge (no hammer,
+                        // no wear) and the atomic break removes the tool at
+                        // its last health point in the same step.
+                        useTool(active, actor.id, 'hammer', 'build', inventory.of(actor.id));
                         return;
                     }
                     case 'stage': {
@@ -2660,6 +2918,31 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                                     ? `The crew repairs the ${record.blueprintId} (${section.id}) with ${order.units} ${order.item}.`
                                     : `The crew upgrades the ${record.blueprintId} (${section.id}) to ${section.tier}.`,
                         });
+                        return;
+                    }
+                    case 'mend': {
+                        // R3 — the tool mend COMMITS: the holder still
+                        // carries the tool (the canonical bag count — a
+                        // broken/lost tool never mends) and the raw wood;
+                        // exactly one unit is consumed and the durability
+                        // ledger resets (the consumed material bought the
+                        // wear back — the repair-cheaper-than-craft rule:
+                        // wood 1 + TOOL_REPAIR_WORK minutes against the
+                        // axe's wood+stone 5-minute craft and the hammer's
+                        // wood-2 craft). A lost tool or an empty wood stock
+                        // mends nothing — the minutes were the cost, the
+                        // same revalidate-at-completion discipline every
+                        // construction effect keeps.
+                        const tool = task.payload?.tool;
+                        if (typeof tool !== 'string') {
+                            return;
+                        }
+                        const bag = inventory.of(actor.id);
+                        if ((bag[tool] ?? 0) <= 0 || (bag[TOOL_REPAIR_MATERIAL] ?? 0) <= 0) {
+                            return;
+                        }
+                        inventoryRemove(bag, TOOL_REPAIR_MATERIAL, 1);
+                        mendTool(active, actor.id, tool, bag);
                         return;
                     }
                     default:

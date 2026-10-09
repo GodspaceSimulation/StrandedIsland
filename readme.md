@@ -320,6 +320,40 @@ reset would age recruited trees backwards.
   configured depth-2 board stays interactive (the naive fold materialized
   ~180k cells per root).
 
+## The day cycle — the shared clock contract (scenario/dayCycle.ts)
+
+- **The day** — 1440 world minutes (`DAY_MINUTES`); elapsed minute 0 is the
+  island's birth at 10:00, so `minuteOfDay(elapsed)` anchors there (the
+  calendar rolls at midnight exactly as temporal.ts's Gregorian readout does).
+- **The 6h sleep** — every body owes a 360-minute daily sleep quota
+  (`sleepPlugin`, the 22:00–06:00 preferred window): the window sleeps every
+  body whose quota is unmet EVEN AT FULL ENERGY — the six hours are owed by
+  the clock, not by fatigue. An interrupted night's shortfall becomes DEBT,
+  caught up any time in 90-minute chunks (the day continues between them).
+  An exhausted body (energy ≤ 22) naps whatever the clock says.
+- **Pre-emption is the honest cost** — the task ledger churns a busy
+  body's head task only for a STRICTLY higher-priority module (equal
+  priorities never churn a running queue): a thirst rung (50) breaks a
+  slumber (30), the night sleep breaks a hand-driven build minute (the
+  deliver shell at 24), and the interrupted night pays the debt later —
+  the contracts above are subject to survival, not the other way round.
+- **Energy** — the idle burn (0.06/min for the stock human) runs ALWAYS,
+  asleep or awake; movement charges its own cost per tile crossing (the
+  species profile's run/walk economics). A resting minute's hunger/thirst
+  spend is the recovery service's EQUAL charge (`needs.recovery` — the
+  sleep restore, the shelter bonus and the rest fallback all route through
+  it): the actual gain is capped by the energy headroom and by the charged
+  resources' room, so nothing converts from a full belly line or an empty
+  source.
+- **Lighting** — the god-view's night veil reads `daylightAt(elapsed)`, a
+  pure function of the world clock: night 18:00–06:00 holds the readable
+  floor (`NIGHT_LIGHT_FLOOR` 0.35 — the veil dims hard, every tile stays
+  legible), full daylight 07:30–16:30, and 90-minute smoothstep ramps run
+  dusk 16:30→18:00 and dawn 06:00→07:30 so the light never jumps. The one
+  documented seam: at 06:00 exactly the dawn ramp still sits at the floor
+  (continuity with 05:59) while `isNight()` already reads day — the
+  half-open window's single boundary minute.
+
 ## Plugins
 
 A plugin is any object with an `id` and optional `setup` / `tick` / `dispose`
@@ -369,8 +403,10 @@ owe (the tool rung, priority 23) keeps the crew equipped.
 | craft / tool | 23 | the bag holds a recipe's inputs → the atomic craft (per recipe); the tool rung re-arms the crew's axe/hammer when they wear out |
 | fetch-* / materials | 22 | a fetch the site still lacks AND no single bag can already use → take it underfoot, fell a tree for wood, or travel to the nearest stocked cell |
 | build | 21 | the site is fully staged → one world-minute work stage per task |
-| social / lumber / wander | 20 / 10 / 0 | unchanged — construction outranks them |
+| social | 20 | unchanged — construction outranks it |
 | maintain | 15 | the R4 upkeep rungs: stage an open repair/upgrade order's material onto the built structure's footprint, then work its minutes |
+| mend | 14 | the R3 tool upkeep: a held tool worn past half sound mends for one wood + 2 minutes — below the structure upkeep (15), above the lumber chop (10): the crew mends its tools in the idle gaps, before break |
+| lumber / wander | 10 / 0 | unchanged — construction outranks them |
 
 **Demand direction** — the fetch gate measures the CREW's strongest single
 bag against the site's remaining demand, so the crew gathers exactly what
@@ -410,16 +446,39 @@ survey time, so a deposit-only cut would be unmineable). From then on the
 two layers draw down in step, and a resurvey rebuilds the stock from the
 deposit — the yield is counted once, never minted twice.
 
-**Wear and repair (R4)** — every section banks wear: one health point per
-100 world minutes (`WEAR_MINUTES_PER_HEALTH`, exact integer math). The
-crew opens a repair order on its own once a section wears to half its
-full health (`REPAIR_TRIGGER` 0.5); a repair mends with the section's own
-material — one unit per 10 missing health, 5 work-minutes per unit
-(`repairPrice`). The god can order a repair or an upgrade at any time
+**Wear and repair (R4)** — every section banks wear: ONE health point per
+world day — 1440 world minutes (`WEAR_MINUTES_PER_HEALTH`, exact integer
+math), the conservative weathering rate: a thatch roof stands ~60 unbuilt
+days, a wood frame ~100, stone ~200, brick ~300. The crew opens a repair
+order on its own once a section wears to half its full health
+(`REPAIR_TRIGGER` 0.5); a repair mends with the section's own material —
+one unit per 10 missing health, 5 work-minutes per unit (`repairPrice`).
+The economics are audited: restoring even a TOTAL ruin costs strictly less
+material and strictly less work than rebuilding the whole structure (a
+ruined shelter's full bill is 10 wood + 6 thatch and 80 work-minutes
+against the 240-unit, 240-minute replacement; every blueprint prices the
+same way). The god can order a repair or an upgrade at any time
 (`construction.orderRepair` / `construction.orderUpgrade`), and the
 maintain rung (15) works them: stage the material onto the footprint,
 then spend the minutes. `construction.sectionsOf(siteId)` reads the
 anatomy; worn sections render in the Tile Inspector.
+
+**Tools wear at use (R3)** — the crafted hand tools (the axe, the hammer)
+are durables with their own wear ledger, keyed entity + tool beside the
+canonical bag counts (`plugins/inventory/toolDurability.ts`):
+`construction.tools()` lists the crew's live health/damage views. Wear
+charges at ACTUAL USE, never on the clock: the axe loses 5 health per
+SUCCESSFUL felling payout (the lumber rung's chop and the construction
+run's fell feed the same shared tile job, one payout shape, one wear
+rate), the hammer 1 health per committed build minute; idle minutes,
+walking and failed beats wear nothing. The break is ATOMIC: the use that
+spends the last health point removes the tool from the bag in the same
+step (no half-broken state) and the once-per-crew craft gate re-opens —
+the replacement becomes craftable naturally. A mend is one wood plus a
+2-minute task (the priority-14 mend rung acts on its own once a held tool
+wears past half sound, `TOOL_REPAIR_TRIGGER` 0.5) — strictly cheaper than
+crafting the replacement in both material and work (the axe's craft is
+wood + stone at 5 minutes, the hammer's two wood at 5).
 
 **The gate (doorway) and the walls** — a site's walkable cell is the
 resolved FIRST definition cell (every stock blueprint's `cells[0]`).
@@ -433,8 +492,12 @@ validated).
 
 **The shelter's survival use** — a body sleeping or resting on a built
 roofed structure's gate (shelter, house) recovers energy faster: +0.5 per
-world minute on top of the sleep restore (`SHELTER_REST_PER_MINUTE`, the
-construction tick sweep). The sheltered night is the safe night.
+world minute ON TOP of the sleep restore (`SHELTER_REST_PER_MINUTE`, the
+construction tick sweep). Both gains ride the recovery service
+(`needs.recovery`): the actual energy is capped by the 100 headroom and by
+the charged resources' room, and the minute's hunger/thirst cost is the
+service's EQUAL charge — the sheltered night is the safe night, and an
+honest one: nothing converts from a full belly line or an empty source.
 
 **The vessels** — a built raft or boat is a concrete output:
 `construction.launch(siteId)` requires a SEA-water neighbour beside the

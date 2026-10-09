@@ -79,7 +79,7 @@ export type PredatorsPluginOptions = {
      * The needs plugin — the bite drains the victim's energy through it.
      * Without it bites never land (the roll still runs, the maul stays
      * unwounded). With it AND the entity profiles, roaming burns the walk
-     * row and an exhausted boar grazes where it stands instead of roaming.
+     * row and an exhausted boar holds where it stands instead of roaming.
      */
     needs?: {
         of(entityId: string): NeedsState;
@@ -112,15 +112,15 @@ export type PredatorsPlugin = WorldPlugin<World> & {
 const BOAR_NAMES = ['Tusk', 'Bristle', 'Snout', 'Gore'];
 
 /**
- * THE GRAZE ECONOMICS (stat-driven, when needs + profiles are mounted): a
- * boar whose energy has drained to this line stops roaming and grazes where
- * it stands, recovering until it can lumber on. Grazing costs no roll and
- * logs nothing — the wilds' own telemetry.
+ * THE EXHAUSTION LINE (stat-driven, when needs + profiles are mounted): a
+ * boar whose energy has drained to this line stops roaming and holds where
+ * it stands. The line HOLDS the body only — R4 routes every energy gain
+ * through the ledger's rest/sleep tasks (the behavior ladder plans the
+ * spent boar's rest at the tired line; the needs recovery service backs it
+ * with equal hunger/thirst), so the plugin never grants energy directly.
+ * Holding costs no roll and logs nothing — the wilds' own telemetry.
  */
 const GRAZE_ENERGY = 20;
-
-/** Energy a grazing boar recovers per idle world-minute. */
-const GRAZE_RECOVERY = 4;
 
 /** The legacy pace — the lumbering gait without entity profiles. */
 const LEGACY_PACE = 2;
@@ -367,11 +367,14 @@ export const predatorsPlugin = (options: PredatorsPluginOptions = {}): Predators
                     return;
                 }
                 const step = land[Math.floor(stream() * land.length)];
-                // THE GRAZE — the land-pick roll is consumed either way (the
-                // stream never shifts), but an exhausted boar stays put and
-                // grazes instead of lumbering on
+                // THE EXHAUSTION HOLD — the land-pick roll is consumed either
+                // way (the stream never shifts), but an exhausted boar stays
+                // put instead of lumbering on. NO energy grant here (R4): the
+                // recovery is the ledger's rest task (the behavior ladder
+                // plans it at the tired line — the busy gate above yields
+                // the roam to it while it runs), paid by the needs recovery
+                // service out of equal hunger/thirst.
                 if (statRoam && needs && needs.of(id).energy <= GRAZE_ENERGY) {
-                    needs.satisfy(id, { energy: GRAZE_RECOVERY });
                     return;
                 }
                 active.coordinates.move(id, position3(step.x, step.y));

@@ -781,14 +781,22 @@ describe('islandTerrainPlugin', () => {
             dirt: 1,
             grass: 1,
         });
-        // The unlimited ground supply IS the ground — every subtile of the
-        // beach carries the symbolic deposits (the zoom preserves the look;
-        // R4: the beach column is dirt/sand only — the gravel bedrock no
-        // longer mirrors a stone deposit)
+        // The unlimited ground supply IS the ground — every DRY subtile of
+        // the beach carries the symbolic deposits (the zoom preserves the
+        // look; R4: the beach column is dirt/sand only — the gravel bedrock
+        // no longer mirrors a stone deposit). R1 — the shore's masked WATER
+        // fine cells are exempt: the submerged-supplies-nothing rule makes
+        // them deposit-free real water (the sea-shaped columns).
         const beach = world.cellAt(1, -1);
         expect(beach?.resources).toEqual({ dirt: 1, sand: 1 });
         const beachSub = plugin.canvasFor([{ x: 1, y: -1 }]);
-        expect(beachSub?.cells.every((cell) => cell.resources.sand === 1 && cell.resources.dirt === 1)).toBe(true);
+        expect(
+            beachSub?.cells.every(
+                (cell) => !cell.passable || (cell.resources.sand === 1 && cell.resources.dirt === 1),
+            ),
+        ).toBe(true);
+        // The masked water cells are REAL water (impassable, deposit-free)
+        expect(beachSub?.cells.some((cell) => !cell.passable && Object.keys(cell.resources).length === 0)).toBe(true);
         // A sea column has no deposits — its sub-grid is bare too
         const seaSub = plugin.canvasFor([{ x: 3, y: 1 }]);
         expect(seaSub?.cells.every((cell) => Object.keys(cell.resources).length === 0)).toBe(true);
@@ -912,11 +920,14 @@ describe('islandTerrainPlugin', () => {
         ).toEqual(survivors.map((cell) => `${cell.x},${cell.y}`));
         // Work the site to nothing — NO fine cell carries stone anymore,
         // even though every subtile still inherits the gravel-bedrock
-        // column (the ground is terrain, not a hidden infinite supply)
+        // column (the ground is terrain, not a hidden infinite supply).
+        // R1 — the shore's masked WATER cells are exempt from the gravel
+        // read too: their column is the lowered seabed the sea columns get
+        // (the beach slopes into its sea), not the parent's bedrock.
         heap.resources.stone = 0;
         const bare = plugin.canvasFor([{ x: -1, y: 0 }])!;
         expect(bare.cells.every((cell) => cell.resources.stone === undefined)).toBe(true);
-        expect(bare.cells.every((cell) => cell.voxels.includes('gravel'))).toBe(true);
+        expect(bare.cells.every((cell) => !cell.passable || cell.voxels.includes('gravel'))).toBe(true);
     });
 
     it('crown-first: boulders carry the stock first, the leftover scatters, mining shrinks the crowns', () => {

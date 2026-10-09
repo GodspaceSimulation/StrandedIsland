@@ -62,13 +62,14 @@ export type BirdsPluginOptions = {
      * The needs plugin — the survival stats the bird lives by (the entity
      * profiles derive its species rates; see entityPlugin). With it (and
      * the profiles) the flock's flight costs energy: a glide burns the fly
-     * row per tile, a hop the walk row, a perch RECOVERS — the fly/rest
-     * cycle the stats make real. Absent: flight is free (the pre-entity
-     * behavior).
+     * row per tile, a hop the walk row. The perch RECOVERS NOTHING here —
+     * R4 routes every energy gain through the ledger's rest/sleep tasks
+     * (the sleep plugin's gate plans the tired gull's slumber; the needs
+     * recovery service backs it with equal hunger/thirst), so the plugin
+     * only ever DRAINS. Absent: flight is free (the pre-entity behavior).
      */
     needs?: {
         of(entityId: string): NeedsState;
-        satisfy(entityId: string, deltas: Partial<NeedsState>): void;
         moved(entityId: string, moveKind?: string): void;
         /**
          * Registers this plugin's off-space residence provider with the
@@ -163,16 +164,12 @@ const CRUISE_ALTITUDE = 2;
 /**
  * THE FLIGHT ECONOMICS (stat-driven, when needs + profiles are mounted):
  * a perched bird needs this much energy before the takeoff roll may fire —
- * a spent gull stays put and recovers instead of leaping skyward.
+ * a spent gull stays put and recovers through the LEDGER instead of
+ * leaping skyward (the sleep plugin's gate plans its slumber at the tired
+ * line; the needs recovery service pays the restore out of equal
+ * hunger/thirst).
  */
 const TAKEOFF_ENERGY = 25;
-
-/**
- * Energy a perched bird recovers per world-minute — the roost: hopping
- * (the walk row's burn) nets against this, so a perched gull drifts UP the
- * energy ladder while grounded and pays for every airborne minute.
- */
-const PERCH_RECOVERY = 3;
 
 /**
  * Display band state for a flying altitude — z 1 is the legacy full-color
@@ -572,13 +569,16 @@ export const birdsPlugin = (options: BirdsPluginOptions = {}): BirdsPlugin => {
                 const next = grounded(position3(x, y));
                 coordinates.move(id, next);
                 bird.at = next;
-                // THE ROOST — a perched minute pays the hop's walk-row burn
-                // and banks the perch recovery; the recovery outpaces the
-                // hop, so a grounded gull drifts UP the energy ladder until
-                // the takeoff gate reopens
+                // THE PERCH — a perched minute pays the hop's walk-row burn
+                // and NOTHING ELSE: R4 routes every energy gain through the
+                // ledger's rest/sleep tasks. A spent gull's recovery is the
+                // sleep plugin's slumber (the behavior ladder plans it at
+                // the tired line; the busy gate above yields the rolls to
+                // the task while it runs), paid by the needs recovery
+                // service out of equal hunger/thirst — never a direct
+                // plugin-side satisfy.
                 if (statFlight && needs) {
                     needs.moved(id, 'walk');
-                    needs.satisfy(id, { energy: PERCH_RECOVERY });
                 }
             });
         },

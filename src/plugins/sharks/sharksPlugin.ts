@@ -88,18 +88,17 @@ export type SharksPlugin = WorldPlugin<World> & {
 const SHARK_NAMES = ['Finn', 'Mako', 'Reef', 'Chum'];
 
 /**
- * THE SWIM ECONOMICS (stat-driven, when needs + profiles are mounted): a
- * shark whose energy has drained to this line is SPENT — it stops sweeping
- * the sea and holds still in the current, recovering until it can swim on.
- * Resting costs no roll and logs nothing — the sea's own telemetry.
+ * THE SPENT LINE (stat-driven, when needs + profiles are mounted): a shark
+ * whose energy has drained to this line is SPENT — it stops sweeping the
+ * sea and holds still in the current. The line HOLDS the body only — R4
+ * routes every energy gain through the ledger's rest/sleep tasks (the
+ * behavior ladder plans the spent shark's rest at the tired line; the busy
+ * gate yields the swim to it while it runs; the needs recovery service
+ * backs the restore with equal hunger/thirst), so the plugin never grants
+ * energy directly. Holding costs no roll and logs nothing — the sea's own
+ * telemetry.
  */
 const SPENT_ENERGY = 20;
-
-/**
- * Energy a spent shark recovers per world-minute of holding still — the
- * drift's rest, the counterweight to the swim row's burn.
- */
-const DRIFT_RECOVERY = 2;
 
 /**
  * Canvas type-glyph for sharks — the unicode/svg canvases resolve an entry's
@@ -310,12 +309,15 @@ export const sharksPlugin = (options: SharksPluginOptions = {}): SharksPlugin =>
                     return;
                 }
                 const step = water[Math.floor(stream() * water.length)];
-                // THE SPENT REST — the water-pick roll is consumed either
+                // THE SPENT HOLD — the water-pick roll is consumed either
                 // way (the stream never shifts), but a shark out of steam
-                // holds still in the current and recovers instead of
-                // sweeping on
+                // holds still in the current instead of sweeping on. NO
+                // energy grant here (R4): the recovery is the ledger's rest
+                // task (the behavior ladder plans it at the tired line —
+                // the busy gate above yields the swim to it while it runs),
+                // paid by the needs recovery service out of equal
+                // hunger/thirst.
                 if (statSwim && needs && needs.of(id).energy <= SPENT_ENERGY) {
-                    needs.satisfy(id, { energy: DRIFT_RECOVERY });
                     return;
                 }
                 // Silent swim — the log tells stories of meetings, not

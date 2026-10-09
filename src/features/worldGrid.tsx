@@ -73,6 +73,25 @@
 // Zoom Out (pops back up the lineage). It is active only while a tile is
 // selected; with no selection (or at a rung's end) the wheel stays with the
 // page scroll. The Data tab is excluded — its tables scroll natively.
+//
+// R5 — THE DAY/NIGHT LIGHTING — the canvas wears the world clock. The tile
+// boards (ascii/unicode/svg, at EVERY scale rung — the ladder is a pure
+// view) sit under a translucent night veil whose alpha is the world clock's
+// dark side: elapsed world minutes → scenario/dayCycle.ts daylightAt (the
+// shared clock contract, the same pure functions the sleep plugin reads) →
+// ambient light in [NIGHT_LIGHT_FLOOR 0.35, 1] → veil alpha = 1 − ambient.
+// Full daylight 07:30–16:30 paints nothing; the 18:00–06:00 night paints
+// the readable 0.65 floor (the R6 "nonblocking readable night floor" rule —
+// every tile stays visible and clickable through the veil, which is
+// pointer-events: none); dusk (16:30→18:00) and dawn (06:00→07:30) ride
+// 90-minute smoothstep ramps so the light never jumps between minutes. The
+// veil is presentation only — the scale bar, tabs, legends and the Data
+// tables stay lit, and the ScaleBar gains a PhaseBadge ("Day · 10:00" /
+// "Night · 18:00") stating the phase and clock face the lighting reads.
+// The clock itself is NOT new state: it is read fresh from
+// world.ticker.elapsed() each render, and the existing revision pulse
+// (worldBridge — every tick and world event bumps it) re-renders the grid,
+// so the lighting tracks the ticker exactly like every other panel.
 
 import { useEffect, type ForwardRefExoticComponent, type HTMLAttributes, type RefAttributes } from 'react';
 import { useStateHook, useReferenceHook } from '@presource/react';
@@ -99,6 +118,11 @@ import {
     selectTile,
 } from './worldBridge';
 import { scaleView, treeIconOpacity, tileProgress, type TileProgress } from './tileDetails';
+// R5 — the shared day/night clock contract (scenario/dayCycle.ts): the SAME
+// pure functions the sleep plugin reads, so the canvas lighting and the
+// sleep window can never disagree. Pure reads — the caller supplies the
+// elapsed world minutes (world.ticker.elapsed()).
+import { daylightAt, isNight, minuteOfDay } from '../scenario/dayCycle';
 
 /** The four representations tabs switch between. */
 type CanvasTab = 'data' | 'ascii' | 'unicode' | 'svg';
@@ -269,6 +293,69 @@ const ZoomEmpty = styled('span', {
     color: PALETTE.textDim,
 });
 
+// ── R5 — the day/night cycle: phase badge + night veil ───────────────────────
+
+/** hh:mm clock face from a minute-of-day value — the PhaseBadge's read. */
+const phaseClock = (minute: number): string =>
+    `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
+
+// The PhaseBadge — the day/night/time indicator in the scale bar (R5). It
+// names the phase and the clock face the lighting is painted from ("Day ·
+// 10:00" / "Night · 18:00") so the veil's dimming is never a mystery: the
+// same minuteOfDay the veil derives its alpha from reads the badge. The
+// `night` style prop is a STRING ('true'/'false' — the styled factory reads
+// it for the paint, the ZoomButton pattern): night wears the cool moonlit
+// blue, day the accent green.
+const PhaseBadge = styled<{ night: string }>('span', {
+    fontSize: 11,
+    letterSpacing: 1,
+    color: ({ night }) => (night === 'true' ? '#9db9e8' : PALETTE.accent),
+    padding: '4px 10px',
+    border: `1px solid ${PALETTE.panelBorder}`,
+    borderRadius: 6,
+    background: '#232c37',
+    fontVariantNumeric: 'tabular-nums',
+});
+
+// The BoardShell — the positioning context that lets the night veil overlay
+// EXACTLY a tile board: it wraps each view's Grid/SvgBoard (never the legend
+// and never the tab controls — the lighting is presentation, the chrome
+// stays lit). The board itself stays untouched inside, so every structural
+// contract on the grid element (children = one tile per cell) holds.
+const BoardShell = styled('div', {
+    position: 'relative',
+});
+
+// The NIGHT VEIL (R5) — the god-view's dynamic lighting overlay over a DOM
+// tile board. One translucent wash whose alpha is the clock's dark side
+// (1 − ambient, scenario/dayCycle.ts daylightAt): 0 through the daylight
+// plateau, 0.65 at the night floor (NIGHT_LIGHT_FLOOR 0.35 — the R6
+// "nonblocking readable night floor": every tile keeps 35 % of its color and
+// stays readable), a smoothstep value in between across dusk/dawn. The wash
+// is night BLUE (not black) so the moonlit board keeps its hue contrast.
+// Rounded to 3 decimals — the smoothstep ramp's float noise stays out of the
+// CSS string, the paint and the tests read the exact rounded value.
+// `pointerEvents: none` + aria-hidden — the veil is pure decoration: it can
+// never eat a click, a hover or the wheel zoom (every board interaction
+// passes straight through), and it says so to assistive tech.
+const NightVeil = styled<{ alpha: number }>('div', {
+    position: 'absolute',
+    inset: 0,
+    pointerEvents: 'none',
+    background: ({ alpha }) => `rgba(8,12,30,${Math.round(alpha * 1000) / 1000})`,
+});
+
+// The SVG twin of the NightVeil — one full-viewBox rect with the same rgba
+// fill string the DOM veils compute (veilAlpha arrives already rounded from
+// WorldGrid, so the attribute is byte-identical to their CSS value). The
+// fill arrives as a real SVG presentation ATTRIBUTE (the SvgTile convention
+// — per-rect colors are attributes, the styled class carries the shared
+// paint); `pointer-events: none` in the class keeps the veil nonblocking
+// like its DOM siblings.
+const SvgNightVeil = styled('rect', {
+    pointerEvents: 'none',
+});
+
 // ── Data tab pieces ──────────────────────────────────────────────────────────
 
 const TableWrap = styled('div', {
@@ -414,6 +501,27 @@ export const WorldGrid = () => {
     void revision; // subscription pulse — re-render on every world change
 
     const { world, ascii, unicode, svg, data } = island;
+
+    // R5 — the canvas wears the world clock. The elapsed world minutes read
+    // FRESH each render (the revision pulse — every tick and world event
+    // bumps it, worldBridge — re-renders this component, so the lighting
+    // tracks the ticker exactly like every other panel) and map through the
+    // shared clock contract (scenario/dayCycle.ts):
+    //   daylightAt — the smooth ambient in [NIGHT_LIGHT_FLOOR 0.35, 1]:
+    //                full daylight 07:30–16:30, the floor through the
+    //                18:00–06:00 night, 90-minute smoothstep ramps between
+    //   isNight    — the phase flag (the night floor's window, save the
+    //                single 06:00 ramp minute — see dayCycle.ts)
+    //   minuteOfDay— the epoch-anchored clock face (elapsed 0 → 10:00),
+    //                the PhaseBadge's read
+    // The veil alpha is the clock's dark side, 1 − ambient, rounded to 3
+    // decimals once here so the DOM veil's CSS value and the SVG veil's fill
+    // attribute are byte-identical and the tests pin the exact string.
+    const elapsed = world.ticker.elapsed();
+    const ambient = daylightAt(elapsed);
+    const veilAlpha = Math.round((1 - ambient) * 1000) / 1000;
+    const night = isNight(elapsed);
+    const clockMinute = minuteOfDay(elapsed);
     // The scale ladder lives on the island handle (@godspace/core src/scale)
     // — the signal carries the current rung, the system owns the clamps
     const zoom = island.scale;
@@ -512,6 +620,19 @@ export const WorldGrid = () => {
                 inspected tile) and Zoom Out at the interior (pops back up) */}
             <ScaleBar data-testid="scale-controls">
                 <ScaleBadge data-testid="scale-badge">Scale {scale}</ScaleBadge>
+                {/* R5 — the day/night phase + clock face the lighting is
+                    painted from. Same epoch the World Ticker's calendar
+                    reads (scenario/temporal.ts startMinuteOfDay 600 =
+                    10:00), so the badge, the veil and the clock always
+                    agree. The title carries the exact ambient percentage
+                    the veil derives its alpha from. */}
+                <PhaseBadge
+                    night={night ? 'true' : 'false'}
+                    data-testid="daycycle-badge"
+                    title={`Ambient light ${Math.round(ambient * 100)}%`}
+                >
+                    {night ? 'Night' : 'Day'} · {phaseClock(clockMinute)}
+                </PhaseBadge>
                 <ZoomButton
                     off={canToggle ? 'false' : 'true'}
                     disabled={!canToggle}
@@ -582,6 +703,9 @@ export const WorldGrid = () => {
                                 inspected={inspectedTail}
                                 selected={selected}
                                 size={26}
+                                // R5 — the night veil's alpha (1 − ambient,
+                                // computed once in WorldGrid)
+                                veilAlpha={veilAlpha}
                                 progressFor={progressFor}
                                 onTile={inspectTile}
                                 onHover={hoverTile}
@@ -605,6 +729,9 @@ export const WorldGrid = () => {
                                 // fades the tree decorations by the tile's TRUE scale-0
                                 // coverage; the interior view stands at full opacity
                                 islandView={slice === null}
+                                // R5 — the night veil's alpha (1 − ambient,
+                                // computed once in WorldGrid)
+                                veilAlpha={veilAlpha}
                                 progressFor={progressFor}
                                 onTile={inspectTile}
                                 onHover={hoverTile}
@@ -623,6 +750,9 @@ export const WorldGrid = () => {
                                 // coverage fade applies to the island view only (the
                                 // interior view's drawn cells are trees by construction)
                                 islandView={slice === null}
+                                // R5 — the night veil's alpha (1 − ambient,
+                                // computed once in WorldGrid)
+                                veilAlpha={veilAlpha}
                                 progressFor={progressFor}
                                 onTile={inspectTile}
                                 onHover={hoverTile}
@@ -668,6 +798,7 @@ const AsciiView = ({
     inspected,
     selected,
     size,
+    veilAlpha,
     progressFor,
     onTile,
     onHover,
@@ -678,6 +809,10 @@ const AsciiView = ({
     inspected: { x: number; y: number } | null;
     selected: string | null;
     size: number;
+    // R5 — the night veil's alpha (1 − ambient, scenario/dayCycle.ts
+    // daylightAt; computed once in WorldGrid so every canvas reads the
+    // same rounded value). 0 paints nothing, 0.65 the night floor.
+    veilAlpha: number;
     // R6 — the standing jobs of a tile (the shared tile-work ledger + the
     // live site build work) — drawn as the bottom-edge progress bars
     progressFor: (x: number, y: number) => TileProgress[];
@@ -687,47 +822,59 @@ const AsciiView = ({
     onHover: (tile: { x: number; y: number }) => void;
 }) => (
     <>
-        <Grid columns={frame.columns} size={size} data-testid="world-grid">
-            {frame.tiles.map((tile) => {
-                // Top of the column's glyph stack draws on the tile
-                const glyph = tile.glyphs[0];
-                // Any castaway in the column opens the actor inspector —
-                // searching the whole stack (not just the top) so a bird
-                // gliding above never hides the castaway walking below
-                const castaway = tile.glyphs.find((entry) => world.actors.has(entry.id));
-                const isSelected = glyph !== undefined && glyph.id === selected;
-                // The inspected tile (any column — sea, sand, forest) wears
-                // the amber tile border so the god sees what the Tile
-                // Inspector below is reading
-                const isInspected =
-                    inspected !== null && inspected.x === tile.x && inspected.y === tile.y;
-                return (
-                    <Cell
-                        key={`${tile.x},${tile.y}`}
-                        background={tile.background}
-                        border={tileBorder(isSelected, isInspected)}
-                        title={tile.title}
-                        data-testid={`grid-tile-${tile.x}-${tile.y}`}
-                        onClick={() => onTile(tile, castaway?.id)}
-                        // R1 hover: mouseenter selects this tile only (tile
-                        // pick + zoom target, never the actor, never a zoom).
-                        // Native mouse-enter semantics — fires once per cell
-                        // entry and refires on re-entry; leave fires nothing
-                        // (the pick stays sticky)
-                        onMouseEnter={() => onHover(tile)}
-                    >
-                        {glyph ? (
-                            <Marker color={glyph.color}>
-                                {glyph.glyph}
-                            </Marker>
-                        ) : null}
-                        {/* R6 — the standing jobs' progress bars (the shared
-                            tile work + the live site build work) */}
-                        <WorkBars x={tile.x} y={tile.y} progress={progressFor(tile.x, tile.y)} />
-                    </Cell>
-                );
-            })}
-        </Grid>
+        {/* The BoardShell gives the veil its positioning context — the grid
+            itself keeps its exact structure (children = one tile per cell),
+            and the veil overlays the BOARD only (the legend below and every
+            control above stay lit) */}
+        <BoardShell>
+            <Grid columns={frame.columns} size={size} data-testid="world-grid">
+                {frame.tiles.map((tile) => {
+                    // Top of the column's glyph stack draws on the tile
+                    const glyph = tile.glyphs[0];
+                    // Any castaway in the column opens the actor inspector —
+                    // searching the whole stack (not just the top) so a bird
+                    // gliding above never hides the castaway walking below
+                    const castaway = tile.glyphs.find((entry) => world.actors.has(entry.id));
+                    const isSelected = glyph !== undefined && glyph.id === selected;
+                    // The inspected tile (any column — sea, sand, forest) wears
+                    // the amber tile border so the god sees what the Tile
+                    // Inspector below is reading
+                    const isInspected =
+                        inspected !== null && inspected.x === tile.x && inspected.y === tile.y;
+                    return (
+                        <Cell
+                            key={`${tile.x},${tile.y}`}
+                            background={tile.background}
+                            border={tileBorder(isSelected, isInspected)}
+                            title={tile.title}
+                            data-testid={`grid-tile-${tile.x}-${tile.y}`}
+                            onClick={() => onTile(tile, castaway?.id)}
+                            // R1 hover: mouseenter selects this tile only (tile
+                            // pick + zoom target, never the actor, never a zoom).
+                            // Native mouse-enter semantics — fires once per cell
+                            // entry and refires on re-entry; leave fires nothing
+                            // (the pick stays sticky)
+                            onMouseEnter={() => onHover(tile)}
+                        >
+                            {glyph ? (
+                                <Marker color={glyph.color}>
+                                    {glyph.glyph}
+                                </Marker>
+                            ) : null}
+                            {/* R6 — the standing jobs' progress bars (the shared
+                                tile work + the live site build work) */}
+                            <WorkBars x={tile.x} y={tile.y} progress={progressFor(tile.x, tile.y)} />
+                        </Cell>
+                    );
+                })}
+            </Grid>
+            {/* R5 — the night veil: one wash over the board, alpha =
+                1 − ambient (the rounded veilAlpha from WorldGrid), the
+                same value every canvas reads. pointer-events none — the
+                veil is pure decoration and can never block a tile click,
+                a hover or the wheel zoom. */}
+            <NightVeil alpha={veilAlpha} data-testid="night-veil" aria-hidden="true" />
+        </BoardShell>
         <Legend data-testid="grid-legend">
             {SURFACE_ORDER.map((surface) => (
                 <LegendItem key={surface} color={palette[surface]}>
@@ -749,6 +896,7 @@ const UnicodeView = ({
     selected,
     size,
     islandView,
+    veilAlpha,
     progressFor,
     onTile,
     onHover,
@@ -767,6 +915,10 @@ const UnicodeView = ({
     // scatters exactly the deposited units, one per cell), so its true
     // on-screen coverage is 100 %
     islandView: boolean;
+    // R5 — the night veil's alpha (1 − ambient, scenario/dayCycle.ts
+    // daylightAt; computed once in WorldGrid so every canvas reads the
+    // same rounded value). 0 paints nothing, 0.65 the night floor.
+    veilAlpha: number;
     // R6 — the standing jobs of a tile (the shared tile-work ledger + the
     // live site build work) — drawn as the bottom-edge progress bars
     progressFor: (x: number, y: number) => TileProgress[];
@@ -776,102 +928,113 @@ const UnicodeView = ({
     onHover: (tile: { x: number; y: number }) => void;
 }) => (
     <>
-        <Grid columns={frame.columns} size={size} data-testid="world-grid-unicode">
-            {frame.tiles.map((tile) => {
-                const glyph = tile.glyphs[0];
-                // Same registry rule as the ascii view — any castaway in the
-                // column opens the actor inspector, a bird gliding above
-                // never hides the castaway walking below
-                const castaway = tile.glyphs.find((entry) => world.actors.has(entry.id));
-                const isSelected = glyph !== undefined && glyph.id === selected;
-                const isInspected =
-                    inspected !== null && inspected.x === tile.x && inspected.y === tile.y;
-                // Entities draw their emoji in the state color; EMPTY
-                // decorated tiles draw their standing icon — the 🌳 tree
-                // emoji on treed tiles (the woods, visible at last) and the
-                // 🪨 rock icon on stone-bearing tiles (the localized rock
-                // sites — the finite stone stock's marker, stock-driven:
-                // the frame's decorationOfCell resolver drops 'rock' the
-                // moment the tile's stock empties, so the icon disappears
-                // when the local stone is gone, at every scale). An entity
-                // always wins the tile over the decoration. Everything else
-                // stays bare — terrain shows through its background color
-                // alone (no per-tile emoji flood)
-                const decorationGlyph =
-                    glyph === undefined
-                        ? tile.decoration === 'rock'
-                            ? '🪨'
-                            : tile.decoration === 'tree'
-                              ? '🌳'
-                              : null
-                        : null;
-                // THE SCALE-1 TREE OPACITY — at the island view the tree
-                // icon fades by the tile's TRUE scale-0 tree coverage: its
-                // standing tree UNITS (the live `resources.tree` deposit —
-                // the fine cells a sub-grid would scatter them onto) against
-                // the tile's sub-grid CELL COUNT (the board's width ×
-                // height — the sub-grid copies the world grid's dims). Zero
-                // trees → no icon (treeIconOpacity returns undefined — and
-                // the 'tree' decoration itself is stock-driven, so a bare
-                // tile never reaches the draw). The interior view (the
-                // zoomed slice) keeps FULL opacity: its drawn cells are
-                // trees by construction, so their true coverage is 100 %.
-                // The rock icon is BINARY (stock present → full opacity):
-                // the stock-driven drop is its honesty mechanism
-                const treeOpacity =
-                    decorationGlyph === '🌳' && islandView
-                        ? treeIconOpacity(
-                              world.cellAt(tile.x, tile.y)?.resources.tree ?? 0,
-                              world.canvas.width * world.canvas.height,
-                          )
-                        : undefined;
-                return (
-                    <Cell
-                        key={`${tile.x},${tile.y}`}
-                        background={tile.background}
-                        border={tileBorder(isSelected, isInspected)}
-                        title={tile.title}
-                        data-testid={`unicode-tile-${tile.x}-${tile.y}`}
-                        onClick={() => onTile(tile, castaway?.id)}
-                        // R1 hover — same contract as the ascii Cell above
-                        // (tile pick + zoom target only; sticky on leave)
-                        onMouseEnter={() => onHover(tile)}
-                    >
-                        {glyph ? (
-                            <Marker color={glyph.color}>
-                                {glyph.glyph}
-                            </Marker>
-                        ) : decorationGlyph ? (
-                            <Marker
-                                // The decoration's identity color — tree
-                                // green from the palette, the rock's mid
-                                // gray beside it (the emoji itself is
-                                // full-color; the color only styles the
-                                // surrounding span fallback)
-                                color={
-                                    decorationGlyph === '🪨'
-                                        ? (palette.stone ?? '#8d939e')
-                                        : (palette.tree ?? '#4caf50')
-                                }
-                                // The coverage fade (tree, island view
-                                // only) — undefined omits the attribute
-                                opacity={treeOpacity}
-                                data-testid={
-                                    decorationGlyph === '🪨'
-                                        ? 'rock-icon-unicode'
-                                        : 'tree-icon-unicode'
-                                }
-                            >
-                                {decorationGlyph}
-                            </Marker>
-                        ) : null}
-                        {/* R6 — the standing jobs' progress bars (the shared
-                            tile work + the live site build work) */}
-                        <WorkBars x={tile.x} y={tile.y} progress={progressFor(tile.x, tile.y)} />
-                    </Cell>
-                );
-            })}
-        </Grid>
+        {/* The BoardShell gives the veil its positioning context — the grid
+            itself keeps its exact structure (children = one tile per cell),
+            and the veil overlays the BOARD only (the legend below and every
+            control above stay lit) */}
+        <BoardShell>
+            <Grid columns={frame.columns} size={size} data-testid="world-grid-unicode">
+                {frame.tiles.map((tile) => {
+                    const glyph = tile.glyphs[0];
+                    // Same registry rule as the ascii view — any castaway in the
+                    // column opens the actor inspector, a bird gliding above
+                    // never hides the castaway walking below
+                    const castaway = tile.glyphs.find((entry) => world.actors.has(entry.id));
+                    const isSelected = glyph !== undefined && glyph.id === selected;
+                    const isInspected =
+                        inspected !== null && inspected.x === tile.x && inspected.y === tile.y;
+                    // Entities draw their emoji in the state color; EMPTY
+                    // decorated tiles draw their standing icon — the 🌳 tree
+                    // emoji on treed tiles (the woods, visible at last) and the
+                    // 🪨 rock icon on stone-bearing tiles (the localized rock
+                    // sites — the finite stone stock's marker, stock-driven:
+                    // the frame's decorationOfCell resolver drops 'rock' the
+                    // moment the tile's stock empties, so the icon disappears
+                    // when the local stone is gone, at every scale). An entity
+                    // always wins the tile over the decoration. Everything else
+                    // stays bare — terrain shows through its background color
+                    // alone (no per-tile emoji flood)
+                    const decorationGlyph =
+                        glyph === undefined
+                            ? tile.decoration === 'rock'
+                                ? '🪨'
+                                : tile.decoration === 'tree'
+                                  ? '🌳'
+                                  : null
+                            : null;
+                    // THE SCALE-1 TREE OPACITY — at the island view the tree
+                    // icon fades by the tile's TRUE scale-0 tree coverage: its
+                    // standing tree UNITS (the live `resources.tree` deposit —
+                    // the fine cells a sub-grid would scatter them onto) against
+                    // the tile's sub-grid CELL COUNT (the board's width ×
+                    // height — the sub-grid copies the world grid's dims). Zero
+                    // trees → no icon (treeIconOpacity returns undefined — and
+                    // the 'tree' decoration itself is stock-driven, so a bare
+                    // tile never reaches the draw). The interior view (the
+                    // zoomed slice) keeps FULL opacity: its drawn cells are
+                    // trees by construction, so their true coverage is 100 %.
+                    // The rock icon is BINARY (stock present → full opacity):
+                    // the stock-driven drop is its honesty mechanism
+                    const treeOpacity =
+                        decorationGlyph === '🌳' && islandView
+                            ? treeIconOpacity(
+                                  world.cellAt(tile.x, tile.y)?.resources.tree ?? 0,
+                                  world.canvas.width * world.canvas.height,
+                              )
+                            : undefined;
+                    return (
+                        <Cell
+                            key={`${tile.x},${tile.y}`}
+                            background={tile.background}
+                            border={tileBorder(isSelected, isInspected)}
+                            title={tile.title}
+                            data-testid={`unicode-tile-${tile.x}-${tile.y}`}
+                            onClick={() => onTile(tile, castaway?.id)}
+                            // R1 hover — same contract as the ascii Cell above
+                            // (tile pick + zoom target only; sticky on leave)
+                            onMouseEnter={() => onHover(tile)}
+                        >
+                            {glyph ? (
+                                <Marker color={glyph.color}>
+                                    {glyph.glyph}
+                                </Marker>
+                            ) : decorationGlyph ? (
+                                <Marker
+                                    // The decoration's identity color — tree
+                                    // green from the palette, the rock's mid
+                                    // gray beside it (the emoji itself is
+                                    // full-color; the color only styles the
+                                    // surrounding span fallback)
+                                    color={
+                                        decorationGlyph === '🪨'
+                                            ? (palette.stone ?? '#8d939e')
+                                            : (palette.tree ?? '#4caf50')
+                                    }
+                                    // The coverage fade (tree, island view
+                                    // only) — undefined omits the attribute
+                                    opacity={treeOpacity}
+                                    data-testid={
+                                        decorationGlyph === '🪨'
+                                            ? 'rock-icon-unicode'
+                                            : 'tree-icon-unicode'
+                                    }
+                                >
+                                    {decorationGlyph}
+                                </Marker>
+                            ) : null}
+                            {/* R6 — the standing jobs' progress bars (the shared
+                                tile work + the live site build work) */}
+                            <WorkBars x={tile.x} y={tile.y} progress={progressFor(tile.x, tile.y)} />
+                        </Cell>
+                    );
+                })}
+            </Grid>
+            {/* R5 — the night veil: the same wash the ascii view paints
+                (alpha = 1 − ambient, the rounded veilAlpha from WorldGrid),
+                pointer-events none so every tile interaction passes
+                straight through */}
+            <NightVeil alpha={veilAlpha} data-testid="night-veil" aria-hidden="true" />
+        </BoardShell>
         {/* Terrain is color-only here except the tree decorations — the
             legend matches the ascii view */}
         <Legend data-testid="grid-legend-unicode">
@@ -1005,6 +1168,7 @@ const SvgView = ({
     inspected,
     selected,
     islandView,
+    veilAlpha,
     progressFor,
     onTile,
     onHover,
@@ -1020,6 +1184,10 @@ const SvgView = ({
     // features/tileDetails treeIconOpacity); the interior view stands at
     // full opacity (its drawn cells are trees by construction)
     islandView: boolean;
+    // R5 — the night veil's alpha (1 − ambient, scenario/dayCycle.ts
+    // daylightAt; computed once in WorldGrid so every canvas reads the
+    // same rounded value). 0 paints nothing, 0.65 the night floor.
+    veilAlpha: number;
     // R6 — the standing jobs of a tile (the shared tile-work ledger + the
     // live site build work) — drawn as the bottom-edge progress bars
     progressFor: (x: number, y: number) => TileProgress[];
@@ -1146,6 +1314,24 @@ const SvgView = ({
                     </g>
                 );
             })}
+            {/* R5 — the vector twin of the night veil: one full-viewBox rect
+                painted LAST (SVG renders in document order — the wash sits
+                over every tile group) with the same rgba fill the DOM
+                veils compute from veilAlpha. Inside the svg root (not a
+                wrapper) on purpose: the veil is a child of the vector
+                document, so the board's `<g>` structure — every tile
+                group the tests and interactions address — is untouched.
+                pointer-events none keeps it nonblocking like the DOM
+                veils; aria-hidden marks it decorative. */}
+            <SvgNightVeil
+                x={0}
+                y={0}
+                width={frame.columns * frame.size}
+                height={frame.rows * frame.size}
+                fill={`rgba(8,12,30,${veilAlpha})`}
+                data-testid="night-veil-svg"
+                aria-hidden="true"
+            />
         </SvgBoard>
         {/* Terrain is color-only here except the tree decorations — the
             legend matches the ascii view */}

@@ -726,8 +726,20 @@ describe('createIslandWorld', () => {
         // The species' task vocabulary over the march: birds seek roosts
         // ('seeks a roost' move tasks) and sleep; the boars run the whole
         // survival ladder (drink, eat, gather, wander, sleep); a spent
-        // shark slept its slumber
+        // shark slept its slumber. T5 re-pin — the R4 recovery service
+        // charges every rest/sleep-restored energy point against the
+        // body's hunger AND thirst equally (needsPlugin.recovery, the
+        // resource-backed route), so a sleeping body's charged resources
+        // climb and the survival rungs answer: the birds run the full
+        // grounded ladder too (collect/drink/eat/gather) and the shark
+        // forages the fish underfoot and eats it (gather/eat — the water
+        // realm's non-travel rungs; the shark is never thirsty — its
+        // rate-0 thirst is never charged, so no shark:drink/collect).
         expect([...creatureTaskKinds].sort()).toEqual([
+            'bird:collect',
+            'bird:drink',
+            'bird:eat',
+            'bird:gather',
             'bird:move',
             'bird:sleep',
             'boar:collect',
@@ -736,6 +748,8 @@ describe('createIslandWorld', () => {
             'boar:gather',
             'boar:move',
             'boar:sleep',
+            'shark:eat',
+            'shark:gather',
             'shark:sleep',
         ]);
         // ZERO DEATHS in 3000 world minutes — the ORIGINAL no-death

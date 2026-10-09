@@ -6,7 +6,11 @@
 // scenario is sampled from the deck (@godspace/core src/scenario) and
 // played against a stage wired to the island's systems:
 //
-//   stage.profile → needs.satisfy  (hunger, thirst, energy — clamped 0..100)
+//   stage.profile → needs.satisfy  (hunger, thirst — clamped 0..100; energy
+//                  DRAINS only — R4 drops the positive deltas at this stage
+//                  boundary: a story is an instant encounter, never a
+//                  rest/sleep task, so nothing may restore; the recovery
+//                  service is the only sanctioned energy route)
 //   stage.bond    → relationship.adjust (signed, reason logged)
 //
 // The play returns its narrative lines, and the plugin injects them into
@@ -178,10 +182,28 @@ export const storyPlugin = (options: StoryPluginOptions): StoryPlugin => {
                     // The island's profile is the needs triple: the knobs
                     // the needs plugin knows are routed, engine-foreign
                     // keys are ignored (satisfy clamps 0..100)
+                    //
+                    // R4 — THE STORY ENERGY GATE: positive energy deltas are
+                    // DROPPED here (Math.min(0, …)); drains ride. A story is
+                    // an instant encounter, not a rest/sleep task — the R4
+                    // rule grants energy only while a rest/sleep task
+                    // actually RUNS, and only through the needs plugin's
+                    // recovery service (needs.recovery — resource-backed:
+                    // every restored point charges hunger/thirst equally).
+                    // The deck's warm scenes (shared-fire's +8, storm-
+                    // shelter's +8, gull-omen's +2) keep their narrative —
+                    // they just stop refilling the reservoir. Routing the
+                    // gains through recovery instead was considered and
+                    // rejected: a watched campfire is not worked rest, and
+                    // the recovery charge would tax the body's hunger and
+                    // thirst for an encounter it never slept through.
                     needs.satisfy(member.id, {
                         hunger: deltas.hunger,
                         thirst: deltas.thirst,
-                        energy: deltas.energy,
+                        energy:
+                            deltas.energy === undefined
+                                ? undefined
+                                : Math.min(0, deltas.energy),
                     });
                 },
                 bond: (a, b, delta, reason) => {

@@ -405,17 +405,23 @@ describe('birdsPlugin — the entity profiles: the stat-driven flight', () => {
         expect(needs.of('bird-1').energy).toBe(77.00000000000003);
     });
 
-    it('a perched bird recovers faster than hopping costs — the roost nets positive', () => {
+    it('a perched bird pays the walk row per hop — the perch grants nothing (R4)', () => {
         const { world, birds, needs } = buildStatStack({ landChancePerMinute: 1, takeoffChancePerMinute: 0 });
         birds.release();
         // Start drained — the clamp at 100 would hide the arithmetic
         needs.satisfy('bird-1', { energy: -80 }); // 20
         world.step(); // minute 1: lands (decay 19.95 — the landing is free)
         expect(birds.birdOf('bird-1')?.state).toBe('perched');
-        world.step(); // minute 2: hop (−1.25 walk row) + roost (+3) − decay
-        expect(needs.of('bird-1').energy).toBe(21.65);
-        world.step(); // minute 3: the roost drifts the gull UP the ladder
-        expect(needs.of('bird-1').energy).toBe(23.349999999999998);
+        world.step(); // minute 2: the hop pays the walk row (−1.25) + the decay (−0.05)
+        expect(needs.of('bird-1').energy).toBe(18.65);
+        world.step(); // minute 3: another perched minute — and NO roost grant:
+        // the perch recovers NOTHING plugin-side (R4 routes every energy
+        // gain through the ledger's rest/sleep tasks — the sleep plugin's
+        // slumber, backed by the needs recovery service out of equal
+        // hunger/thirst). The gull nets NEGATIVE while it waits: the
+        // sanctioned recovery is the ledger's, tested with the live
+        // ledger in the behavior plugin's bird-slumber tests.
+        expect(needs.of('bird-1').energy).toBe(17.349999999999998);
         expect(birds.birdOf('bird-1')?.state).toBe('perched');
     });
 
@@ -425,19 +431,22 @@ describe('birdsPlugin — the entity profiles: the stat-driven flight', () => {
         needs.satisfy('bird-1', { energy: -85 }); // 15 — below the 25 line
         world.step(); // minute 1: lands (the landing needs no energy)
         // Minutes 2-4: the takeoff roll fires every minute (chance 1) but
-        // the gate holds the spent gull down; the roost climbs meanwhile
-        // (three perched minutes: 15 − landing decay, +1.7 net each)
+        // the gate holds the spent gull down; the hops drain meanwhile
+        // (three perched minutes: 15 − the landing decay, −1.3 each — the
+        // hop's walk row 1.25 and the decay 0.05; the perch grants
+        // NOTHING, R4 — the recovery is the ledger's slumber)
         for (let index = 0; index < 3; index++) {
             world.step();
         }
         expect(birds.birdOf('bird-1')?.state).toBe('perched');
-        expect(needs.of('bird-1').energy).toBe(20.049999999999997);
-        // Over the line: the very next perched minute takes off
+        expect(needs.of('bird-1').energy).toBe(11.049999999999997);
+        // Over the line (the god's hand stands in for the ledger's
+        // slumber): the very next perched minute takes off
         needs.satisfy('bird-1', { energy: 30 });
         world.step();
         expect(birds.birdOf('bird-1')?.state).toBe('flying');
-        // The climb charged the fly row: (20.05 + 30) − decay − 2.5
-        expect(needs.of('bird-1').energy).toBe(47.5);
+        // The climb charged the fly row: (11.05 + 30) − decay − 2.5
+        expect(needs.of('bird-1').energy).toBe(38.5);
     });
 });
 

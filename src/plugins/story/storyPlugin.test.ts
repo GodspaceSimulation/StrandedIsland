@@ -2,10 +2,12 @@
 //
 // The plugin is tested with a BESPOKE single-card deck (injected through
 // the options) so the wiring is pinned exactly: encounter detection, the
-// one-story-per-minute gate, the cooldown, profile routing onto needs,
-// bond routing onto relationships, the one-shot exhaustion and the exact
-// log block shape. The stock island scenarios have their own suite
-// (scenario/scenarios.test.ts).
+// one-story-per-minute gate, the cooldown, profile routing onto needs
+// (R4 — positive energy deltas DROPPED at the stage boundary, drains
+// ride), bond routing onto relationships, the one-shot exhaustion and the
+// exact log block shape. The stock island scenarios have their own suite
+// (scenario/scenarios.test.ts — it pins the cards' deltas against a
+// recording stage; the energy gate lives here, at the island's stage).
 
 import { describe, it, expect } from 'vitest';
 import { createScenarioDeck, position3, type ScenarioDeck, type ScenarioDefinition } from '@godspace/core';
@@ -22,8 +24,10 @@ const bespokeScenario: ScenarioDefinition = {
     title: 'Test Story',
     castSize: 2,
     play: (stage) => {
+        // BOTH energy routes in one card: the +10 is the R4 gate's target
+        // (a story must never restore), the −9 the drain that still rides.
         stage.profile(0, { hunger: -5, energy: 10 });
-        stage.profile(1, { thirst: -7 });
+        stage.profile(1, { thirst: -7, energy: -9 });
         stage.bond(0, 1, 9, 'the bespoke test');
         return ['Line one.', 'Line two.'];
     },
@@ -58,15 +62,21 @@ const spawn = (world: ReturnType<typeof createWorld>, id: string, name: string, 
 describe('storyPlugin', () => {
     it('plays the first encountered pair: profiles route to needs, bonds to relationships, the story lands as ONE block', () => {
         const { world, needs, relationship, story } = buildStack();
-        // Ael and Bram share tile (0,0) — the closest possible meeting
+        // Ael and Bram share tile (0,0) — the closest possible meeting.
+        // The reservoirs start BELOW the cap so the R4 energy gate is
+        // visible: +10 dropped for Ael, −9 applied for Bram.
         spawn(world, 'a', 'Ael', 0, 0);
         spawn(world, 'b', 'Bram', 0, 0);
+        needs.satisfy('a', { energy: -60 }); // energy 40
+        needs.satisfy('b', { energy: -20 }); // energy 80
         world.step();
         // The stage routed the profile deltas onto the needs plugin —
-        // from the starting { hunger 20, thirst 20, energy 100 }, clamped.
+        // from the drained starting reservoirs, clamped. Ael's +10 energy
+        // is DROPPED (R4: a story is not a rest/sleep task — the recovery
+        // service is the only sanctioned energy route); Bram's −9 rides.
         // Health stays full — the meeting fed nobody and hurt nobody
-        expect(needs.of('a')).toEqual({ hunger: 15, thirst: 20, energy: 100, health: 100 });
-        expect(needs.of('b')).toEqual({ hunger: 20, thirst: 13, energy: 100, health: 100 });
+        expect(needs.of('a')).toEqual({ hunger: 15, thirst: 20, energy: 40, health: 100 });
+        expect(needs.of('b')).toEqual({ hunger: 20, thirst: 13, energy: 71, health: 100 });
         // …and the bond delta onto the relationship plugin (no drift in
         // this fixture — the value is exactly the scenario's move)
         expect(relationship.relation('a', 'b')).toBe(9);
@@ -101,6 +111,40 @@ describe('storyPlugin', () => {
             kind: 'relationship',
             message: 'Ael and Bram grow closer (the bespoke test).',
         });
+    });
+
+    it('the R4 energy gate drops a positive-only card too — the warm scenes restore nothing', () => {
+        // A card that carries ONLY positive energy (the shape of the
+        // standard deck's shared-fire / storm-shelter / gull-omen grants):
+        // a story must never refill the reservoir, whatever the card says
+        const restful = buildStack({
+            deck: (() => {
+                const deck = createScenarioDeck({ seed: 7 });
+                deck.define({
+                    id: 'restful-meeting',
+                    title: 'Restful Meeting',
+                    castSize: 2,
+                    play: (stage) => {
+                        stage.profile(0, { energy: 25 });
+                        stage.profile(1, { energy: 25, thirst: -6 });
+                        return ['They rest a while.'];
+                    },
+                });
+                return deck;
+            })(),
+        });
+        spawn(restful.world, 'a', 'Ael', 0, 0);
+        spawn(restful.world, 'b', 'Bram', 0, 0);
+        // Drain below the cap so the gate is visible at 50 (neither
+        // reservoir may clamp over the run)
+        restful.needs.satisfy('a', { energy: -50 });
+        restful.needs.satisfy('b', { energy: -50, thirst: 6 }); // 50 / thirst 26
+        restful.world.step();
+        // The +25 energy is DROPPED at the stage boundary for BOTH members
+        // (R4: the recovery service is fed exclusively by rest/sleep
+        // tasks); Bram's −6 hydration is the only movement
+        expect(restful.needs.of('a')).toEqual({ hunger: 20, thirst: 20, energy: 50, health: 100 });
+        expect(restful.needs.of('b')).toEqual({ hunger: 20, thirst: 20, energy: 50, health: 100 });
     });
 
     it('the meeting ring is Chebyshev: adjacent tiles meet, distance 2 does not', () => {

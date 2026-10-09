@@ -487,6 +487,275 @@ export const meadowIngressSpots = (width: number, height: number, forest: Offset
     });
 };
 
+// ── The scale-0 SHORE MASK (R1 — the realistic partial shore) ────────────────
+//
+// A BEACH tile's zoomed interior is no longer a solid sand block: the
+// interior carries a deterministic WATERLINE hugging every edge that faces a
+// water neighbor (the sea the tile actually sits against at scale 1), so the
+// scale-0 shore reads as a shore — partial sand, shaped water — instead of
+// an inland sand flat. The design rules (all deterministic, no speckle):
+//
+//   ORIENTATION — the mask orients toward the parent tile's WATER neighbors
+//     on its own grid (the in-grid 8-neighborhood): a CARDINAL water
+//     neighbor opens a full fine ROW/COLUMN waterline along that shared
+//     edge (the beach meets its sea along the whole shared border — no
+//     dips, the waterline is contiguous); a DIAGONAL water neighbor carves
+//     a 3-spot corner wedge (the corner fine cell + one flank along each
+//     edge sharing the corner). A beach tile with NO water neighbor (an
+//     inland sand flat — e.g. the 7×5 board's stone-heap beach) shapes
+//     nothing: without a visible sea there is no shore to shape.
+//   DEPTH BY THE SEA ITSELF — a shallows/basin neighbor is shallow water:
+//     its waterline is ONE voxel of water over the lowered seabed (the
+//     exact column shape the sea's own shallows columns carry). An ocean
+//     neighbor is deep water: its waterline is TWO voxels (the ocean column
+//     shape) AND its band may reach one further inland layer, gated by a
+//     smooth low-frequency wave over the edge's own keyed stream
+//     (`shore:<pathKey>:<edge>` — an INDEPENDENT stream namespace, the
+//     existing resource scatter streams are untouched) — a bay of
+//     contiguous deep/shallows runs, never speckle.
+//   MAJORITY LAND — the water spots never exceed SHORE_WATER_CAP of the
+//     interior's cells (the shore stays land-majority, so the scale-1 tile
+//     keeps its recognizable sand surface: the coarse majority fold still
+//     reads sand). Edges and wedges fill in the FIXED NEIGHBOR_OFFSETS
+//     order; each edge takes its full band only if it fits under the cap,
+//     else waterline-only, else nothing — truncation by layer keeps every
+//     kept band contiguous.
+//   CORRECTNESS — the fine water cells are REAL water (fineWaterColumn
+//     below): impassable, deposit-free (the submerged-supplies-nothing
+//     rule — subPrep's scatter refuses water spots), the lowered seabed +
+//     water column shape the sea columns get, with fresh-basin neighbors
+//     lending their own basin biome.
+//
+// The mask is a PURE function of the parent cell, its in-grid neighbors,
+// the seed and the tile address — generateSubCanvas (the materializer) and
+// surfaceKeyCounts (the histogram) both read the SAME mask, so the zoomed
+// board and the coarse majority fold always agree cell-for-cell. It is
+// stable for the tile's life: only WATER neighbors shape it and water never
+// changes after generation (the ecology converts dry land only), so the
+// sub-grid fingerprint (parent deposits/height/water line/biome/voxels/
+// carve) needs no extension — the mask rides the parent's own stamp.
+
+/** The share of a shore tile's interior that may drown — the land-majority cap. */
+export const SHORE_WATER_CAP = 0.4;
+
+/**
+ * The inland reach of a DEEP (ocean-abutting) waterline: the waterline layer
+ * itself (the shared edge's first fine row/column) plus one wave-gated
+ * shallows layer further inland — the shore→shallows→ocean transition.
+ */
+export const SHORE_DEEP_LAYERS = 2;
+
+/** One masked water spot of a shore tile's interior. */
+export type ShoreWater = {
+    /** Water voxels above the lowered seabed: 1 = shallows rim, 2 = ocean-deep. */
+    depth: number;
+    /** The fresh-basin biome a BASIN neighbor lends (undefined: sea water). */
+    basin?: 'lake' | 'pond';
+};
+
+/** The shore mask of one tile's interior: fine spot "x,y" → its water. */
+export type ShoreMask = Map<string, ShoreWater>;
+
+/** The water class a neighbor lends the shore mask (undefined: not water). */
+type ShoreNeighbor = 'shallow' | 'deep' | 'lake' | 'pond';
+
+/**
+ * Classifies one neighbor cell as the water it lends the shore mask: the
+ * open ocean is deep water, the shallows rim shallow, the interior fresh
+ * basins their own (fresh) water. Dry or missing cells lend nothing.
+ */
+const shoreNeighborOf = (cell: TerrainCell | undefined): ShoreNeighbor | undefined => {
+    if (!cell || cell.passable) {
+        return undefined;
+    }
+    if (cell.biome === 'ocean') {
+        return 'deep';
+    }
+    if (cell.biome === 'shallows') {
+        return 'shallow';
+    }
+    return cell.biome === 'lake' ? 'lake' : cell.biome === 'pond' ? 'pond' : undefined;
+};
+
+/** The mask's edge name for one NEIGHBOR_OFFSETS direction — the stream key part. */
+const shoreEdgeName = (offset: Offset): string =>
+    (offset.dy < 0 ? 'N' : offset.dy > 0 ? 'S' : '') + (offset.dx < 0 ? 'W' : offset.dx > 0 ? 'E' : '');
+
+/**
+ * The shore mask of one beach tile's zoomed interior (see the rule block
+ * above). `parentCanvas` is the grid the parent sits in (the root canvas at
+ * scale 1, a sub-grid deeper) — the mask reads the parent's in-grid
+ * neighbors off it, exactly the neighbors the parent tile shares borders
+ * with. `pathKey` keys the deep-edge wave streams per tile address.
+ */
+export const shoreMask = (
+    parent: TerrainCell,
+    pathKey: string,
+    parentCanvas: Pick<Canvas, 'width' | 'height' | 'cells'>,
+    seed: number,
+): ShoreMask => {
+    const mask: ShoreMask = new Map();
+    // Only DRY SAND shores shape — the beach ring. An inland sand flat with
+    // no water neighbor shapes nothing (no visible sea, no shore to shape).
+    if (parent.biome !== 'beach' || !parent.passable) {
+        return mask;
+    }
+    const width = parentCanvas.width;
+    const height = parentCanvas.height;
+    const halfX = (width - 1) / 2;
+    const halfY = (height - 1) / 2;
+    const cap = Math.floor(SHORE_WATER_CAP * width * height);
+    // The parent's own grid cell lookup — the same centered read cellOn does
+    const neighborAt = (dx: number, dy: number): TerrainCell | undefined => {
+        const nx = parent.x + dx;
+        const ny = parent.y + dy;
+        if (ny < -halfY || ny > halfY || nx < -halfX || nx > halfX) {
+            return undefined;
+        }
+        return parentCanvas.cells[(ny + halfY) * width + (nx + halfX)];
+    };
+    // Deeper water wins a shared spot (a deep waterline keeps the deeper
+    // column where a wedge flank would lay a shallower one)
+    const put = (x: number, y: number, depth: number, basin: ShoreWater['basin']): void => {
+        const key = `${x},${y}`;
+        const standing = mask.get(key);
+        if (standing && standing.depth >= depth) {
+            return;
+        }
+        mask.set(key, basin ? { depth, basin } : { depth });
+    };
+    // The running water count the land-majority cap truncates against
+    let used = 0;
+    // Edges + wedges in the FIXED NEIGHBOR_OFFSETS order (clockwise from
+    // north) — the deterministic fill order
+    arrayEach(NEIGHBOR_OFFSETS, ({ value: offset }) => {
+        const water = shoreNeighborOf(neighborAt(offset.dx, offset.dy));
+        if (!water) {
+            return;
+        }
+        const basin: ShoreWater['basin'] = water === 'lake' ? 'lake' : water === 'pond' ? 'pond' : undefined;
+        if (offset.dx !== 0 && offset.dy !== 0) {
+            // Diagonal water — the corner wedge: the corner fine cell plus
+            // one flank along each edge sharing the corner (contiguous, no
+            // checkerboard — unlike the boulder band a shore wedge is real
+            // water, it does not scatter)
+            const cornerX = offset.dx < 0 ? -halfX : halfX;
+            const cornerY = offset.dy < 0 ? -halfY : halfY;
+            const cornerDepth = water === 'deep' ? 2 : 1;
+            const spots: Array<{ x: number; y: number; depth: number }> = [
+                { x: cornerX, y: cornerY, depth: cornerDepth },
+                { x: cornerX - offset.dx, y: cornerY, depth: 1 },
+                { x: cornerX, y: cornerY - offset.dy, depth: 1 },
+            ];
+            // The whole wedge or nothing — a truncated wedge would orphan
+            // its flanks from the corner (contiguity)
+            if (used + spots.length <= cap) {
+                spots.forEach((spot) => {
+                    put(spot.x, spot.y, spot.depth, basin);
+                });
+                used = used + spots.length;
+            }
+            return;
+        }
+        // Cardinal water — the fine ROW/COLUMN along the shared edge. The
+        // waterline (the first layer) is always FULL: one contiguous line
+        // of water along the whole shared border
+        const line: Array<{ x: number; y: number }> = [];
+        if (offset.dx === 0) {
+            const y = offset.dy < 0 ? -halfY : halfY;
+            for (let x = -halfX; x <= halfX; x++) {
+                line.push({ x, y });
+            }
+        } else {
+            const x = offset.dx < 0 ? -halfX : halfX;
+            for (let y = -halfY; y <= halfY; y++) {
+                line.push({ x, y });
+            }
+        }
+        // The waterline's VOXEL depth: shallow seas/basins lap one voxel
+        // deep, the open ocean two (the sea columns' own shapes)
+        const lineDepth = water === 'deep' ? 2 : 1;
+        // The deep sea's extra INLAND layer — a smooth low-frequency wave
+        // over the edge's own keyed stream gates where the shallows tongue
+        // reaches one cell further (contiguous runs, never speckle)
+        const extension: Array<{ x: number; y: number }> = [];
+        if (water === 'deep') {
+            const stream = randomKeyed(seed, `shore:${pathKey}:${shoreEdgeName(offset)}`);
+            const phase = stream() * Math.PI * 2;
+            const cycles = 1 + Math.floor(stream() * 2);
+            if (offset.dx === 0) {
+                const y = offset.dy < 0 ? -halfY + 1 : halfY - 1;
+                for (let x = -halfX; x <= halfX; x++) {
+                    const wave = Math.sin(phase + (2 * Math.PI * cycles * (x + halfX)) / width);
+                    if (wave > 0) {
+                        extension.push({ x, y });
+                    }
+                }
+            } else {
+                const x = offset.dx < 0 ? -halfX + 1 : halfX - 1;
+                for (let y = -halfY; y <= halfY; y++) {
+                    const wave = Math.sin(phase + (2 * Math.PI * cycles * (y + halfY)) / height);
+                    if (wave > 0) {
+                        extension.push({ x, y });
+                    }
+                }
+            }
+        }
+        // The land-majority cap: the full band (waterline + extension) if it
+        // fits, else the waterline alone, else nothing — layer truncation
+        // keeps every kept band contiguous
+        if (used + line.length + extension.length <= cap) {
+            line.forEach((spot) => {
+                put(spot.x, spot.y, lineDepth, basin);
+            });
+            extension.forEach((spot) => {
+                put(spot.x, spot.y, 1, basin);
+            });
+            used = used + line.length + extension.length;
+        } else if (used + line.length <= cap) {
+            line.forEach((spot) => {
+                put(spot.x, spot.y, lineDepth, basin);
+            });
+            used = used + line.length;
+        }
+    });
+    return mask;
+};
+
+/**
+ * The fine water column of one masked shore spot — the lowered seabed + water
+ * shape the sea's own columns carry (the beach slopes into its sea): gravel
+ * bedrock ×(ground−2), a dirt underlayer at ground ≥ 2, the sand seabed, then
+ * `depth` water voxels. Fresh-basin spots keep ONE water voxel and lend the
+ * basin's own biome; sea spots read shallows at one voxel and ocean beyond
+ * (deriveBiome's depth ladder). Impassable and deposit-free — underwater
+ * cells carry nothing (the submerged-supplies-nothing rule).
+ */
+export const fineWaterColumn = (
+    waterLevel: number,
+    water: ShoreWater,
+): { voxels: VoxelKind[]; height: number; biome: Biome } => {
+    const ground = Math.max(0, waterLevel - water.depth);
+    const stack: VoxelKind[] = [];
+    if (ground >= 3) {
+        for (let bedrock = 0; bedrock < ground - 2; bedrock++) {
+            stack.push('gravel');
+        }
+    }
+    if (ground >= 2) {
+        stack.push('dirt');
+    }
+    stack.push('sand');
+    for (let voxel = 0; voxel < water.depth; voxel++) {
+        stack.push('water');
+    }
+    return {
+        voxels: stack,
+        height: ground,
+        biome: water.basin ?? deriveBiome('sand', true, water.depth, false),
+    };
+};
+
 // ── The persistent forest stands ─────────────────────────────────────────────
 //
 // The fine-scale tree record of ONE parent tile. The terrain plugin owns the
@@ -1526,7 +1795,7 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
         deposits: Map<string, TileResources>;
     };
 
-    const subPrep = (parent: TerrainCell, pathKey: string): SubPrep => {
+    const subPrep = (parent: TerrainCell, pathKey: string, water: ShoreMask): SubPrep => {
         const width = dims.width;
         const height = dims.height;
         const halfX = (width - 1) / 2;
@@ -1578,6 +1847,13 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
             }
             const stream = randomKeyed(resolvedSeed, `sub:${pathKey}:${resource}`);
             const taken = new Set<string>();
+            // R1 — the shore's water spots refuse every deposit: underwater
+            // fine cells carry nothing (the submerged-supplies-nothing rule,
+            // the same rule the sea columns obey). The scatter's bounded
+            // re-roll skips them like it skips boulders and trees.
+            water.forEach((_spot, key) => {
+                taken.add(key);
+            });
             if (resource === 'stone') {
                 // No loose pile on a boulder (every crown spot — visible or
                 // bare, rock is not a pile) and none under a standing tree
@@ -1609,20 +1885,46 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
     /**
      * Generates one tile's sub-grid — the materializer half of the scatter
      * (the preparation is the shared subPrep above; the long rule comment
-     * lives there).
+     * lives there). `parentCanvas` is the grid the parent sits in — the
+     * R1 shore mask reads the parent's water neighbors off it.
      */
-    const generateSubCanvas = (parent: TerrainCell, pathKey: string): Canvas => {
+    const generateSubCanvas = (parent: TerrainCell, pathKey: string, parentCanvas: Canvas): Canvas => {
         const width = dims.width;
         const height = dims.height;
         const halfX = (width - 1) / 2;
         const halfY = (height - 1) / 2;
-        const { stand, rocks, visibleCrowns, deposits } = subPrep(parent, pathKey);
+        // R1 — the shore mask: the fine waterline this parent's interior
+        // carries toward its water neighbors (empty for every non-beach
+        // parent — see shoreMask's rule block)
+        const shore = shoreMask(parent, pathKey, parentCanvas, resolvedSeed);
+        const { stand, rocks, visibleCrowns, deposits } = subPrep(parent, pathKey, shore);
 
         const cells: TerrainCell[] = [];
         for (let row = 0; row < height; row++) {
             for (let col = 0; col < width; col++) {
                 const x = col - halfX;
                 const y = row - halfY;
+                // R1 — the shore's water fine cells: REAL water — the
+                // lowered seabed + water column the sea columns get,
+                // impassable and deposit-free (the scatter refuses them).
+                // The spot keeps the parent's water line; its biome reads
+                // the water it borders (shallows rim, ocean-deep coves,
+                // fresh-basin inlets).
+                const shoreWater = shore.get(`${x},${y}`);
+                if (shoreWater) {
+                    const column = fineWaterColumn(parent.waterLevel, shoreWater);
+                    cells.push({
+                        x,
+                        y,
+                        voxels: column.voxels,
+                        height: column.height,
+                        waterLevel: parent.waterLevel,
+                        biome: column.biome,
+                        passable: false,
+                        resources: {},
+                    });
+                    continue;
+                }
                 const resources: TileResources = { ...(deposits.get(`${x},${y}`) ?? {}) };
                 // The persistent tree: the stand's exact fine position puts
                 // ONE tree unit here (a fine cell holds at most one tree)
@@ -1697,7 +1999,7 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
                 canvas = cached.canvas;
                 continue;
             }
-            canvas = generateSubCanvas(parentCell, key);
+            canvas = generateSubCanvas(parentCell, key, canvas);
             subCanvases.set(key, { stamp, canvas });
             // FIFO eviction — the freshly inserted entry sorts last, so the
             // oldest grids drop first
@@ -1737,10 +2039,17 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
         const parentCanvas = canvasAtPath(path.slice(0, -1));
         const tail = path[path.length - 1];
         const parent = parentCanvas ? cellOn(parentCanvas, tail.x, tail.y) : undefined;
-        if (!parent) {
+        // The GUARD narrows BOTH reads: the shore mask and the scatter read
+        // the parent's grid, so an unresolved canvas (and its missing parent
+        // with it) answers undefined before either runs
+        if (!parentCanvas || !parent) {
             return undefined;
         }
-        const prep = subPrep(parent, tilePathKey(path));
+        // R1 — the shore mask this parent's interior carries (the SAME mask
+        // generateSubCanvas materializes — one source of truth, the histogram
+        // is exact only while it mirrors the materializer position-for-position)
+        const shoreWaterMask = shoreMask(parent, tilePathKey(path), parentCanvas, resolvedSeed);
+        const prep = subPrep(parent, tilePathKey(path), shoreWaterMask);
         const width = dims.width;
         const height = dims.height;
         const halfX = (width - 1) / 2;
@@ -1768,6 +2077,17 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
             const [x, y] = spot.split(',').map(Number);
             rockAt[(y + halfY) * width + (x + halfX)] = 1;
         });
+        // R1 — the shore mask indexed by row-major cell: the water fine
+        // cells (voxel depth + the lending basin) the materializer rebuilds
+        // as sea-shaped columns
+        const waterAt = new Uint8Array(total);
+        const basinAt: Array<ShoreWater['basin']> = new Array(total);
+        shoreWaterMask.forEach((spot, key) => {
+            const [x, y] = key.split(',').map(Number);
+            const index = (y + halfY) * width + (x + halfX);
+            waterAt[index] = spot.depth;
+            basinAt[index] = spot.basin;
+        });
         // The ORDINARY cell's key — the inherited column carrying only the
         // unlimited ground supply (the materializer's per-cell loop sets
         // exactly these on a special-less cell): computed once per grid
@@ -1786,6 +2106,11 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
         // crown/gravel flags ⇒ same surface key) — tileSurfaceKey runs once
         // per distinct signature, not once per cell
         const specialKeys = new Map<string, string | undefined>();
+        // R1 — the shore's water fine cells share keys by COLUMN SHAPE (the
+        // same water depth + lending basin ⇒ the same sea-shaped column) —
+        // the materializer's fineWaterColumn + tileSurfaceKey run once per
+        // distinct signature, mirroring specialKeys above
+        const waterKeys = new Map<string, string | undefined>();
         const counts = new Map<string, SurfaceKeyCount>();
         const bump = (key: string | undefined, index: number): void => {
             if (key === undefined) {
@@ -1800,6 +2125,32 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
             counts.set(key, { key, count: 1, first: index, last: index });
         };
         for (let index = 0; index < total; index++) {
+            // R1 — THE SHORE WATER first: a masked water fine cell is REAL
+            // water (the materializer rebuilds it as the sea-shaped column of
+            // fineWaterColumn — impassable, deposit-free), so its surface key
+            // is its resolved water biome ('shallows' | 'ocean' | the basin's
+            // own name), never the parent's land key. Checked before every
+            // land flag: the scatter refuses water spots for deposits, and
+            // beach parents carry no stands or carves, but the ordering makes
+            // the agreement with generateSubCanvas structural, not lucky.
+            const waterDepth = waterAt[index];
+            if (waterDepth > 0) {
+                const signature = `${waterDepth}|${basinAt[index] ?? ''}`;
+                if (!waterKeys.has(signature)) {
+                    // The materializer's EXACT column slice for this shape —
+                    // the same fineWaterColumn call generateSubCanvas makes
+                    const column = fineWaterColumn(parent.waterLevel, {
+                        depth: waterDepth,
+                        basin: basinAt[index],
+                    });
+                    waterKeys.set(
+                        signature,
+                        tileSurfaceKey({ biome: column.biome, resources: {}, voxels: column.voxels }),
+                    );
+                }
+                bump(waterKeys.get(signature), index);
+                continue;
+            }
             const deposit = depositAt[index];
             const tree = treeAt[index] === 1;
             const crown = crownAt[index] === 1;

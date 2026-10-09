@@ -66,6 +66,21 @@ import type { MoveKind, EntityProfiles, EntityStats } from '../entity/entityPlug
 import type { PluginContext, WorldPlugin } from '@godspace/core';
 
 export type NeedsPluginOptions = {
+    /**
+     * R4/T6 — the task ledger read (plugins/tasks/taskLedger.ts, passed by
+     * the scenario assembly). The sweep reads each body's HEAD task kind to
+     * know whether it is mid-REST-or-SLEEP this minute: a resting body's
+     * awake hunger/thirst decay is SUSPENDED — the recovery service's equal
+     * charge (needs.recovery, called by the sleep/rest governance while the
+     * task executes) is the only hunger/thirst movement of a resting
+     * minute, so the minute's total spend is EQUAL, never the unequal awake
+     * baseline plus an extra equal cost on top. Absent (a run without the
+     * tasks plugin): no body ever reads as resting and the flat awake
+     * metabolism applies to everyone (the pre-ledger behavior).
+     */
+    tasks?: {
+        taskOf(entityId: string): { kind: string } | undefined;
+    };
     /** Hunger points per world minute. Default 0.1 — the no-profile fallback. */
     hungerPerMinute?: number;
     /** Thirst points per world minute. Default 0.15. */
@@ -145,11 +160,48 @@ export type NeedsPlugin = WorldPlugin<World> & {
     /** An entity's needs — auto-created at starting values on first touch. */
     of(entityId: string): NeedsState;
     /**
-     * Applies deltas (e.g. `{ hunger: -14 }` after eating, `{ energy: 12 }`
-     * after resting, `{ health: -20 }` after a bite). All four values clamp
-     * to 0..100.
+     * Applies deltas (e.g. `{ hunger: -14 }` after eating, `{ health: -20 }`
+     * after a bite). All four values clamp to 0..100.
+     *
+     * THE GOD ROUTE — satisfy is the direct, unaccounted write and stays
+     * that way on purpose: the god-view handle and the test fixtures drive
+     * it (an explicit out-of-simulation intervention). R4 keeps the
+     * IN-SIMULATION callers honest instead — every sanctioned rest/sleep
+     * energy gain routes through `recovery` below, and the story
+     * encounters' positive energy deltas are dropped at the story plugin's
+     * stage boundary (plugins/story/storyPlugin.ts — a story is not a
+     * rest/sleep task, so nothing restores; the negative deltas ride).
+     * ONE unaccounted positive-energy caller REMAINS outside this plugin's
+     * scope (reported for the cross-scope change): the construction
+     * plugin's shelter rest bonus (plugins/construction/
+     * constructionPlugin.ts shelterRest — +0.5/min during a sleep/rest
+     * task on a built roofed gate, applied through satisfy instead of
+     * recovery, so the bonus energy is not charged against hunger/thirst).
      */
     satisfy(entityId: string, deltas: Partial<NeedsState>): void;
+    /**
+     * R4 — THE RECOVERY SERVICE: the ONLY sanctioned route for rest/sleep
+     * energy gains. Converts a requested energy top-up into an actual
+     * restore that is BACKED BY THE BODY'S RESOURCES: every point of
+     * energy restored charges the body's hunger AND thirst equally (1:1 —
+     * the same amount of each resource the species' metabolism consumes;
+     * a species without a pressure — the shark's rate-0 thirst — is not
+     * charged it, so "equal" binds within the resources the body actually
+     * spends). Limits, all enforced here:
+     *   energy cap   — the restore is capped at the 100 headroom and the
+     *                  charge equals the ACTUAL restore: a capped request
+     *                  charges nothing (no phantom cost at the cap).
+     *   empty source — the charge room is the TIGHTER of the charged
+     *                  resources' headroom: a resource at 100 (no room to
+     *                  consume) yields NO energy (nothing converts from
+     *                  an empty source) and charges nothing.
+     * Returns the actual energy points restored (0 when capped or
+     * resource-blocked). Call sites: the sleep plugin's per-minute restore
+     * (while the sleep task progresses) and the behavior plugin's rest
+     * completion (+12 once per rest task) — energy increases only while an
+     * actual rest/sleep task runs, resource-backed.
+     */
+    recovery(entityId: string, requestedEnergy: number): number;
     /**
      * Charges the movement energy of crossing ONE Scale-0 tile. The cost
      * comes from the entity profile's movement table (attributes-derived —
@@ -216,6 +268,17 @@ export const needsPlugin = (options: NeedsPluginOptions = {}): NeedsPlugin => {
     // The entity profiles — per-type rates and starts. Null: the legacy
     // flat castaway rates apply to every entity (the pre-entity behavior).
     const profiles = options.profiles ?? null;
+    // The ledger read — the sweep's resting-metabolism signal (see the
+    // option doc). Null: nobody ever rests (the flat awake metabolism runs
+    // for every entity every minute).
+    const tasksDep = options.tasks ?? null;
+
+    // The head-task kinds that mark a body as resting this minute: the
+    // sleep plugin's timed slumber and the behavior plugin's rest fallback.
+    // Both route their energy gains through the recovery service, so a
+    // resting minute's hunger/thirst spend is the service's EQUAL charge
+    // alone — the awake baseline is suspended for the minute.
+    const RESTING_KINDS = new Set(['sleep', 'rest']);
 
     // Internal stat records — the health reservoir rides along
     const states = new Map<string, NeedsState>();
@@ -375,6 +438,53 @@ export const needsPlugin = (options: NeedsPluginOptions = {}): NeedsPlugin => {
             }
         },
 
+        recovery: (entityId, requestedEnergy) => {
+            // Nothing converts from nothing: a non-positive request is a
+            // silent no-op (the callers only ever ask for positive rates).
+            if (!(requestedEnergy > 0)) {
+                return 0;
+            }
+            const state = stateOf(entityId);
+            // THE CHARGE SET — the resources the body's metabolism actually
+            // consumes (its species' hunger/thirst decay rates; the legacy
+            // flat rates when no profiles stand). A species without a
+            // pressure is never charged it: the shark lives in its drink
+            // (rate-0 thirst), so its recovery cost is hunger alone.
+            const rates = ratesOf(entityId);
+            const charged: Array<'hunger' | 'thirst'> = [];
+            if (rates.hunger > 0) {
+                charged.push('hunger');
+            }
+            if (rates.thirst > 0) {
+                charged.push('thirst');
+            }
+            // THE ROOM — the tighter charged resource's headroom: the equal
+            // charge can only rise until the FIRST resource fills. An empty
+            // charged resource (at the 100 line) yields no energy at all —
+            // nothing converts from an empty source.
+            let room = Infinity;
+            charged.forEach((key) => {
+                room = Math.min(room, 100 - state[key]);
+            });
+            // THE ACTUAL RESTORE — the request capped by the energy headroom
+            // (at the cap the restore is 0 and NOTHING is charged — no
+            // phantom cost) and by the resource room (an empty source
+            // blocks the gain entirely).
+            const actual = Math.min(requestedEnergy, 100 - state.energy, room);
+            if (!(actual > 0)) {
+                return 0;
+            }
+            // The restore and the EQUAL charge: every charged resource rises
+            // by the same amount, proportional to the energy actually
+            // restored (1:1) — the cost is limited by the actual restore,
+            // never by the request.
+            state.energy = clamp01(state.energy + actual);
+            charged.forEach((key) => {
+                state[key] = clamp01(state[key] + actual);
+            });
+            return actual;
+        },
+
         moved: (entityId, moveKind = 'walk') => {
             const state = stateOf(entityId);
             state.energy = clamp01(state.energy - moveCostOf(entityId, moveKind));
@@ -430,8 +540,26 @@ export const needsPlugin = (options: NeedsPluginOptions = {}): NeedsPlugin => {
                 const state = stateOf(entityId);
                 const rates = ratesOf(entityId);
 
-                state.hunger = clamp01(state.hunger + rates.hunger);
-                state.thirst = clamp01(state.thirst + rates.thirst);
+                // ── THE RESTING METABOLISM (R4/T6) ── a body whose head
+                // task is the sleep plugin's slumber or the behavior
+                // plugin's rest fallback is RECOVERING: its awake
+                // hunger/thirst decay is suspended for the minute — the
+                // recovery service's EQUAL charge (needs.recovery, applied
+                // by the sleep/rest governance later in this same minute)
+                // is the minute's whole hunger/thirst movement, so the
+                // total spend of a recovery minute is equal, never the
+                // unequal awake baseline with an extra equal cost on top.
+                // The energy decay still runs (the body's idle burn — the
+                // restore outpaces it), and everything else (the passive
+                // species drain, the starvation damage, the fed regen)
+                // applies exactly as awake.
+                const head = tasksDep?.taskOf(entityId);
+                const resting = head !== undefined && RESTING_KINDS.has(head.kind);
+
+                if (!resting) {
+                    state.hunger = clamp01(state.hunger + rates.hunger);
+                    state.thirst = clamp01(state.thirst + rates.thirst);
+                }
                 state.energy = clamp01(state.energy - rates.energy);
                 // The passive species drain — 0 for every stock species; an
                 // ailing species profile could sicken its bodies slowly

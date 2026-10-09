@@ -23,6 +23,7 @@ import { position3 } from '@godspace/core';
 import { createWorld } from '../../engine/world';
 import { islandTerrainPlugin } from '../terrain/islandTerrain';
 import { inventoryPlugin } from '../inventory/inventoryPlugin';
+import { toolState } from '../inventory/toolDurability';
 import { forestPlugin } from '../forest/forestPlugin';
 import { needsPlugin } from '../needs/needsPlugin';
 import { relationshipPlugin } from '../relationship/relationshipPlugin';
@@ -357,5 +358,103 @@ describe('lumberPlugin', () => {
         expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 1 });
         // A second drop of the same id reports false
         expect(tasks.dropBehaviour('lumber')).toBe(false);
+    });
+});
+
+// ── R3 — the axe's wear rides the successful chop payout ────────────────────
+// The durability ledger (plugins/inventory/toolDurability) is keyed by the
+// world object, so the lumber stack's own world is the read key. The charge
+// lands ONLY on the atomic claim's successful harvest — a failed payout (a
+// full bag) puts the job back and wears nothing.
+describe('lumberPlugin — R3 the axe wears, breaks and stays honest through the chop', () => {
+    /** The held axe's live durability view (undefined: not held). */
+    const axeOf = (world: ReturnType<typeof createWorld>, inventory: ReturnType<typeof inventoryPlugin>) =>
+        toolState(world, 'a', 'axe', inventory.of('a').axe ?? 0);
+
+    it('the axe spends 5 health per successful chop payout — exact banked wear', () => {
+        const { world, inventory, tasks } = buildStack(true);
+        spawn(world, 'a', 'Ael', -7, 0);
+        inventory.spawnKit('a', { axe: 1 });
+        // The fresh acquisition reads full
+        expect(axeOf(world, inventory)).toEqual({ tool: 'axe', health: 100, maxHealth: 100, damage: 0 });
+        // The first chop: the job opens at the axe's halved 8 units and the
+        // payout lands (the fine-spot tree is a pool-1 sapling — one wood)
+        world.step();
+        for (let index = 0; index < 8; index++) {
+            world.step();
+        }
+        expect(inventory.of('a').wood ?? 0).toBe(1);
+        // THE WEAR — one successful payout = toolWearPerUse('axe','chop') = 5
+        expect(axeOf(world, inventory)).toEqual({ tool: 'axe', health: 95, maxHealth: 100, damage: 5 });
+        // The rack refills: a second chop (the wood leaves, the gate
+        // re-opens, a fresh 8-unit job) banks five more
+        delete inventory.of('a').wood;
+        world.step();
+        for (let index = 0; index < 8; index++) {
+            world.step();
+        }
+        expect(axeOf(world, inventory)).toEqual({ tool: 'axe', health: 90, maxHealth: 100, damage: 10 });
+        // And the job is claimed away again — the payout landed exactly once
+        expect(tasks.tileWork.get('tile:-7,0:chop')).toBeUndefined();
+    });
+
+    it('a failed payout (a full bag) wears nothing — the job stands, the axe stays whole', () => {
+        const { world, inventory, tasks } = buildStack(true);
+        spawn(world, 'a', 'Ael', -7, 0);
+        // The axe plus 160 weight of stone: the 200-weight hand has room
+        // for 10 more — one wood (20) can NEVER enter, so the claim's
+        // harvest refuses whole and the job returns standing
+        inventory.spawnKit('a', { axe: 1, stone: 4 });
+        expect(inventory.of('a')).toEqual({ axe: 1, stone: 4 });
+        world.step();
+        expect(tasks.taskOf('a')).toMatchObject({ behaviour: 'lumber', kind: 'chop' });
+        expect(tasks.tileWork.get('tile:-7,0:chop')?.units).toBe(8);
+        // The eight beats complete and claim — but every payout fails
+        for (let index = 0; index < 12; index++) {
+            world.step();
+        }
+        // NO wood in the bag, NO wear on the axe (the canonical rule: the
+        // tool wears on SUCCESS, never on spent minutes), and the job
+        // stands ready for the next claim attempt
+        expect(inventory.of('a').wood ?? 0).toBe(0);
+        expect(axeOf(world, inventory)).toEqual({ tool: 'axe', health: 100, maxHealth: 100, damage: 0 });
+        expect(tasks.tileWork.get('tile:-7,0:chop')).toBeDefined();
+    });
+
+    it('the 20th successful payout BREAKS the axe atomically and the next job opens un-halved', () => {
+        const { world, inventory, tasks } = buildStack(true);
+        spawn(world, 'a', 'Ael', -7, 0);
+        inventory.spawnKit('a', { axe: 1 });
+        // Nineteen chops: each banks exactly 5 health (the payout's cut
+        // size varies with the cut tree's pool — the WEAR does not). The
+        // wood leaves the bag between chops so the rack gate re-opens.
+        for (let chop = 0; chop < 19; chop++) {
+            if (chop > 0) {
+                delete inventory.of('a').wood;
+            }
+            world.step(); // the plan/open minute
+            for (let index = 0; index < 8; index++) {
+                world.step(); // the eight beats complete the job
+            }
+            expect(inventory.of('a').wood ?? 0).toBeGreaterThan(0);
+        }
+        // Nineteen payouts banked: 95 damage — the axe stands at its LAST
+        // health point
+        expect(axeOf(world, inventory)).toEqual({ tool: 'axe', health: 5, maxHealth: 100, damage: 95 });
+        // THE TWENTIETH PAYOUT — the atomic break: the last health point
+        // removes the axe from the bag in the same synchronous step
+        delete inventory.of('a').wood;
+        world.step();
+        for (let index = 0; index < 8; index++) {
+            world.step();
+        }
+        expect(inventory.of('a').wood ?? 0).toBeGreaterThan(0); // the cut landed
+        expect(inventory.of('a').axe ?? 0).toBe(0); // the axe is GONE
+        expect(toolState(world, 'a', 'axe', 0)).toBeUndefined(); // the record died with it
+        // The next chop: no axe held — the fresh job opens at the FULL
+        // 15 work-minutes (the halving rode the held tool only)
+        delete inventory.of('a').wood;
+        world.step();
+        expect(tasks.tileWork.get('tile:-7,0:chop')?.units).toBe(15);
     });
 });

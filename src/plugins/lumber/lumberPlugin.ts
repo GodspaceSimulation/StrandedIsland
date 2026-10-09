@@ -55,6 +55,7 @@ import type { World } from '../../engine/world';
 import type { InventoryPlugin } from '../inventory/inventoryPlugin';
 import type { TasksPlugin } from '../tasks/tasksPlugin';
 import type { EntityProfiles } from '../entity/entityPlugin';
+import { useTool } from '../inventory/toolDurability';
 import { nearestCell, travelSpec } from '../movement/fineMovement';
 
 /** The shared chop job's kind — lumber and construction (fell) cooperate
@@ -200,7 +201,20 @@ export const lumberPlugin = (options: LumberPluginOptions): LumberPlugin => {
                     // pool unit) — the standing work returns for the next
                     // contributor, its minutes never lost
                     tasks.tileWork.put(claimed);
+                    return;
                 }
+                // R3 — THE AXE'S WEAR rides the SUCCESSFUL payout (a tree
+                // actually felled): the chopper's held axe spends
+                // toolWearPerUse('axe','chop') — 5 health per tree — through
+                // the durability ledger (keyed entity+tool,
+                // plugins/inventory/toolDurability), the SAME charge the
+                // construction rung's 'fell' payout makes (one job, one
+                // payout shape, one wear rate). The canonical bag count
+                // gates the charge (an unheld axe is never worn) and the
+                // atomic break removes the last-health tool in the same
+                // synchronous step — the once-per-crew craft gate re-reads
+                // the bags and re-ows the replacement naturally.
+                useTool(world, actor.id, 'axe', 'chop', inventory.of(actor.id));
             });
         },
 
