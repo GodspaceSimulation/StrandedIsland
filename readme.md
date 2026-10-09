@@ -156,6 +156,18 @@ IMPASSABLE water columns — ground a step under the sea line, every deposit
 cleared — so the land set the spawn, build and trek scans walk curves
 around them, and only the salt carries vessels.
 
+**The fine shoreline (R1)** — a beach tile's scale-0 interior is no longer
+a solid sand block: a deterministic WATERLINE hugs every edge that faces a
+water neighbor (`plugins/terrain/islandTerrain.ts shoreMask` — a cardinal
+water neighbor opens a full one-voxel row along the shared edge, a diagonal
+one carves a 3-spot corner wedge). The masked spots are REAL water —
+impassable, deposit-free fine columns (shallows one voxel over the lowered
+seabed, ocean two with one wave-gated inland layer, `SHORE_DEEP_LAYERS`) —
+and they never exceed 40% of the interior (`SHORE_WATER_CAP`), so the
+scale-1 tile still folds to its recognizable sand. The same mask drives the
+zoomed board and the majority fold, so every view agrees cell-for-cell; a
+beach with no water neighbor shapes nothing.
+
 The canvas draws the woods: a treed tile carries the 'tree' DECORATION
 (scenario/island.ts decorationOf → @godspace/canvas frames), and the
 unicode tab paints the 🌳 emoji on every empty treed tile (entities always

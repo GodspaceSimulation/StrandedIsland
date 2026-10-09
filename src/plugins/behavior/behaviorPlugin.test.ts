@@ -319,9 +319,11 @@ describe('behaviorPlugin — every living thing plans through the ladder', () =>
         });
         world.step();
         world.step();
-        // The sleep plugin restores while afloat: +1.2/min against the
-        // bird profile's −0.05 decay
-        expect(needs.of('bird-1').energy).toBe(23.449999999999996);
+        // The sleep restore rides the PROGRESSED minutes, never the plan
+        // minute (the sleep contract — planned at minute M, the first
+        // decrement is M+1): minute 1 restored nothing, minutes 2-3
+        // restored +1.2 each against the bird profile's −0.05 decay
+        expect(needs.of('bird-1').energy).toBe(22.249999999999996);
         expect(tasks.taskOf('bird-1')).toMatchObject({ kind: 'sleep', remaining: 43 });
     });
 
@@ -423,8 +425,10 @@ describe('behaviorPlugin — every living thing plans through the ladder', () =>
         });
         world.step();
         world.step();
-        // The per-minute restore applies in the trees like anywhere
-        expect(needs.of('bird-1').energy).toBe(23.449999999999996);
+        // The per-minute restore applies in the trees like anywhere — and
+        // rides the PROGRESSED minutes only (the plan minute restored
+        // nothing): two restores of +1.2 against the −0.05 decay
+        expect(needs.of('bird-1').energy).toBe(22.249999999999996);
         expect(tasks.taskOf('bird-1')).toMatchObject({ kind: 'sleep', remaining: 43 });
     });
 

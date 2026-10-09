@@ -170,20 +170,31 @@ describe('sharksPlugin — the entity profiles: the stat-driven swim', () => {
         expect(needs.of('shark-1').energy).toBe(86.31999999999994);
     });
 
-    it('a spent shark holds still in the current and recovers instead of sweeping on', () => {
+    it('a spent shark holds still in the current instead of sweeping on', () => {
         const { world, sharks, needs } = buildStatStack({ arriveChancePerMinute: 0, leaveChancePerMinute: 0 });
         sharks.release();
         // Drain the shark under the spent line
         needs.satisfy('shark-1', { energy: -81 }); // 19
         const spentAt = sharks.sharkOf('shark-1')?.position;
-        world.step(); // the spent rest: the pick ran, the shark held still
+        world.step(); // the spent hold: the pick ran, the shark held still
         expect(sharks.sharkOf('shark-1')?.position).toEqual(spentAt);
-        // The drift recovery (+2) outpaces the decay (−0.04)
-        expect(needs.of('shark-1').energy).toBe(20.96);
-        // Over the line again: the very next minute sweeps on
+        // NO DRIFT GRANT (R4): the held minute decays like any other — the
+        // plugin never grants energy directly, the recovery is the
+        // ledger's rest task in the full stack (the behavior ladder plans
+        // the spent shark at the tired line; the needs recovery service
+        // backs it out of equal hunger)
+        expect(needs.of('shark-1').energy).toBe(18.96);
+        // Still spent: a second held minute decays on — no recovery anywhere
+        world.step();
+        expect(sharks.sharkOf('shark-1')?.position).toEqual(spentAt);
+        expect(needs.of('shark-1').energy).toBe(18.92);
+        // Over the line (the god's hand stands in for the ledger's rest):
+        // the very next minute sweeps on
+        needs.satisfy('shark-1', { energy: 30 });
         world.step();
         expect(sharks.sharkOf('shark-1')?.position).not.toEqual(spentAt);
-        expect(needs.of('shark-1').energy).toBe(19.25);
+        // The resumed swim paid the swim row: 48.88 − 1.67
+        expect(needs.of('shark-1').energy).toBe(47.21);
     });
 });
 

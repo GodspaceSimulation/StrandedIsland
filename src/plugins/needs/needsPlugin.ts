@@ -171,12 +171,12 @@ export type NeedsPlugin = WorldPlugin<World> & {
      * encounters' positive energy deltas are dropped at the story plugin's
      * stage boundary (plugins/story/storyPlugin.ts — a story is not a
      * rest/sleep task, so nothing restores; the negative deltas ride).
-     * ONE unaccounted positive-energy caller REMAINS outside this plugin's
-     * scope (reported for the cross-scope change): the construction
+     * NO unaccounted positive-energy caller remains: the construction
      * plugin's shelter rest bonus (plugins/construction/
      * constructionPlugin.ts shelterRest — +0.5/min during a sleep/rest
-     * task on a built roofed gate, applied through satisfy instead of
-     * recovery, so the bonus energy is not charged against hunger/thirst).
+     * task on a built roofed gate) rides `recovery` too (T6), so the
+     * bonus energy is charged against hunger/thirst exactly like every
+     * other rest gain.
      */
     satisfy(entityId: string, deltas: Partial<NeedsState>): void;
     /**
