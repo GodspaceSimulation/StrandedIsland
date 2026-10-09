@@ -107,6 +107,51 @@ export const ITEM_CATALOG: Record<string, ItemDef> = {
 };
 
 /**
+ * R5 — THE CARRYING WEIGHTS. Every item weighs a POSITIVE integer (minimum 1);
+ * a bag's load is the SUM of `count × weight`, and each carrier's capacity is
+ * a WEIGHT budget (a person carries 200 — see the entity profiles'
+ * `inventorySize`, now read as weight). The weights are tuned to the item's
+ * physical kind so the load reads honestly: a unit of WOOD is 20 (the
+ * requirement's anchor — ten logs fill a person), stone/iron are heavy
+ * (40/60), the unlimited ground (grass) is light (3), foods sit in the 5–30
+ * band, and the hand tools weigh their raws (axe 30, hammer 35). Unknown ids
+ * fall back to the minimum 1 (an unlisted thing is light, never free).
+ */
+export const ITEM_WEIGHTS: Record<string, number> = {
+    berry: 5,
+    fish: 25,
+    coconut: 30,
+    mushroom: 8,
+    seaweed: 5,
+    water: 15,
+    tree: 20,
+    stone: 40,
+    iron: 60,
+    sand: 30,
+    dirt: 25,
+    grass: 3,
+    wood: 20,
+    vine: 6,
+    frond: 4,
+    bush: 1,
+    shell: 5,
+    flint: 15,
+    axe: 30,
+    hammer: 35,
+};
+
+/** The weight of ONE unit of an item — always ≥ 1 (unknown ids are light). */
+export const itemWeight = (itemId: string): number => ITEM_WEIGHTS[itemId] ?? 1;
+
+/**
+ * The bag's total carried WEIGHT — `Σ count × itemWeight`. This is the
+ * measure the R5 capacity gate compares against a carrier's weight capacity
+ * (the count-based `inventoryTotal` stays for stack/display math only).
+ */
+export const inventoryWeight = (inventory: Inventory): number =>
+    inventoryEntries(inventory).reduce((sum, stack) => sum + stack.count * itemWeight(stack.item), 0);
+
+/**
  * The DEPOSIT resources only a miner may take — the 'mine' ability unlock
  * (plugins/entity/entityPlugin.ts). Taking stone or iron off a tile through
  * the inventory plugin's takeFromCell demands the entity's species to hold

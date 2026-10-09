@@ -29,8 +29,8 @@ import { islandTerrainPlugin } from '../terrain/islandTerrain';
 import { entityPlugin } from '../entity/entityPlugin';
 import type { Actor } from '../../engine/types';
 import { inventoryPlugin, type InventoryPlugin } from './inventoryPlugin';
-import { inventoryTotal, inventoryEntries, type Inventory } from './inventory';
-import { ITEM_TYPE_GLYPHS } from './items';
+import { inventoryEntries, type Inventory } from './inventory';
+import { ITEM_TYPE_GLYPHS, inventoryWeight } from './items';
 
 // A standard actor fixture placed on a specific cell (ground plane, z = 0)
 const actor = (id: string, name: string, x: number, y: number): Actor => ({
@@ -533,7 +533,7 @@ describe('inventoryPlugin', () => {
         expect(island.cellsWithItem('fish').length).toBe(114);
     });
 
-    it('rain gathers pools on a scattered subset of the land, on the seeded rhythm', () => {
+    it('rain is WEATHER only — it gathers no drinking pools (R4)', () => {
         const island = inventoryPlugin();
         const world = createWorld({ seed: 7, plugins: [islandTerrainPlugin(), island] });
         const rains: number[] = [];
@@ -546,23 +546,22 @@ describe('inventoryPlugin', () => {
             world.step(); // 600 one-minute steps — the same 600 world-minutes
         }
         unsubscribe();
-        // Reference run: the per-minute rain roll (0.0127/min) fired on
-        // minutes 8, 38, 331, 361, 369, 546, 567 — the roll stream is
-        // untouched by the pool sweep (each cell's pool roll comes from its
-        // own keyed stream; the 0.8 wetland pass changed the land-cell set
-        // the rains wets, so the capture moved)
+        // The weather roll stream is UNTOUCHED by removing the pool sweep —
+        // the old per-cell pool rolls rode their OWN keyed stream, so the
+        // rain minutes are identical to the pre-R4 reference run
         expect(rains).toEqual([8, 38, 331, 361, 369, 546, 567]);
-        // Beach (−5,−7): coconut regrew to the abundance cap 3 (the survey
-        // seeds 2, the 60-minute palm rhythm adds the third at minute 10);
-        // TWO rains pooled water here (the patchwork — pools gather on a
-        // scattered subset of the land, not under every foot; the pile
-        // clamps at the cap of 2); the unlimited ground supply never moved
-        expect(island.cellStock(-5, -7)).toEqual({ dirt: 1, sand: 1, coconut: 3, water: 2 });
-        // The patchwork census: seven rains × 25% pool chance per cell —
-        // 264 cells ever pooled (the 0.8 wetlands' shore cells pool too;
-        // a fresh rain still only wets a fraction of the island; the cast
-        // must travel to a pool and COLLECT before anything drinks)
-        expect(island.cellsWithItem('water').length).toBe(264);
+        // R4 — rain scatters NO water: an ordinary beach tile that is not a
+        // basin holds no water stock (the old run pooled water:2 here)
+        expect(island.cellStock(-5, -7).water ?? 0).toBe(0);
+        // The water census is ONLY the survey's fresh-water basins + their
+        // dry shore ring — identical to a rain-off island (rain contributes
+        // nothing to the water supply any more)
+        const dry = inventoryPlugin({ rainChancePerMinute: 0 });
+        const dryWorld = createWorld({ seed: 7, plugins: [islandTerrainPlugin(), dry] });
+        for (let index = 0; index < 600; index++) {
+            dryWorld.step();
+        }
+        expect(island.cellsWithItem('water').length).toBe(dry.cellsWithItem('water').length);
     });
 });
 
@@ -586,66 +585,69 @@ describe('inventoryPlugin — the entity profiles: bag sizes and the mine gate',
         state: 'roaming',
     });
 
-    it('capacityOf resolves the species sizes — a bird carries 2–3 things, a human eight', () => {
+    it('capacityOf resolves the species WEIGHT budgets — a bird 75, a human 200', () => {
         const { world, island } = buildProfiled();
         world.spawn(actor('a', 'Ael', -7, 0));
         world.coordinates.place(creature('bird-1', 'Kiki', 'bird', 0, 0));
         world.coordinates.place(creature('shark-1', 'Finn', 'shark', -12, -8));
         world.coordinates.place(creature('boar-1', 'Tusk', 'boar', 4, 7));
-        expect(island.capacityOf('a')).toBe(8);
-        expect(island.capacityOf('bird-1')).toBe(3);
-        expect(island.capacityOf('shark-1')).toBe(1);
-        expect(island.capacityOf('boar-1')).toBe(2);
-        // An unknown species carries the stock human's eight
+        expect(island.capacityOf('a')).toBe(200);
+        expect(island.capacityOf('bird-1')).toBe(75);
+        expect(island.capacityOf('shark-1')).toBe(25);
+        expect(island.capacityOf('boar-1')).toBe(50);
+        // An unknown species carries the stock human's 200
         world.coordinates.place(creature('dog-1', 'Rex', 'dog', 1, 1));
-        expect(island.capacityOf('dog-1')).toBe(8);
+        expect(island.capacityOf('dog-1')).toBe(200);
     });
 
-    it('a full bag refuses more takes — the size is a hard clamp', () => {
+    it('a full bag refuses more takes — the WEIGHT budget is a hard clamp', () => {
         const { world, island } = buildProfiled();
         const ael = world.spawn(actor('a', 'Ael', -4, -7));
-        // The beach's unlimited sand piles fill the eight-unit bag
-        for (let index = 0; index < 8; index++) {
+        // Sand weighs 30 — a 200-weight person shoulders SIX (180), the
+        // seventh (210) overflows and the take fails
+        for (let index = 0; index < 6; index++) {
             expect(island.takeFromCell(ael, 'sand')).toBe(true);
         }
-        expect(inventoryTotal(island.of('a'))).toBe(8);
-        // The ninth unit does not fit: the take fails, the bag is untouched
+        expect(inventoryWeight(island.of('a'))).toBe(180);
+        // The seventh unit does not fit: the take fails, the bag is untouched
         expect(island.takeFromCell(ael, 'sand')).toBe(false);
-        expect(inventoryTotal(island.of('a'))).toBe(8);
-        // A coconut would fit only if a unit left first
-        expect(island.of('a')).toEqual({ sand: 8 });
-        island.consume(ael, 'sand'); // one unit freed
+        expect(inventoryWeight(island.of('a'))).toBe(180);
+        // A coconut (30) fits only once a unit leaves first
+        expect(island.of('a')).toEqual({ sand: 6 });
+        island.consume(ael, 'sand'); // 150 now — a coconut (30) fits at 180
         expect(island.takeFromCell(ael, 'coconut')).toBe(true);
-        expect(island.of('a')).toEqual({ sand: 7, coconut: 1 });
+        expect(island.of('a')).toEqual({ sand: 5, coconut: 1 });
     });
 
-    it('a bird beak holds three things and no more', () => {
+    it('a bird beak holds its 75 weight and no more', () => {
         const { world, island } = buildProfiled();
         world.coordinates.place(creature('bird-1', 'Kiki', 'bird', -4, -7));
         // takeFromCell reads the entity's POSITION for the cell stock and
         // its TYPE (through the coordinate facet) for the capacity
         const birdActor = { id: 'bird-1', position: position3(-4, -7) } as Actor;
-        for (let index = 0; index < 3; index++) {
+        // Sand 30 — the beak (75) holds two (60); a third (90) overflows
+        for (let index = 0; index < 2; index++) {
             expect(island.takeFromCell(birdActor, 'sand')).toBe(true);
         }
-        expect(island.of('bird-1')).toEqual({ sand: 3 });
-        // A fourth unit does not fit the beak
+        expect(island.of('bird-1')).toEqual({ sand: 2 });
+        // A third unit does not fit the beak
         expect(island.takeFromCell(birdActor, 'sand')).toBe(false);
-        expect(island.of('bird-1')).toEqual({ sand: 3 });
+        expect(island.of('bird-1')).toEqual({ sand: 2 });
     });
 
     it('harvest respects the capacity atomically — a full bag never fells a tree', () => {
         const { world, island } = buildProfiled();
         const ael = world.spawn(actor('a', 'Ael', -7, 0));
-        // Fill the eight-unit bag
-        island.spawnKit('a', { sand: 8 });
-        // The forest stands (425 trees) — but the bag cannot hold the wood
+        // Fill the bag to its 200 WEIGHT budget (five 40-weight stones)
+        island.spawnKit('a', { stone: 5 });
+        // The forest stands (425 trees) — but the bag has no weight room for
+        // even one 20-weight log
         expect(island.harvest(ael, 'tree', 'wood')).toBe(false);
         // The tree never came down: stock, deposit and bag all untouched
         // (R7's enriched woods; vine normalized)
         expect(stockWithoutVine(island, -7, 0)).toEqual({ dirt: 1, grass: 1, tree: 425, berry: 4, mushroom: 3, bush: 1, water: 1 });
         expect(world.cellAt(-7, 0)?.resources).toEqual({ dirt: 1, grass: 1, tree: 425 });
-        expect(island.of('a')).toEqual({ sand: 8 });
+        expect(island.of('a')).toEqual({ stone: 5 });
     });
 
     it('gather respects the capacity — a full bag gathers nothing', () => {
@@ -665,27 +667,29 @@ describe('inventoryPlugin — the entity profiles: bag sizes and the mine gate',
         const ael = world.spawn(actor('a', 'Ael', -7, 0));
         const bram = world.spawn(actor('b', 'Bram', -7, 1));
         island.spawnKit('a', { berry: 5 });
-        // Bram's bag is full (eight flints)
-        island.spawnKit('b', { flint: 8 });
-        expect(inventoryTotal(island.of('b'))).toBe(8);
-        // A one-berry offer does not fit Bram's bag — nothing moves
-        expect(island.exchange(ael, bram, { berry: 1 }, { flint: 1 })).toBe(false);
+        // Bram's bag is full to its 200 WEIGHT budget (five 40-weight stones)
+        island.spawnKit('b', { stone: 5 });
+        expect(inventoryWeight(island.of('b'))).toBe(200);
+        // A one-berry offer (5 weight) does not fit Bram's full bag — nothing moves
+        expect(island.exchange(ael, bram, { berry: 1 }, { stone: 1 })).toBe(false);
         expect(island.of('a')).toEqual({ berry: 5 });
-        expect(island.of('b')).toEqual({ flint: 8 });
+        expect(island.of('b')).toEqual({ stone: 5 });
         // The gift route refuses too
         expect(island.give(ael, bram, 'berry', 1)).toBe(false);
-        // One unit of room: the trade goes through (Bram pays the flint)
-        island.consume(bram, 'flint');
-        expect(island.exchange(ael, bram, { berry: 1 }, { flint: 1 })).toBe(true);
-        expect(island.of('b')).toEqual({ flint: 6, berry: 1 });
+        // One stone of room (160 carried): the trade goes through — Bram pays
+        // a stone and takes the berry (165 carried)
+        island.consume(bram, 'stone');
+        expect(island.exchange(ael, bram, { berry: 1 }, { stone: 1 })).toBe(true);
+        expect(island.of('b')).toEqual({ stone: 3, berry: 1 });
     });
 
-    it('spawnKit clamps the starting kit to the bag size', () => {
+    it('spawnKit clamps the starting kit to the WEIGHT budget', () => {
         const { world, island } = buildProfiled();
         world.spawn(actor('a', 'Ael', -7, 0));
-        // A twelve-berry kit overflows the eight-unit bag
-        island.spawnKit('a', { berry: 12 });
-        expect(island.of('a')).toEqual({ berry: 8 });
+        // A fifteen-log kit (300 weight) overflows the 200-weight bag — only
+        // ten logs (200) land, the rest never enter the hand
+        island.spawnKit('a', { wood: 15 });
+        expect(island.of('a')).toEqual({ wood: 10 });
     });
 
     it('the mine gate: only miners take stone and iron — a bird picks up nothing', () => {
@@ -886,8 +890,9 @@ describe('inventoryPlugin — renewable abundance + regrowth eligibility', () =>
         expect(island.of('a')).toEqual({ fish: 1 });
         expect(island.cellStock(6, 2).fish).toBe(1);
         // THE CAPACITY GATE fires before the shoal gives anything up: Ael's
-        // hand filled to the eight-unit cap keeps the last fish in the pool
-        island.spawnKit('a', { berry: 7 });
+        // hand (one 25-weight fish + four 40-weight stones = 185) has no room
+        // for another 25-weight fish, so the last fish stays in the pool
+        island.spawnKit('a', { stone: 4 });
         expect(island.fish(ael, 6, 2)).toBe(false);
         expect(island.cellStock(6, 2).fish).toBe(1);
         // DIAGONAL reach is refused — the tile at the body's feet is the

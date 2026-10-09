@@ -630,7 +630,7 @@ describe('createIslandWorld', () => {
         expect(handle.entity.hasAbility('human', 'mine')).toBe(true);
         expect(handle.entity.hasAbility('human', 'fly')).toBe(false);
         expect(handle.entity.moveEnergyOf('bird', 'fly')).toBe(2.5);
-        expect(handle.entity.inventorySizeOf('shark')).toBe(1);
+        expect(handle.entity.inventorySizeOf('shark')).toBe(25);
         // The god can force an exchange between the two castaways
         const ael = handle.world.actors.get('actor-1');
         const bram = handle.world.actors.get('actor-2');
@@ -681,11 +681,11 @@ describe('createIslandWorld', () => {
         expect(handle.needs.of('bird-1').energy).toBe(4.900000000000006);
     });
 
-    it('the entity profiles govern the bags — the cast starting kit fits the eight-unit bag', () => {
+    it('the entity profiles govern the bags — the cast starting kit fits the weight bag', () => {
         const handle = createIslandWorld({ seed: 7, actorCount: 1 });
-        // The kit (berry 2 + flint 1 = 3 units) clamped nowhere near the
-        // human's eight-unit capacity
-        expect(handle.inventory.capacityOf('actor-1')).toBe(8);
+        // The kit (berry 2 + flint 1 = 25 weight) clamped nowhere near the
+        // human's 200-weight capacity (R5: capacity is weight, not units)
+        expect(handle.inventory.capacityOf('actor-1')).toBe(200);
         expect(handle.inventory.of('actor-1')).toEqual({ berry: 2, flint: 1 });
     });
 

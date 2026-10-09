@@ -45,14 +45,12 @@ import type { Actor, TerrainCell, TileResource } from '../../engine/types';
 import { TILE_RESOURCES, UNLIMITED_TILE_RESOURCES } from '../../engine/types';
 import type { PluginContext, WorldPlugin } from '@godspace/core';
 import type { World } from '../../engine/world';
-import { itemDef, itemLabel, MINED_ITEMS } from './items';
+import { itemDef, itemLabel, itemWeight, inventoryWeight, MINED_ITEMS } from './items';
 import {
     inventoryAdd,
     inventoryEntries,
     inventoryExchange,
-    inventoryFits,
     inventoryRemove,
-    inventoryTotal,
     inventoryTransfer,
     type Inventory,
 } from './inventory';
@@ -325,9 +323,10 @@ export type InventoryPlugin = WorldPlugin<World> & {
     /** An actor's bag — auto-created (empty) on first touch. */
     of(actorId: string): Inventory;
     /**
-     * The entity's bag capacity in UNITS — its species' inventory size from
-     * the entity profiles. `Infinity` without profiles (unlimited legacy
-     * bags); a species without a profile carries the stock human's eight.
+     * R5 — the entity's bag capacity in WEIGHT — its species' carry budget
+     * from the entity profiles (a person 200). `Infinity` without profiles
+     * (unlimited legacy bags); a species without a profile carries the stock
+     * human's 200. The load compared against it is `Σ count × itemWeight`.
      */
     capacityOf(entityId: string): number;
     /** Resource stock standing on a canvas cell. */
@@ -469,19 +468,26 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
         world?.actors.get(entityId)?.type ?? world?.coordinates.entryOf(entityId)?.type;
 
     /**
-     * The entity's bag capacity in units — its species' inventory size.
+     * R5 — the entity's bag capacity in WEIGHT — its species' carry budget
+     * (the entity profiles' `inventorySize`, now a weight: a person 200).
      * Infinity without profiles; a species without a profile carries the
-     * stock human's eight (the island's shoulders).
+     * stock human's 200 (the island's shoulders).
      */
     const capacityOf = (entityId: string): number => {
         const type = typeOf(entityId);
         const size = type ? profiles?.inventorySizeOf(type) : undefined;
-        return size ?? (profiles ? 8 : Infinity);
+        return size ?? (profiles ? 200 : Infinity);
     };
 
-    /** Whether the bag can still hold a bundle (the capacity gate). */
+    /**
+     * R5 — whether the bag can still hold a bundle WITHIN ITS WEIGHT CAPACITY.
+     * The load is `Σ count × itemWeight`; the gate adds the bundle's weight to
+     * the carried weight and compares against the carrier's budget. (The
+     * count-based `inventoryFits` is no longer the gate — capacity is weight,
+     * not item count.)
+     */
     const canHold = (entityId: string, additions: Inventory): boolean =>
-        inventoryFits(bagOf(entityId), additions, capacityOf(entityId));
+        inventoryWeight(bagOf(entityId)) + inventoryWeight(additions) <= capacityOf(entityId);
 
     /** Whether the entity's species may take a mined deposit — the 'mine'
      * ability unlock (plugins/entity). Gated on profiles being mounted: no
@@ -711,13 +717,16 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             const bag = bagOf(actorId);
             const capacity = capacityOf(actorId);
             Object.entries(kit).forEach(([item, count]) => {
-                // The kit fills the bag up to its SIZE — an overfull kit is
-                // clamped, never spilled past the entity's carry
-                const room = capacity - inventoryTotal(bag);
-                if (room <= 0) {
+                // R5 — the kit fills the bag up to its WEIGHT budget; an
+                // overfull kit is clamped to the units that still fit (never
+                // spilled past the entity's carry). The room is measured in
+                // weight and divided by the item's unit weight.
+                const room = capacity - inventoryWeight(bag);
+                const fits = Math.floor(room / itemWeight(item));
+                if (fits <= 0) {
                     return;
                 }
-                inventoryAdd(bag, item, Math.min(count, room));
+                inventoryAdd(bag, item, Math.min(count, fits));
             });
         },
 
@@ -780,12 +789,17 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             // THE CAPACITY GATE — checked BEFORE anything moves so a
             // full bag leaves the tile untouched (atomicity: a failed
             // cut never wounds a tree). R2 — the gate wants the whole
-            // bundle but never blocks a partial cut: the bag's room
-            // CLAMPS the wanted count, and only a bag with no room at
-            // all refuses (one unit of room still cuts one unit of wood)
-            const room = capacityOf(actor.id) - inventoryTotal(bagOf(actor.id));
+            // bundle but never blocks a partial cut. R5 — the room is the
+            // bag's remaining WEIGHT, converted to how many YIELD units fit
+            // (`floor(roomWeight / itemWeight(yield))`); the wanted count is
+            // clamped to that, and only a bag with no room for even ONE unit
+            // refuses. Conservation holds: the chop takes at most `want` and
+            // pays exactly what it cut, so a nearly-full bag cuts fewer logs
+            // and the tree keeps the rest standing.
+            const roomWeight = capacityOf(actor.id) - inventoryWeight(bagOf(actor.id));
+            const fitUnits = Math.floor(roomWeight / itemWeight(yieldId));
             const wanted = Math.max(1, Math.floor(yieldCount ?? 1));
-            const want = Math.min(wanted, room);
+            const want = Math.min(wanted, fitUnits);
             if (want < 1) {
                 return false;
             }

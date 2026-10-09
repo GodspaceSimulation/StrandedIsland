@@ -108,7 +108,8 @@ import type { NeedsPlugin } from '../needs/needsPlugin';
 import type { EntityProfiles } from '../entity/entityPlugin';
 import type { TasksPlugin } from '../tasks/tasksPlugin';
 import type { TaskBehaviour, TaskSubject } from '../tasks/taskLedger';
-import { inventoryRemove, inventoryTotal } from '../inventory/inventory';
+import { inventoryRemove } from '../inventory/inventory';
+import { itemWeight, inventoryWeight } from '../inventory/items';
 import { materials, MINED_ITEMS } from '../inventory/items';
 import { fineTargetStep, fineSpotTaken, nearestCell, travelSpec } from '../movement/fineMovement';
 
@@ -658,8 +659,14 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
             // that holds the inputs crafts the tool and FREES a slot —
             // exactly the full-hand release the starvation ladder depends
             // on; the old capacity check refused it and wedged the hand.
-            const inputUnits = recipe.inputs.reduce((sum, input) => sum + input.count, 0);
-            if (inventoryTotal(bag) - inputUnits + 1 > inventory.capacityOf(actor.id)) {
+            // R5 — the same net-change rule in WEIGHT: the post-craft carried
+            // weight (carried − inputs' weight + the tool's weight) must stay
+            // within the carrier's weight budget.
+            const inputWeight = recipe.inputs.reduce(
+                (sum, input) => sum + input.count * itemWeight(input.item),
+                0,
+            );
+            if (inventoryWeight(bag) - inputWeight + itemWeight(toolId) > inventory.capacityOf(actor.id)) {
                 return;
             }
             lead = actor;
@@ -1192,12 +1199,15 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                         // boat owing its last cloth and rope).
                         {
                             const bag = inventory.of(subject.actor.id);
-                            // The recipe's total input units (the net
-                            // change the conversion makes to the bag size —
-                            // negative for every converging island recipe)
-                            const inputUnits = recipe.inputs.reduce((sum, line) => sum + line.count, 0);
+                            // R5 — the net change in WEIGHT: the post-craft
+                            // carried weight (carried − inputs' weight +
+                            // output's weight) must stay within the budget.
+                            const inputWeight = recipe.inputs.reduce(
+                                (sum, line) => sum + line.count * itemWeight(line.item),
+                                0,
+                            );
                             if (
-                                inventoryTotal(bag) - inputUnits + output.count >
+                                inventoryWeight(bag) - inputWeight + output.count * itemWeight(output.item) >
                                 inventory.capacityOf(subject.actor.id)
                             ) {
                                 return false;
@@ -1319,7 +1329,7 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                             return false;
                         }
                         // THE BAG ROOM GATE — a full hand fetches nothing
-                        if (inventoryTotal(inventory.of(subject.actor.id)) >= inventory.capacityOf(subject.actor.id)) {
+                        if (inventoryWeight(inventory.of(subject.actor.id)) >= inventory.capacityOf(subject.actor.id)) {
                             return false;
                         }
                         // THE MINE GATE — stone demands the species' mine
@@ -1414,7 +1424,7 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                     }
                     const bag = inventory.of(subject.actor.id);
                     // THE BAG ROOM GATE — a full hand fetches nothing
-                    if (inventoryTotal(bag) >= inventory.capacityOf(subject.actor.id)) {
+                    if (inventoryWeight(bag) >= inventory.capacityOf(subject.actor.id)) {
                         return false;
                     }
                     // A raw fetch no single bag can already use (the
@@ -1598,9 +1608,10 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                         if (!outcome.ok) {
                             return;
                         }
-                        // Capacity revalidated: a yield that would not fit is
-                        // discarded with the outcome (no conjured overflow)
-                        if (inventoryTotal(outcome.stock) > inventory.capacityOf(actor.id)) {
+                        // Capacity revalidated (R5 — in WEIGHT): a yield whose
+                        // post-craft carried weight would not fit is discarded
+                        // with the outcome (no conjured overflow)
+                        if (inventoryWeight(outcome.stock) > inventory.capacityOf(actor.id)) {
                             return;
                         }
                         // The bag record is swapped in place — inventory.of

@@ -159,13 +159,15 @@ describe('lumberPlugin', () => {
         for (let index = 0; index < 15; index++) {
             world.step();
         }
-        // The second chop cut the stand's next wood — the first cut felled a
-        // pool-1 sapling (425 → 424), the second stands; the standing wood
-        // dropped by exactly the two cut units (1688 → 1686) and the
-        // default biology adds nothing in 31 world minutes (real-year pace)
-        expect(inventory.of('a')).toEqual({ wood: 1 });
+        // The second chop cut the stand's next tree — the first cut felled a
+        // pool-1 sapling (425 → 424, one wood), the second stands; R2's
+        // 3-wood payout took three units off the standing tree, so the
+        // standing wood dropped by exactly the four cut units (1688 → 1684)
+        // and the default biology adds nothing in 31 world minutes (real-year
+        // pace)
+        expect(inventory.of('a')).toEqual({ wood: 3 });
         expect(inventory.cellStock(-7, 0).tree).toBe(424);
-        expect(forest.standOf({ x: -7, y: 0 })).toEqual({ trees: 424, wood: 1686 });
+        expect(forest.standOf({ x: -7, y: 0 })).toEqual({ trees: 424, wood: 1684 });
     });
 
     it('R6: the job PERSISTS across actors — a dead chopper leaves its minutes standing', () => {
@@ -192,11 +194,12 @@ describe('lumberPlugin', () => {
         world.step(); // minute 7: Bram joins the job (no re-open)
         expect(tasks.taskOf('b')).toMatchObject({ kind: 'chop', minutes: 1 });
         expect(tasks.tileWork.get('tile:-7,0:chop')?.progress).toBe(5);
-        // Ten more beats finish it: the claim pays Bram exactly one wood
+        // Ten more beats finish it: the claim pays Bram up to three wood
+        // (R2 — the standing tree's pool covers all three)
         for (let index = 0; index < 11; index++) {
             world.step();
         }
-        expect(inventory.of('b')).toEqual({ wood: 1 });
+        expect(inventory.of('b')).toEqual({ wood: 3 });
         expect(tasks.tileWork.get('tile:-7,0:chop')).toBeUndefined();
     });
 
@@ -256,17 +259,18 @@ describe('lumberPlugin', () => {
         });
         // The step west onto the treed (1,5) short-circuits the trek (a tree
         // underfoot opens the job): by minute 40 the wood is in the bag and
-        // the grove's tree mirror holds 425 (T2's densified pure stand; the
-        // chop cut a pool wood — the 425-tree stand stands; the enriched
-        // R7 stocks (seeded berry 4 + mushroom 3) regrow on their rhythms —
-        // the minute-15 mushroom and minute-20 berry pulses add a unit each;
-        // this grove cell missed the vine draw; R4: the meadow is no
-        // stone-bearing)
+        // the grove's tree mirror drops to 424 (T2's densified pure stand;
+        // the chop cut the last TWO pool wood off a pool-2 tree — R2's payout
+        // is up to three, but this tree only held two, and emptying the pool
+        // FELL it: 425 → 424; the enriched R7 stocks (seeded berry 4 +
+        // mushroom 3) regrow on their rhythms — the minute-15 mushroom and
+        // minute-20 berry pulses add a unit each; this grove cell missed the
+        // vine draw; R4: the meadow is no stone-bearing)
         for (let index = 0; index < 40; index++) {
             world.step();
         }
-        expect(inventory.of('a')).toEqual({ wood: 1 });
-        expect(inventory.cellStock(1, 5)).toEqual({ dirt: 1, grass: 1, tree: 425, berry: 5, mushroom: 4 });
+        expect(inventory.of('a')).toEqual({ wood: 2 });
+        expect(inventory.cellStock(1, 5)).toEqual({ dirt: 1, grass: 1, tree: 424, berry: 5, mushroom: 4 });
         expect(world.cellAt(1, 5)?.biome).toBe('forest');
     });
 

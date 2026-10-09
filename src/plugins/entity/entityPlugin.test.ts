@@ -42,7 +42,7 @@ describe('entityPlugin — the stock species', () => {
                 run: { minutesPerTile: 1, energyPerTile: 3 },
                 swim: { minutesPerTile: 2, energyPerTile: 2 },
             },
-            inventorySize: 8,
+            inventorySize: 200,
         });
     });
 
@@ -63,7 +63,7 @@ describe('entityPlugin — the stock species', () => {
                 fly: { minutesPerTile: 1, energyPerTile: 2.5 },
                 walk: { minutesPerTile: 1, energyPerTile: 1.25 },
             },
-            inventorySize: 3,
+            inventorySize: 75,
         });
     });
 
@@ -83,7 +83,7 @@ describe('entityPlugin — the stock species', () => {
             movement: {
                 swim: { minutesPerTile: 1, energyPerTile: 1.67 },
             },
-            inventorySize: 1,
+            inventorySize: 25,
         });
     });
 
@@ -104,7 +104,7 @@ describe('entityPlugin — the stock species', () => {
                 walk: { minutesPerTile: 2, energyPerTile: 0.83 },
                 run: { minutesPerTile: 2, energyPerTile: 2.5 },
             },
-            inventorySize: 2,
+            inventorySize: 50,
         });
     });
 });
@@ -216,7 +216,7 @@ describe('entityPlugin — profile overrides', () => {
             swim: { minutesPerTile: 2, energyPerTile: 1 },
         });
         // Everything untouched keeps the stock shape
-        expect(human?.inventorySize).toBe(8);
+        expect(human?.inventorySize).toBe(200);
         expect(human?.abilities).toEqual(['walk', 'run', 'swim', 'mine', 'chop', 'forage', 'craft']);
         expect(human?.stats).toEqual({ hunger: 0.1, thirst: 0.15, energy: 0.06, health: 0 });
     });

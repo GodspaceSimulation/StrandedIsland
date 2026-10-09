@@ -1213,8 +1213,9 @@ describe('behaviorPlugin — the entity profiles: movement energy per kind', () 
         // on needs/behavior but NOT the inventory (whose `capacityOf` is the
         // gate the rung reads), so a hand is never "full" in either. Here the
         // profiles go on the INVENTORY (bag size) and the behavior (the
-        // ladder) — a human's hand is EXACTLY the eight units the long-march
-        // bags were clogged at, and zero decay keeps the line value exact.
+        // ladder) — a human's hand is EXACTLY the 200 WEIGHT the long-march
+        // bags were clogged at (R5: capacity is weight, not unit count), and
+        // zero decay keeps the line value exact.
         const profiles = entityPlugin();
         const inventory = inventoryPlugin({ profiles, rainChancePerMinute: 0 });
         const needs = needsPlugin({ profiles, thirstPerMinute: 0, hungerPerMinute: 0, energyPerMinute: 0 });
@@ -1226,17 +1227,19 @@ describe('behaviorPlugin — the entity profiles: movement energy per kind', () 
             tickSize: 1,
             plugins: [islandTerrainPlugin(), inventory, needs, relationship, tasks, behavior],
         });
-        expect(inventory.capacityOf('a')).toBe(8);
+        expect(inventory.capacityOf('a')).toBe(200);
         // BOTH bodies stand on the meadow grassland (0,3) — the cell stocks
         // a berry bush beside them (an underfoot forage the hunger rung can
-        // pluck) — and BOTH carry the same FULL hand: eight units of
-        // materials, nothing edible (the bag clogged by over-fetched goods
-        // the sites never take, the food underfoot — the long-march stall).
+        // pluck) — and BOTH carry the same FULL hand: cargo weighing exactly
+        // 200 (shell5 + flint×2 30 + sand30 + dirt25 + grass3 + thatch1 +
+        // wood20 + vine6 + stone×2 80), nothing edible (the bag clogged by
+        // over-fetched goods the sites never take, the food underfoot — the
+        // long-march stall).
         spawn(world, 'a', 'Ael', 0, 3);
         spawn(world, 'b', 'Bram', 0, 3);
-        inventory.spawnKit('a', { shell: 1, flint: 1, sand: 1, dirt: 1, grass: 1, thatch: 1, wood: 1, vine: 1 });
-        inventory.spawnKit('b', { shell: 1, flint: 1, sand: 1, dirt: 1, grass: 1, thatch: 1, wood: 1, vine: 1 });
-        expect(inventory.of('a')).toEqual({ shell: 1, flint: 1, sand: 1, dirt: 1, grass: 1, thatch: 1, wood: 1, vine: 1 });
+        inventory.spawnKit('a', { shell: 1, flint: 2, sand: 1, dirt: 1, grass: 1, thatch: 1, wood: 1, vine: 1, stone: 2 });
+        inventory.spawnKit('b', { shell: 1, flint: 2, sand: 1, dirt: 1, grass: 1, thatch: 1, wood: 1, vine: 1, stone: 2 });
+        expect(inventory.of('a')).toEqual({ shell: 1, flint: 2, sand: 1, dirt: 1, grass: 1, thatch: 1, wood: 1, vine: 1, stone: 2 });
         // A KNOWN forage sits underfoot (the survey's own stand on this
         // cell; pinned explicitly so the gather has its target)
         inventory.cellStock(0, 3).bush = 1;
@@ -1248,16 +1251,16 @@ describe('behaviorPlugin — the entity profiles: movement energy per kind', () 
         world.step();
         // Ael: the hunger rung's full-hand decline RELEASES at the
         // desperation line — it abandons ONE unit of cargo (LEAST
-        // essential first: the shell heads the abandon order) so the hand
-        // holds room, then falls through to the underfoot forage — the
-        // berry bush beside her is gathered (the beat on the tile's shared
-        // 10-work-minute gather job).
-        expect(inventory.of('a')).toEqual({ flint: 1, sand: 1, dirt: 1, grass: 1, thatch: 1, wood: 1, vine: 1 });
+        // essential first: the shell heads the abandon order, 5 weight) so
+        // the hand drops to 195 and holds room for the berry, then falls
+        // through to the underfoot forage — the berry bush beside her is
+        // gathered (the beat on the tile's shared 10-work-minute gather job).
+        expect(inventory.of('a')).toEqual({ flint: 2, sand: 1, dirt: 1, grass: 1, thatch: 1, wood: 1, vine: 1, stone: 2 });
         expect(tasks.taskOf('a')).toMatchObject({ behaviour: 'hunger', kind: 'gather', label: 'gathers', remaining: 1 });
         // Bram: below the line the decline is INTACT — the hand is left as
         // it was (a starvation does not outrank cargo until the doom line)
         // and the rung declines, so the ledger's filler plans a wander.
-        expect(inventory.of('b')).toEqual({ shell: 1, flint: 1, sand: 1, dirt: 1, grass: 1, thatch: 1, wood: 1, vine: 1 });
+        expect(inventory.of('b')).toEqual({ shell: 1, flint: 2, sand: 1, dirt: 1, grass: 1, thatch: 1, wood: 1, vine: 1, stone: 2 });
         expect(tasks.taskOf('b')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 1 });
     });
 });

@@ -683,17 +683,19 @@ describe('scaleView', () => {
 // coverage (tree units / sub-grid cells), clamped: opacity = clamp(coverage /
 // FULL_COVERAGE, MIN_OPACITY, 1). Zero trees → NO icon (undefined — the caller
 // draws nothing). The anchors below are the acceptance set: coverage 0.01 →
-// the 0.1 floor, 0.45 → 0.5, 0.9 → full, and the clamp above full.
+// the 0.5 floor (R2 — a lone tree still MARKS the tile, the fade floor was
+// raised from 0.1 so sparse woods stay visible), 0.45 → 0.5, 0.9 → full, and
+// the clamp above full.
 describe('treeIconOpacity (the scale-1 coverage fade)', () => {
     it('pins the rule constants', () => {
         // 90 % woods read as a full canopy; a lone tree still marks the tile
         expect(TREE_ICON_FULL_COVERAGE).toBe(0.9);
-        expect(TREE_ICON_MIN_OPACITY).toBe(0.1);
+        expect(TREE_ICON_MIN_OPACITY).toBe(0.5);
     });
 
     it('fades by the true coverage with the documented anchors', () => {
-        // 1 tree among 100 cells — coverage 0.01 → 0.0111 raw → the 0.1 floor
-        expect(treeIconOpacity(1, 100)).toBe(0.1);
+        // 1 tree among 100 cells — coverage 0.01 → 0.0111 raw → the 0.5 floor
+        expect(treeIconOpacity(1, 100)).toBe(0.5);
         // 45 % woods → 0.45 / 0.9 = exactly half
         expect(treeIconOpacity(45, 100)).toBe(0.5);
         // 90 % woods → the full-coverage mark → full strength
@@ -902,16 +904,16 @@ describe('tileProgress / progressLine — the standing jobs (R6)', () => {
     it('reads the shared chop job off the tile-work ledger with exact minutes', () => {
         const march = createIslandWorld({ seed: 7 });
         // Tick 0 — nothing stands
-        expect(tileProgress(march, -2, 5)).toEqual([]);
+        expect(tileProgress(march, [{ x: -2, y: 5 }])).toEqual([]);
         // Minute 1: the woodless cast on treed tiles opens the shared jobs
         march.world.step();
-        expect(tileProgress(march, -2, 5)).toEqual([{ label: 'chop', done: 0, total: 15 }]);
+        expect(tileProgress(march, [{ x: -2, y: 5 }])).toEqual([{ label: 'chop', done: 0, total: 15 }]);
         // Minutes 2–3: the beats land — one work-minute per completing beat
         // task into the tile's standing job
         march.world.step();
-        expect(tileProgress(march, -2, 5)).toEqual([{ label: 'chop', done: 1, total: 15 }]);
+        expect(tileProgress(march, [{ x: -2, y: 5 }])).toEqual([{ label: 'chop', done: 1, total: 15 }]);
         march.world.step();
-        expect(tileProgress(march, -2, 5)).toEqual([{ label: 'chop', done: 2, total: 15 }]);
+        expect(tileProgress(march, [{ x: -2, y: 5 }])).toEqual([{ label: 'chop', done: 2, total: 15 }]);
         // The display line reads the exact work minutes
         expect(progressLine({ label: 'chop', done: 2, total: 15 })).toBe('chop 2/15');
     });
@@ -921,10 +923,10 @@ describe('tileProgress / progressLine — the standing jobs (R6)', () => {
         // Minute 1: the shelter site stands on the centrality-first tile
         // (0,0) — staged, its ISLAND work cost (240) charged at placement
         march.world.step();
-        expect(tileProgress(march, 0, 0)).toEqual([{ label: 'shelter', done: 0, total: 240 }]);
+        expect(tileProgress(march, [{ x: 0, y: 0 }])).toEqual([{ label: 'shelter', done: 0, total: 240 }]);
         expect(progressLine({ label: 'shelter', done: 120, total: 240 })).toBe('shelter 120/240');
         // A tile with neither a job nor a site reads empty
-        expect(tileProgress(march, -11, 0)).toEqual([]);
+        expect(tileProgress(march, [{ x: -11, y: 0 }])).toEqual([]);
     });
 
     it('reads a shared GATHER job generically — the ledger kind is the label', () => {
@@ -934,7 +936,7 @@ describe('tileProgress / progressLine — the standing jobs (R6)', () => {
         const march = createIslandWorld({ seed: 7 });
         march.tasks.tileWork.open({ key: 'tile:2,5:berry', kind: 'berry', units: 10, skill: 'forage' });
         march.tasks.tileWork.add('tile:2,5:berry', 3);
-        expect(tileProgress(march, 2, 5)).toEqual([{ label: 'berry', done: 3, total: 10 }]);
+        expect(tileProgress(march, [{ x: 2, y: 5 }])).toEqual([{ label: 'berry', done: 3, total: 10 }]);
         expect(progressLine({ label: 'berry', done: 3, total: 10 })).toBe('berry 3/10');
     });
 });

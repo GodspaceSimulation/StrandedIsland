@@ -150,8 +150,7 @@ import {
     type PluginContext,
     type WorldPlugin,
 } from '@godspace/core';
-import { itemDef, MINED_ITEMS } from '../inventory/items';
-import { inventoryTotal } from '../inventory/inventory';
+import { itemDef, inventoryWeight, MINED_ITEMS } from '../inventory/items';
 import { beatGatherJob, openGatherJob } from '../tasks/gatherWork';
 import {
     chebyshev,
@@ -161,7 +160,7 @@ import {
     travelSpec,
 } from '../movement/fineMovement';
 import type { World } from '../../engine/world';
-import type { Actor } from '../../engine/types';
+import type { Actor, TerrainCell } from '../../engine/types';
 import type { InventoryPlugin } from '../inventory/inventoryPlugin';
 import type { NeedsPlugin } from '../needs/needsPlugin';
 import type { RelationshipPlugin } from '../relationship/relationshipPlugin';
@@ -205,6 +204,67 @@ const FOOD_PRIORITY = ['berry', 'mushroom', 'fish', 'coconut', 'seaweed'];
 
 /** Trade goods a neighbour might hold — checked in this order. */
 const MATERIALS = ['shell', 'stone', 'wood', 'vine', 'flint'];
+
+/**
+ * R4 — SAFE WATER TARGETING. The creature types that make a water source
+ * unsafe to trek toward — the SAME set the survival plugin flees (its
+ * THREAT_TYPES, plugins/survival/survivalPlugin.ts): a boar camped beside a
+ * basin, a shark patrolling the shore. The flee rung (priority 60) outranks
+ * the thirst trek (50), so a trek that walks the body within this radius of
+ * a beast is pre-empted the very next minute — the two rungs cancel and the
+ * actor oscillates on the spot until its energy runs out beside a pool it can
+ * never drink (the seed-7 march: Ael @-6,6↔-6,5, minute 1697, energy 0). The
+ * radius matches the survival plugin's default `threatRange` (1 tile) so the
+ * trek never aims at a tile the flee would immediately abandon.
+ */
+const WATER_THREAT_TYPES: readonly string[] = ['boar', 'shark'];
+const WATER_THREAT_RANGE = 1;
+
+/** Whether a threat creature stands within the flee radius of tile (x, y). */
+const threatNearTile = (world: World, x: number, y: number): boolean => {
+    let threatened = false;
+    world.coordinates.all().forEach((entry) => {
+        if (
+            !threatened &&
+            entry.kind === 'creature' &&
+            WATER_THREAT_TYPES.includes(entry.type ?? '') &&
+            chebyshev(position3(x, y), entry.position) <= WATER_THREAT_RANGE
+        ) {
+            threatened = true;
+        }
+    });
+    return threatened;
+};
+
+/**
+ * The nearest PASSABLE water cell whose tile is currently CLEAR of a threat —
+ * route safety at the tile granularity the trek steps along (the destination
+ * tile is the tile the trek walks into). Returns null when every reachable
+ * basin is guarded, so the caller DECLINES the trek rather than marching the
+ * body into the flee ring: the water is reached when it is safe, never
+ * invented, and the actor's energy is preserved for the minute the beast
+ * roams off. Ties resolve to the earliest candidate (deterministic, like
+ * `nearestCell`).
+ */
+const nearestSafeWater = (
+    world: World,
+    actor: TaskEntity,
+    candidates: TerrainCell[],
+): TerrainCell | null => {
+    let best: TerrainCell | null = null;
+    let bestDistance = Infinity;
+    candidates.forEach((cell) => {
+        if (threatNearTile(world, cell.x, cell.y)) {
+            return;
+        }
+        const distance = chebyshev(actor.position, position3(cell.x, cell.y));
+        if (distance < bestDistance) {
+            best = cell;
+            bestDistance = distance;
+        }
+    });
+    return best;
+};
 
 /** Priority ladder constants */
 const THIRST_TRIGGER = 65;
@@ -582,12 +642,12 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                     //    abandon ONE expendable unit (abandonOneUnit) and
                     //    FALL THROUGH to the collect / trek below — the
                     //    pool underfoot is reachable again.
-                    if (inventoryTotal(bag) >= inventory.capacityOf(actor.id)) {
+                    if (inventoryWeight(bag) >= inventory.capacityOf(actor.id)) {
                         const desperate = needs.of(actor.id).thirst >= DESPERATION_LINE;
                         if (
                             !desperate ||
                             abandonOneUnit(actor) === null ||
-                            inventoryTotal(bag) >= inventory.capacityOf(actor.id)
+                            inventoryWeight(bag) >= inventory.capacityOf(actor.id)
                         ) {
                             return undefined;
                         }
@@ -634,13 +694,23 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                     //    the PASSABLE water carriers (the dry shore ring
                     //    beside the basins): the impassable lake cells stock
                     //    water nobody can stand in to collect, and the shore
-                    //    ring beside them stocks it too, so
-                    //    the trek never aims at water behind a wall. WATER
-                    //    REALM: a body on an impassable cell has no ground
-                    //    travel (its wrap needs dry land) — decline and let
-                    //    the realm's own script (the birds plugin's drift,
-                    //    the sharks plugin's swim) carry it.
-                    const pool = nearestCell(
+                    //    ring beside them stocks it too, so the trek never
+                    //    aims at water behind a wall. R4-SAFETY — the trek
+                    //    aims at the nearest basin whose tile is CLEAR of a
+                    //    threat (see nearestSafeWater): a boar camped on the
+                    //    only water would otherwise make the thirst trek and
+                    //    the priority-60 flee cancel every minute and grind
+                    //    the body to exhaustion beside the pool. When every
+                    //    reachable basin is guarded the rung declines (the
+                    //    flee keeps the body safe, the energy stops draining,
+                    //    and the water is reached the minute the beast roams
+                    //    off — never invented). WATER REALM: a body on an
+                    //    impassable cell has no ground travel (its wrap needs
+                    //    dry land) — decline and let the realm's own script
+                    //    (the birds plugin's drift, the sharks plugin's swim)
+                    //    carry it.
+                    const pool = nearestSafeWater(
+                        world,
                         actor,
                         inventory.cellsWithItem('water').filter((cell) => cell.passable),
                     );
@@ -688,12 +758,12 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                     // abandon ONE expendable unit and FALL THROUGH to the
                     // underfoot forage / trek below — the bush the body
                     // stands on feeds it again.
-                    if (inventoryTotal(bag) >= inventory.capacityOf(actor.id)) {
+                    if (inventoryWeight(bag) >= inventory.capacityOf(actor.id)) {
                         const desperate = needs.of(subject.actor.id).hunger >= DESPERATION_LINE;
                         if (
                             !desperate ||
                             abandonOneUnit(actor) === null ||
-                            inventoryTotal(bag) >= inventory.capacityOf(actor.id)
+                            inventoryWeight(bag) >= inventory.capacityOf(actor.id)
                         ) {
                             return undefined;
                         }

@@ -183,7 +183,13 @@ export type EntityProfile = {
     abilities: Ability[];
     /** The movement economics, derived from attributes + abilities. */
     movement: Partial<Record<MoveKind, EntityMove>>;
-    /** The bag's size in units (see the inventory plugin's capacity gate). */
+    /**
+     * R5 — the bag's carry capacity in WEIGHT (not item count): the load a
+     * carrier may bear is `Σ count × itemWeight` and must stay ≤ this budget
+     * (see the inventory plugin's capacity gate + items.ts ITEM_WEIGHTS). A
+     * person shoulders 200 (ten 20-weight logs); a creature's beak/gullet/jaws
+     * carry proportionally less.
+     */
     inventorySize: number;
 };
 
@@ -216,8 +222,8 @@ const STOCK_PROFILES: Record<string, EntityProfile> = {
         // cannot fly
         abilities: ['walk', 'run', 'swim', 'mine', 'chop', 'forage', 'craft'],
         movement: undefined as unknown as Partial<Record<MoveKind, EntityMove>>,
-        // Eight units on the back — the shoulders the island assumes
-        inventorySize: 8,
+        // R5 — 200 weight on the back (ten 20-weight logs fill a person)
+        inventorySize: 200,
     },
     bird: {
         type: 'bird',
@@ -233,8 +239,8 @@ const STOCK_PROFILES: Record<string, EntityProfile> = {
         // on 'forage' (the tile-gather work skill)
         abilities: ['fly', 'walk', 'forage'],
         movement: undefined as unknown as Partial<Record<MoveKind, EntityMove>>,
-        // A bird can carry 2–3 things in its beak and talons
-        inventorySize: 3,
+        // A bird can carry 2–3 light things in its beak and talons
+        inventorySize: 75,
     },
     shark: {
         type: 'shark',
@@ -248,8 +254,8 @@ const STOCK_PROFILES: Record<string, EntityProfile> = {
         // underfoot (the hunger rung's gather gate, 'forage')
         abilities: ['swim', 'forage'],
         movement: undefined as unknown as Partial<Record<MoveKind, EntityMove>>,
-        // A gullet, not a bag — one swallowed thing
-        inventorySize: 1,
+        // A gullet, not a bag — one swallowed thing (25 weight)
+        inventorySize: 25,
     },
     boar: {
         type: 'boar',
@@ -264,8 +270,8 @@ const STOCK_PROFILES: Record<string, EntityProfile> = {
         // cell it stands on (the hunger rung's gather gate, 'forage')
         abilities: ['walk', 'run', 'forage'],
         movement: undefined as unknown as Partial<Record<MoveKind, EntityMove>>,
-        // Jaws can drag a couple of things
-        inventorySize: 2,
+        // Jaws can drag a couple of things (50 weight)
+        inventorySize: 50,
     },
 };
 

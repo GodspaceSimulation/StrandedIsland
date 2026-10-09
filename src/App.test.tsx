@@ -122,8 +122,9 @@ describe('App', () => {
         ]);
         // The ABILITIES — the species' capability set (no fly for people)
         expect(screen.getByTestId('actor-abilities').textContent).toBe('walkrunswimminechopforagecraft');
-        // The bag's SIZE — the species-defined capacity with the kit inside
-        expect(screen.getByTestId('actor-carry').textContent).toBe('Carries 3 / 8');
+        // The bag's CARRY — the species weight budget with the kit inside
+        // (berry 2 + flint 1 = 25 weight of the human's 200)
+        expect(screen.getByTestId('actor-carry').textContent).toBe('Carries 25 / 200 wt');
         // Deselect clears the inspector entirely
         fireEvent.click(screen.getByTestId('actor-chip-Ael'));
         expect(screen.queryByTestId('actor-inventory')).toBeNull();
@@ -205,8 +206,8 @@ describe('App', () => {
         ]);
         // The bird's abilities: flight AND the ground hop, nothing else
         expect(screen.getByTestId('actor-abilities').textContent).toBe('flywalkforage');
-        // The beak-bag: three units of carry, empty at birth
-        expect(screen.getByTestId('actor-carry').textContent).toBe('Carries 0 / 3');
+        // The beak-bag: 75 weight of carry, empty at birth
+        expect(screen.getByTestId('actor-carry').textContent).toBe('Carries 0 / 75 wt');
         expect(screen.getByTestId('actor-inventory').textContent).toContain('Empty hands.');
         // Creatures keep no bond graph — the Bonds section never renders
         expect(screen.queryByTestId('actor-relations')).toBeNull();
@@ -659,13 +660,13 @@ describe('App', () => {
         };
         // -- The coverage fade (unicode) -------------------------------------
         // The sparse ingress fringe (1,-2): 14 trees across the 425-cell
-        // sub-grid ? coverage 0.033 ? the 0.1 floor (a lone stand still
+        // sub-grid ? coverage 0.033 ? the 0.5 floor (a lone stand still
         // marks the tile)
         const fringe = screen
             .getByTestId('unicode-tile-1--2')
             .querySelector('[data-testid="tree-icon-unicode"]') as HTMLElement;
         expect(fringe.textContent).toBe('🌳');
-        expect(ruleFor(fringe.className)).toContain('opacity:0.1');
+        expect(ruleFor(fringe.className)).toContain('opacity:0.5');
         // The dense edge wood (4,-5): 383 trees ? coverage 0.901 ? clamped
         // to FULL strength (the fade only ever pulls sparse stands down)
         const dense = screen
@@ -684,8 +685,8 @@ describe('App', () => {
         const board = screen.getByTestId('world-grid-svg') as SVGSVGElement;
         const tiles = board.querySelectorAll('g');
         // (1,-2) ? tile (-2+8)×25+(1+12) = 163 — the vector canopy carries
-        // the same 0.1 fade; (4,-5) ? tile 91 stands at full 1
-        expect(tiles[163].querySelector('[data-testid="tree-icon-svg-canopy"]')?.getAttribute('opacity')).toBe('0.1');
+        // the same 0.5 fade; (4,-5) ? tile 91 stands at full 1
+        expect(tiles[163].querySelector('[data-testid="tree-icon-svg-canopy"]')?.getAttribute('opacity')).toBe('0.5');
         expect(tiles[91].querySelector('[data-testid="tree-icon-svg-canopy"]')?.getAttribute('opacity')).toBe('1');
         // -- The rock icon (unicode) -----------------------------------------
         fireEvent.click(screen.getByTestId('canvas-tab-unicode'));

@@ -25,8 +25,8 @@ import { NEED_COLORS, PALETTE } from '../styles/theme';
 import { Panel, PanelTitle } from '../components/panel';
 import { useWorld, useRevision, useSelection } from './worldBridge';
 import { needsDisplay, displayConditionOf, type NeedsDisplay } from './needsDisplay';
-import { inventoryEntries, inventoryTotal } from '../plugins/inventory/inventory';
-import { itemLabel } from '../plugins/inventory/items';
+import { inventoryEntries } from '../plugins/inventory/inventory';
+import { itemLabel, inventoryWeight } from '../plugins/inventory/items';
 import { SEX_BADGES } from '../engine/types';
 import type { EntityProfile } from '../plugins/entity/entityPlugin';
 
@@ -144,7 +144,9 @@ const EntityCard = ({ entityId }: { entityId: string }) => {
     const bag = inventory.of(entityId);
     const stock = inventory.cellStock(entry?.position.x ?? 0, entry?.position.y ?? 0);
     const capacity = inventory.capacityOf(entityId);
-    const carried = inventoryTotal(bag);
+    // R5 — the carried LOAD is the bag's total WEIGHT (Σ count × itemWeight),
+    // compared against the carrier's weight capacity (a person 200).
+    const carried = inventoryWeight(bag);
 
     // One bond row per fellow castaway — never the entity themselves, and
     // creatures keep no bond graph at all (the relationship plugin tracks
@@ -221,10 +223,11 @@ const EntityCard = ({ entityId }: { entityId: string }) => {
             )}
             <div>
                 <PanelTitle>Inventory</PanelTitle>
-                {/* The bag's SIZE — the species-defined capacity the
-                    inventory plugin clamps every take to */}
+                {/* R5 — the bag's carried WEIGHT over the species' weight
+                    capacity (a person 200) — the load the inventory plugin
+                    clamps every take/transfer/harvest to */}
                 <Carry data-testid="actor-carry">
-                    Carries {carried} / {Number.isFinite(capacity) ? capacity : '∞'}
+                    Carries {carried} / {Number.isFinite(capacity) ? capacity : '∞'} wt
                 </Carry>
                 <List data-testid="actor-inventory">
                     {inventoryEntries(bag).length === 0 ? (

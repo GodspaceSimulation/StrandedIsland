@@ -245,7 +245,9 @@ describe('constructionPlugin — the shared registries', () => {
         // minute is untouched and both once-gates still clamp at one.
         // R4/R5 moved both (325/305): the impassable ponds reroute the treks
         // and the fishing shores feed the crew earlier, re-ordering the
-        // fetches once more.
+        // fetches once more. R5's WEIGHT capacity reorders the fetches again
+        // (a 200-weight hand carries far more raw material, so the stone trek
+        // for the axe lands later): the axe now lands ~804, the hammer ~157.
         const handle = island();
         const crewTotal = (tool: string): number =>
             [...handle.world.actors.values()].reduce(
@@ -256,7 +258,7 @@ describe('constructionPlugin — the shared registries', () => {
         let hammerAt = -1;
         let axeMax = 0;
         let hammerMax = 0;
-        for (let minute = 0; minute < 700; minute++) {
+        for (let minute = 0; minute < 900; minute++) {
             handle.world.step();
             const a = crewTotal('axe');
             const h = crewTotal('hammer');
@@ -275,9 +277,9 @@ describe('constructionPlugin — the shared registries', () => {
         // and each crew total peaks at EXACTLY one (the once-gate plus the
         // deterministic lead gate end the craft after a single output)
         expect(axeAt).toBeGreaterThanOrEqual(0);
-        expect(axeAt).toBeLessThan(700);
+        expect(axeAt).toBeLessThan(900);
         expect(hammerAt).toBeGreaterThanOrEqual(0);
-        expect(hammerAt).toBeLessThan(700);
+        expect(hammerAt).toBeLessThan(900);
         expect(axeMax).toBe(1);
         expect(hammerMax).toBe(1);
     });
@@ -544,12 +546,11 @@ describe('constructionPlugin — the autonomous staging and work', () => {
         }
         // The sleep restore (1.2/min) + the shelter bonus (0.5/min) − the
         // decay (0.06/min): 1.64 per sleeping minute. The exact ten-minute
-        // delta is 14.82 because the drained reservoir sits ON the zero
-        // floor: minute 1 the freshly queued sleep has not ticked yet (the
-        // decay clamps at the floor — delta 0), minute 2 the restore lands
-        // whole (1.70, the decay clamped), minutes 3–10 run the full 1.64 —
-        // 0 + 1.70 + 8 × 1.64 = 14.82. The sheltered night is the safe night
-        expect(handle.needs.of(sleeper.id).energy - energyBefore).toBeCloseTo(14.82, 10);
+        // delta is 16.46 because the drained reservoir sits ON the zero
+        // floor: minute 1 the queued sleep restore lands whole (1.70, the
+        // decay clamped at the floor), minutes 2–10 run the full 1.64 —
+        // 1.70 + 9 × 1.64 = 16.46. The sheltered night is the safe night
+        expect(handle.needs.of(sleeper.id).energy - energyBefore).toBeCloseTo(16.46, 10);
         expect(handle.tasks.taskOf(sleeper.id)?.kind).toBe('sleep');
     });
 });
@@ -611,17 +612,18 @@ describe('constructionPlugin — the inspection and render surfaces', () => {
         // the blueprint initial
         const unicodeFrame = handle.unicode.frameFor(slice as never);
         const wallTile = unicodeFrame.tiles.find((tile) => tile.x === cells[1].x && tile.y === cells[1].y);
-        // The wall cell hosts the builder who finished the shelter — the
-        // frame stacks the BODY above the structure (z 0 over z −1), exactly
-        // the draw order the comment above promises
+        // The wall cell hosts the builder who finished the shelter — under
+        // R5's weight capacity the fetch order lands Ael (actor-1) on the
+        // wall cell — the frame stacks the BODY above the structure (z 0 over
+        // z −1), exactly the draw order the comment above promises
         expect(wallTile?.glyphs).toEqual([
-            { id: 'actor-3', glyph: '🧍‍♀️', color: '#5cb85c', elevation: 0, kind: 'sentient', state: 'well', type: 'human' },
+            { id: 'actor-1', glyph: '🧍‍♂️', color: '#5cb85c', elevation: 0, kind: 'sentient', state: 'well', type: 'human' },
             { id: 'structure:s-1:1,0', glyph: '🏕️', color: '#e6e9ee', elevation: -1, kind: 'structure', type: 'shelter' },
         ]);
         const asciiFrame = handle.ascii.frameFor(slice as never);
         const asciiTile = asciiFrame.tiles.find((tile) => tile.x === cells[1].x && tile.y === cells[1].y);
         expect(asciiTile?.glyphs).toEqual([
-            { id: 'actor-3', glyph: 'C', color: '#5cb85c', elevation: 0, kind: 'sentient', state: 'well', type: 'human' },
+            { id: 'actor-1', glyph: 'A', color: '#5cb85c', elevation: 0, kind: 'sentient', state: 'well', type: 'human' },
             { id: 'structure:s-1:1,0', glyph: 'S', color: '#e6e9ee', elevation: -1, kind: 'structure', type: 'shelter' },
         ]);
     });

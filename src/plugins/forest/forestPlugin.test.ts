@@ -164,7 +164,7 @@ describe('forestPlugin — the chop (wood off the pool)', () => {
         // A planted pool-5 tree (born −100 — past the virgin marker)
         terrain.forestPlant(-1, 0, bare, { born: -100, base: 5, baseMinute: -100, carry: 0 });
         const size = stand.trees.size;
-        expect(ecology.chop({ x: -1, y: 0 }, bare)).toEqual({ felled: false });
+        expect(ecology.chop({ x: -1, y: 0 }, bare)).toEqual({ felled: false, taken: 1 });
         // The tree STANDS: one wood off the pool, the record alive
         const record = stand.trees.get('-3,-4')!;
         expect(record.base).toBe(4);
@@ -174,13 +174,31 @@ describe('forestPlugin — the chop (wood off the pool)', () => {
         ecology.chop({ x: -1, y: 0 }, bare);
         ecology.chop({ x: -1, y: 0 }, bare);
         expect(stand.trees.get('-3,-4')?.base).toBe(1);
-        expect(ecology.chop({ x: -1, y: 0 }, bare)).toEqual({ felled: true });
+        expect(ecology.chop({ x: -1, y: 0 }, bare)).toEqual({ felled: true, taken: 1 });
         // FELLED COMPLETE — the record leaves the stand and the mirrors
         // drop with it (deposit + gatherable stock read the stand size)
         expect(stand.trees.has('-3,-4')).toBe(false);
         expect(stand.trees.size).toBe(size - 1);
         expect(world.cellAt(-1, 0)?.resources.tree).toBe(size - 1);
         expect(inventory.cellStock(-1, 0).tree).toBe(size - 1);
+    });
+
+    it('R2 — a multiunit chop cuts UP TO `units` off ONE tree and pays exactly what stood', () => {
+        const { terrain, ecology } = buildEcology(undefined, 15, 9);
+        const stand = terrain.forestOf(-1, 0)!;
+        const bare = { x: -3, y: -4 };
+        // A planted pool-5 tree — a 3-unit chop takes 3 and the tree STANDS
+        terrain.forestPlant(-1, 0, bare, { born: -100, base: 5, baseMinute: -100, carry: 0 });
+        expect(ecology.chop({ x: -1, y: 0 }, bare, 3)).toEqual({ felled: false, taken: 3 });
+        expect(stand.trees.get('-3,-4')?.base).toBe(2);
+        // CONSERVATION — a 3-unit chop on the pool-2 stump pays only 2 and
+        // fells it (never prints a third log out of thin air)
+        expect(ecology.chop({ x: -1, y: 0 }, bare, 3)).toEqual({ felled: true, taken: 2 });
+        expect(stand.trees.has('-3,-4')).toBe(false);
+        // A pool-1 sapling chopped for 3 pays 1 and dies
+        const spot = { x: -3, y: -3 };
+        terrain.forestPlant(-1, 0, spot, { born: -100, base: 1, baseMinute: -100, carry: 0 });
+        expect(ecology.chop({ x: -1, y: 0 }, spot, 3)).toEqual({ felled: true, taken: 1 });
     });
 
     it('a bare fine cell cuts the deterministic nearest tree inside the same tile', () => {
@@ -190,7 +208,7 @@ describe('forestPlugin — the chop (wood off the pool)', () => {
         // NEAREST tree in the stand (its pool) — the tree STANDS at a
         // healthy pool, so the stand's size is intact (T2's densified 15×9
         // stand: 122 trees, up from 101)
-        expect(ecology.chop({ x: -1, y: 0 })).toEqual({ felled: false });
+        expect(ecology.chop({ x: -1, y: 0 })).toEqual({ felled: false, taken: 1 });
         expect(stand.trees.size).toBe(122);
         // A tree-less tile declines the chop entirely (the (−7,4) corner is
         // bare ground on the 15×9 island)
@@ -257,7 +275,7 @@ describe('forestPlugin — the wood growth (lazy, deterministic)', () => {
         ecology.fastForward(50);
         expect(ecology.poolOf(mature)).toBe(5);
         // …and the tree is still alive — wood can be cut again
-        expect(ecology.chop({ x: -1, y: 0 }, bare)).toEqual({ felled: false });
+        expect(ecology.chop({ x: -1, y: 0 }, bare)).toEqual({ felled: false, taken: 1 });
     });
 
     it('a felled tree\u2019s record is removed; growth never resurrects it', () => {
@@ -269,7 +287,7 @@ describe('forestPlugin — the wood growth (lazy, deterministic)', () => {
         const sapling = { born: 0, base: 1, baseMinute: 0, carry: 0 };
         terrain.forestPlant(-1, 0, bare, sapling);
         // The sapling's whole pool is one wood — the first chop fells it
-        expect(ecology.chop({ x: -1, y: 0 }, bare)).toEqual({ felled: true });
+        expect(ecology.chop({ x: -1, y: 0 }, bare)).toEqual({ felled: true, taken: 1 });
         expect(stand.trees.has('0,0')).toBe(false);
         // Growth works on the ecology clock — a year later the spot stays
         // bare (only recruitment replants a felled spot)
@@ -737,15 +755,17 @@ describe('forestPlugin — the harvest integration (inventory flow)', () => {
         // T2's densified 15×9 base: (0,0) now clamps at the FULL 135 (up
         // from 128) with its mixed seeded ages
         expect(before).toEqual({ trees: 135, wood: 488 });
-        // THE CAPACITY GATE — a full bag never fells (the pool untouched)
-        inventory.spawnKit('a', { sand: 8 });
+        // THE CAPACITY GATE — a full bag never fells (the pool untouched).
+        // R5 — five 40-weight stones fill the 200-weight budget exactly.
+        inventory.spawnKit('a', { stone: 5 });
         expect(inventory.harvest(ael, 'tree', 'wood')).toBe(false);
         expect(ecology.standOf({ x: 0, y: 0 })).toEqual(before);
-        expect(inventory.of('a')).toEqual({ sand: 8 });
-        // One unit freed: the chop moves exactly ONE wood — the tree stands
-        inventory.consume(ael, 'sand');
+        expect(inventory.of('a')).toEqual({ stone: 5 });
+        // One stone of room freed (160 carried): the chop moves exactly ONE
+        // wood (20) — the tree stands
+        inventory.consume(ael, 'stone');
         expect(inventory.harvest(ael, 'tree', 'wood')).toBe(true);
-        expect(inventory.of('a')).toEqual({ sand: 7, wood: 1 });
+        expect(inventory.of('a')).toEqual({ stone: 4, wood: 1 });
         expect(ecology.standOf({ x: 0, y: 0 })).toEqual({ trees: 135, wood: 487 });
         // The gatherable stock mirrors the stand exactly (no ghosts)
         expect(inventory.cellStock(0, 0).tree).toBe(135);
