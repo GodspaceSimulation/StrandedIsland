@@ -13,11 +13,25 @@
 //
 // THE PLAN — one stock structure at a time, in a fixed order (cooperative,
 // deterministic: the whole cast serves the same live site):
-//   shelter → raft → house → boat → fort
+//   shelter → raft → house → boat → quarry → furnace → fort
 // The tick places the current project's site (a feasible dry-land scan
-// ranked by centrality; vessels moor on beaches with a water neighbour)
+// ranked by what the structure WANTS — R1 priority-aware siting: homes near
+// water/food/camp, the fort on defensible rock near its assets, the quarry
+// on the highland gravel bedrock, vessels on a beach with a sea mooring)
 // when nothing is live, and advances the cursor when the project's site
 // stands BUILT.
+//
+// THE MATERIAL ANATOMY (T3 R3/R4, plugins/construction/structureModel.ts) —
+// a BUILT structure stands with material SECTIONS (wood/thatch/stone/brick)
+// that WEAR with time and never heal on their own (dead material — the
+// living woods regrow wood biologically, a wall does not). The crew keeps
+// them sound: maintenance ORDERS (auto-opened at the wear trigger, or god-
+// ordered) stage the section's own material onto the footprint and work it
+// back, one world-minute stage at a time. Sections upgrade one rung up the
+// ladder wood → stone → brick — and BRICK only comes from a real kiln: the
+// brick craft is gated on a BUILT furnace. The quarry, once built, opens
+// the gravel bedrock under its highland tile (the stone the fort's walls
+// and the furnace need — the surface rock alone never fed them).
 //
 // THE WORK CYCLE (every sentient, every minute — the behavior plugin's
 // whole-world sweep consults these rungs):
@@ -40,6 +54,12 @@
 //   build   21 — the site is fully staged → stand on its footprint and
 //                work one world-minute per task (the shared site
 //                registry's per-minute workOn stages).
+//   maintain 15 — a BUILT structure's open maintenance order (repair or
+//                upgrade): fetch the order's material (the underfoot beat,
+//                the trek, or BRICK fired at a built furnace), haul it to
+//                the footprint and stage it, then work the order one
+//                world-minute stage at a time. Below the live projects —
+//                finished structures are mended after the plan is served.
 // Every rung sits BELOW the survival needs (rest 25 / sleep 30 / hunger 40
 // / thirst 50 / flee 60) — needs always interrupt construction, and ABOVE
 // social (20) and lumber (10) — the build projects are never starved by
@@ -89,6 +109,8 @@ import {
     createSiteRegistry,
     siteCellKey,
     type BlueprintRegistry,
+    type BlueprintRequirement,
+    type BlueprintSpec,
     type Site,
     type SiteCell,
     type SiteRegistry,
@@ -101,27 +123,41 @@ import {
     type RecipeLine,
 } from '@godspace/material';
 import type { World } from '../../engine/world';
-import type { Actor } from '../../engine/types';
+import type { Actor, TerrainCell } from '../../engine/types';
 import { isSeaWater } from '../../engine/types';
 import type { InventoryPlugin } from '../inventory/inventoryPlugin';
 import type { NeedsPlugin } from '../needs/needsPlugin';
 import type { EntityProfiles } from '../entity/entityPlugin';
 import type { TasksPlugin } from '../tasks/tasksPlugin';
-import type { TaskBehaviour, TaskSubject } from '../tasks/taskLedger';
+import type { TaskBehaviour, TaskEntity, TaskSpec, TaskSubject } from '../tasks/taskLedger';
 import { inventoryRemove } from '../inventory/inventory';
 import { itemWeight, inventoryWeight } from '../inventory/items';
 import { materials, MINED_ITEMS } from '../inventory/items';
-import { fineTargetStep, fineSpotTaken, nearestCell, travelSpec } from '../movement/fineMovement';
+import { fineSpotTaken, fineTargetStep, nearestCell, travelSpec, type FineMover } from '../movement/fineMovement';
+import {
+    createSections,
+    repairPrice,
+    sectionHealth,
+    upgradeCost,
+    REPAIR_TRIGGER,
+    SECTION_MAX_HEALTH,
+    UPGRADE_LADDER,
+    type SectionTier,
+    type StructureSection,
+} from './structureModel';
 
 // ── The island's buildable plan ──────────────────────────────────────────────
 
 /**
- * The build order — one stock blueprint at a time, the shelter first (the
+ * The build order — one blueprint at a time, the shelter first (the
  * first night's cover), the escape craft next, then the long homes. The
  * boat needs cloth (frond-woven) and the fort needs mined stone, so they
  * sit late in the order where their supply chains have had time to run.
+ * R3 — the QUARRY comes before the furnace and the fort: the fort's walls
+ * (1920 stone) and the furnace's body (120 stone) can only be fed once the
+ * quarry has opened the highland bedrock (the surface rock is a handful).
  */
-export const PLAN_ORDER: readonly string[] = ['shelter', 'raft', 'house', 'boat', 'fort'];
+export const PLAN_ORDER: readonly string[] = ['shelter', 'raft', 'house', 'boat', 'quarry', 'furnace', 'fort'];
 
 /** The blueprints whose built output floats — the launchable craft. */
 export const VESSEL_BLUEPRINTS: readonly string[] = ['raft', 'boat'];
@@ -161,6 +197,13 @@ export const ISLAND_RECIPES: readonly Recipe[] = [
     // long build projects, so the crew works with real equipment early.
     { id: 'axe', label: 'Axe', kind: 'tool', inputs: [{ item: 'wood', count: 1 }, { item: 'stone', count: 1 }], outputs: [{ item: 'axe', count: 1 }], minutes: 5 },
     { id: 'hammer', label: 'Hammer', kind: 'tool', inputs: [{ item: 'wood', count: 2 }], outputs: [{ item: 'hammer', count: 1 }], minutes: 5 },
+    // R3 — BRICK: sand packed around stone and FIRED. The recipe exists for
+    // everyone to read, but the firing only happens at a BUILT furnace — the
+    // maintain rung's brick path carries the inputs to the kiln and crafts
+    // beside it (no kiln, no brick). Brick is what upgrades a stone section
+    // to brick; nothing stages brick for a site (no blueprint requires it),
+    // so the generic craft rung never plans it.
+    { id: 'brick', label: 'Brick', kind: 'part', inputs: [{ item: 'sand', count: 2 }, { item: 'stone', count: 1 }], outputs: [{ item: 'brick', count: 1 }], minutes: 5 },
 ];
 
 /**
@@ -191,8 +234,55 @@ export const ISLAND_BLUEPRINT_WORK: Record<string, number> = {
     raft: 480, // 8 hours
     house: 4320, // 3 days
     boat: 1440, // 1 day
+    quarry: 480, // 8 hours
+    furnace: 240, // 4 hours
     fort: 2880, // 2 days
 };
+
+/**
+ * R2 — THE MATERIAL-TO-WORK LAW: every blueprint's staged material UNITS
+ * sum EXACTLY to its work minutes — one unit of material, one minute of
+ * honest labor (no divisor, no scaling shortcut). The staging totals below
+ * are the literal work totals: a 4320-minute house stands on 4320 units
+ * (1440 wood + 1440 plank + 1440 thatch), and every one of those units is
+ * genuinely gathered, carried, staged and consumed. These requires REPLACE
+ * the stock registry's token counts (shelter 2+2, raft 4+2, house 4+4+4,
+ * boat 6+4+2, fort 8+4) on the island's own registry instance — the same
+ * island-local remove + define pass as the work re-pricing above.
+ */
+export const ISLAND_BLUEPRINT_REQUIRES: Record<string, BlueprintRequirement[]> = {
+    shelter: [{ item: 'wood', count: 120 }, { item: 'thatch', count: 120 }], // 240
+    raft: [{ item: 'wood', count: 320 }, { item: 'rope', count: 160 }], // 480
+    house: [{ item: 'wood', count: 1440 }, { item: 'plank', count: 1440 }, { item: 'thatch', count: 1440 }], // 4320
+    boat: [{ item: 'plank', count: 720 }, { item: 'rope', count: 480 }, { item: 'cloth', count: 240 }], // 1440
+    fort: [{ item: 'stone', count: 1920 }, { item: 'wood', count: 960 }], // 2880
+};
+
+/**
+ * R3 — the island's OWN blueprints (not stock shapes): the QUARRY and the
+ * FURNACE the upgrade ladder is gated on. The quarry is a two-cell cut on
+ * the highland rock; once BUILT it opens the gravel bedrock under its tile
+ * (QUARRY_STONE_YIELD — the stone economy's only real source). The furnace
+ * is a one-cell kiln of stone; once BUILT it is where sand + stone are
+ * fired into BRICK — no kiln, no brick (the craft gate). Their requires
+ * obey the material-to-work law too (480 and 240 units).
+ */
+export const ISLAND_BLUEPRINTS: readonly BlueprintSpec[] = [
+    {
+        id: 'quarry',
+        label: 'Quarry',
+        cells: [{ x: 0, y: 0 }, { x: 1, y: 0 }],
+        requires: [{ item: 'wood', count: 240 }, { item: 'sand', count: 240 }],
+        work: 480,
+    },
+    {
+        id: 'furnace',
+        label: 'Furnace',
+        cells: [{ x: 0, y: 0 }],
+        requires: [{ item: 'stone', count: 120 }, { item: 'sand', count: 120 }],
+        work: 240,
+    },
+];
 
 /** Canvas type-glyphs for the structures — the scale-0 footprint entries
  * (features/tileDetails scaleView) and the unicode/svg type palettes
@@ -204,6 +294,8 @@ export const STRUCTURE_TYPE_GLYPHS: Record<string, string> = {
     fort: '🏰',
     raft: '🛶',
     boat: '⛵',
+    quarry: '⛏️',
+    furnace: '🔥',
 };
 
 /** The construction rung priorities — between rest (25) and social (20). */
@@ -211,6 +303,10 @@ const DELIVER_PRIORITY = 24;
 const CRAFT_PRIORITY = 23;
 const MATERIALS_PRIORITY = 22;
 const BUILD_PRIORITY = 21;
+/** R4 — the upkeep rung sits below the live projects (21) and social (20),
+ * above the lumber chop (10): finished structures are mended only after
+ * the plan's own staging and work are served. */
+const MAINTAIN_PRIORITY = 15;
 
 /** World minutes one staging task occupies the deliverer at the gate. */
 const DELIVER_MINUTES = 1;
@@ -253,6 +349,64 @@ export type SiteDemand = {
 /** The walkable spot of a site — its GATE cell resolved to world addresses. */
 export type GateSpot = { tileX: number; tileY: number; x: number; y: number };
 
+/**
+ * R3/R4 — one section of a built structure, as the god layer and the tile
+ * panel read it: the tier it stands in and its live health (wear already
+ * applied). Health is derived, never stored — the wear clock is the record.
+ */
+export type SectionView = {
+    id: string;
+    tier: SectionTier;
+    health: number;
+    maxHealth: number;
+};
+
+/** The material anatomy of one BUILT structure (site id keyed). */
+export type BuiltStructureView = {
+    siteId: string;
+    blueprintId: string;
+    sections: SectionView[];
+};
+
+/** The two kinds of maintenance order — mend what wears, raise what stands. */
+export type MaintenanceKind = 'repair' | 'upgrade';
+
+/**
+ * R3/R4 — one maintenance order against a built structure's section: the
+ * material it owes (staged onto the footprint), the work it costs, and the
+ * progress. AT MOST ONE open order per section (a repair or an upgrade,
+ * never both); orders are created by the wear trigger (repair) or the god
+ * API (repair or upgrade) and completed by the crew through the maintain
+ * rung.
+ */
+export type MaintenanceOrder = {
+    /** Order id, "m-1", "m-2", … in creation order. */
+    id: string;
+    /** The built site the order stands on. */
+    siteId: string;
+    /** The section the order serves. */
+    sectionId: string;
+    kind: MaintenanceKind;
+    /** The item the crew must stage (the section's tier material). */
+    item: string;
+    /** Material units the order consumes. */
+    units: number;
+    /** Work-minutes the order costs. */
+    work: number;
+    /** Units staged onto the footprint so far. */
+    staged: number;
+    /** Work-minutes done so far. */
+    workDone: number;
+    state: 'open' | 'done';
+};
+
+/** The internal record of one built structure (keyed by site id). */
+type StructureRecord = {
+    siteId: string;
+    blueprintId: string;
+    sections: StructureSection[];
+};
+
 export type ConstructionPluginOptions = {
     inventory: InventoryPlugin;
     needs: NeedsPlugin;
@@ -289,6 +443,32 @@ export type ConstructionPlugin = WorldPlugin<World> & {
     /** The moored vessels, in launch order. */
     vessels(): Vessel[];
     /**
+     * R3/R4 — the BUILT structures' section anatomy (one entry per built
+     * site, placement order). Health is LIVE (the wear clock applied).
+     */
+    structures(): BuiltStructureView[];
+    /**
+     * The section views of one built site (the tile panel reads it), or
+     * undefined when the site carries no structure record (unbuilt, gone).
+     */
+    sectionsOf(siteId: string): SectionView[] | undefined;
+    /** The maintenance orders (open + done), in creation order. */
+    orders(): MaintenanceOrder[];
+    /**
+     * God API — order a built section's repair (the price is the CURRENT
+     * wear, snapshotted on the order). Undefined for unknown ids; an
+     * already-open order on the section is returned as-is (one open order
+     * per section, repair or upgrade).
+     */
+    orderRepair(siteId: string, sectionId: string): MaintenanceOrder | undefined;
+    /**
+     * God API — order a built section's one-rung upgrade (wood → stone →
+     * brick; the brick leg's material waits on the kiln gate). Undefined
+     * at the top of the ladder or for unknown ids; an already-open order
+     * on the section is returned as-is.
+     */
+    orderUpgrade(siteId: string, sectionId: string): MaintenanceOrder | undefined;
+    /**
      * Launches a BUILT raft or boat: requires a water neighbour beside the
      * shore it stands on (the mooring), frees the site (no refund — the
      * materials sail with the hull) and records the moored vessel.
@@ -322,10 +502,27 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
     const repriced = blueprints
         .blueprints()
         .filter((definition) => ISLAND_BLUEPRINT_WORK[definition.id] !== undefined)
-        .map((definition) => ({ ...definition, work: ISLAND_BLUEPRINT_WORK[definition.id] }));
+        .map((definition) => ({
+            ...definition,
+            // R5/R6 — the island work re-pricing, AND R2 — the material-to-
+            // work law: the island requires REPLACE the stock token counts
+            // (shelter 2+2 … fort 8+4) with the literal staging totals whose
+            // units sum to the work minutes. Same snapshot rule as the work:
+            // sites placed after this pass carry the island totals.
+            work: ISLAND_BLUEPRINT_WORK[definition.id],
+            requires: ISLAND_BLUEPRINT_REQUIRES[definition.id].map((line) => ({ ...line })),
+        }));
     arrayEach(repriced, ({ value: definition }) => {
         blueprints.remove(definition.id);
         blueprints.define(definition);
+    });
+    // R3 — the island's OWN blueprints (quarry + furnace): not stock shapes,
+    // defined fresh on this instance — the shared package never sees them.
+    // BRACED body on purpose: `define` RETURNS the stored copy, and arrayEach
+    // short-circuits on any non-undefined callback return — an expression
+    // body would define the quarry and silently skip the furnace.
+    arrayEach([...ISLAND_BLUEPRINTS], ({ value: spec }) => {
+        blueprints.define(spec);
     });
     const crafting = createCraftingRegistry({ stock: false, items: materials });
     arrayEach([...ISLAND_RECIPES], ({ value: recipe }) => {
@@ -355,6 +552,15 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
     // The launched vessels, in launch order
     const moored: Vessel[] = [];
     let vesselCounter = 0;
+
+    // R3/R4 — the built structures' section records (siteId → sections) and
+    // the maintenance orders (repair + upgrade), island-local beside the
+    // shared site registry. Records are created when a site turns BUILT and
+    // dropped when the site leaves the registry (launch, god remove); open
+    // orders on a vanished site close with it.
+    const structureRecords = new Map<string, StructureRecord>();
+    const orders: MaintenanceOrder[] = [];
+    let orderCounter = 0;
 
     // The effect subscription (wired in setup, torn down at dispose)
     let unsubscribeEffects: (() => void) | null = null;
@@ -570,6 +776,43 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
         return siteGate(site);
     };
 
+    /**
+     * THE OPEN FOOTPRINT CELL — the workSpot rule WITHOUT the gate fallback:
+     * the first footprint cell no other grounded body stands on, or undefined
+     * when the whole staging surface is occupied. The haul rungs (deliver /
+     * maintain) decline on a taken footprint instead of milling: four
+     * castaways circling one 1-cell raft footprint burned 83k move-minutes
+     * on the seed-7 march (the convergence tax the stock costs hid). A
+     * declined hauler holds its load at camp — the spot frees the moment a
+     * worker finishes, and the next minute the haul lands.
+     */
+    const openSpot = (site: Site, selfId: string): GateSpot | undefined => {
+        const active = world;
+        if (!active) {
+            return undefined;
+        }
+        const cells = sites.cellsOf(site.id) ?? [];
+        for (let index = 0; index < cells.length; index++) {
+            const cell = cells[index];
+            if (cell.parent.length !== 1) {
+                continue;
+            }
+            if (
+                !fineSpotTaken(
+                    active,
+                    selfId,
+                    cell.parent[0].x,
+                    cell.parent[0].y,
+                    cell.x,
+                    cell.y,
+                )
+            ) {
+                return { tileX: cell.parent[0].x, tileY: cell.parent[0].y, x: cell.x, y: cell.y };
+            }
+        }
+        return undefined;
+    };
+
     /** Whether the bag holds a requirement line the site still lacks — read
      * off the site's SNAPSHOT (`site.required`), never the live definition. */
     const carryingForSite = (actorId: string, site: Site): boolean => {
@@ -746,15 +989,440 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
     const mayChop = (type: string | undefined): boolean =>
         !profiles || (type !== undefined && profiles.hasAbility(type, 'chop'));
 
+    // ── R3/R4 — the built structures: sections, the quarry cut, orders ──────
+
+    /**
+     * R3 — the stone a BUILT quarry cuts: the gravel bedrock under its
+     * highland tile opens to the crew (2400 units — enough for the fort's
+     * 1920-unit walls and the furnace's body with a margin). The island's
+     * NATURAL surface stone (a handful of loose rock, STONE_GUARANTEE_MIN)
+     * could never feed those walls — the quarry is the mine that does, and
+     * it pays out ONCE when the quarry stands (a finite bedrock cut, not an
+     * infinite spring). The yield lands on BOTH stone layers of the anchor
+     * tile, exactly once at the cut: the DEPOSIT record (`resources.stone`,
+     * the landmark the surface derivation reads) AND the GATHERABLE STOCK
+     * (the inventory's live per-tile stock — takeFromCell and cellsWithItem
+     * read the stock, which the survey seeds from the deposit only at
+     * survey time; a deposit-only cut would be invisible to the crew, the
+     * independent review's seed-7 probe: 2400 stone lay in the record and
+     * nothing could lift it). Accounting stays whole from here: every take
+     * draws stock AND deposit in step (the inventory's drawDeposit), and a
+     * later resurvey rebuilds the stock FROM the deposit — the yield is
+     * counted once, never minted twice.
+     */
+    const QUARRY_STONE_YIELD = 2400;
+
+    /** The quarry's cut — stage the bedrock yield onto the anchor tile. */
+    const openQuarryBedrock = (site: Site): void => {
+        const active = world;
+        if (!active) {
+            return;
+        }
+        const anchor = site.parent[0];
+        const cell = active.cellAt(anchor.x, anchor.y);
+        if (!cell) {
+            return;
+        }
+        cell.resources.stone = (cell.resources.stone ?? 0) + QUARRY_STONE_YIELD;
+        // THE GATHERABLE MIRROR - the live stock is what takeFromCell and
+        // cellsWithItem actually read (the survey seeds it from the deposit
+        // only at setup/resurvey), so the cut must land on it too or the
+        // bedrock is unmineable. One write, at the cut; from then on the
+        // two layers draw down in step and a resurvey rebuilds the stock
+        // from the deposit (no double count - see the doc above)
+        const stock = inventory.cellStock(anchor.x, anchor.y);
+        stock.stone = (stock.stone ?? 0) + QUARRY_STONE_YIELD;
+        active.events.emit({
+            kind: 'quarry',
+            message: `The quarry cuts the bedrock at (${anchor.x}, ${anchor.y}) — ${QUARRY_STONE_YIELD} stone lies ready.`,
+        });
+    };
+
+    /** The anchor of the first BUILT furnace, if the island has a kiln. */
+    const builtFurnaceAnchor = (): { x: number; y: number } | undefined =>
+        sites.sites().find((site) => site.blueprintId === 'furnace' && site.state === 'built')
+            ?.parent[0];
+
+    /**
+     * R3 — the KILN GATE: bricks are fired, not woven. A craft of brick is
+     * only honest within arm's reach (Chebyshev ≤ 1) of a BUILT furnace —
+     * the maintain rung's brick path and the craft effect both revalidate
+     * this at completion (a furnace demolished mid-firing loses the batch).
+     */
+    const nearBuiltFurnace = (position: { x: number; y: number }): boolean => {
+        const furnace = builtFurnaceAnchor();
+        if (!furnace) {
+            return false;
+        }
+        return Math.max(Math.abs(position.x - furnace.x), Math.abs(position.y - furnace.y)) <= 1;
+    };
+
+    /** The section views of a record — health derived from the wear clock. */
+    const sectionsView = (record: StructureRecord): SectionView[] =>
+        record.sections.map((section) => ({
+            id: section.id,
+            tier: section.tier,
+            health: sectionHealth(section),
+            maxHealth: SECTION_MAX_HEALTH[section.tier],
+        }));
+
+    /**
+     * Open one maintenance order against a section — the price is read at
+     * OPENING (repairPrice walks the CURRENT wear; upgradeCost the current
+     * tier) and then SNAPSHOT on the order: the crew owes exactly what was
+     * written when the order opened, even if wear keeps banking meanwhile
+     * (the same snapshot discipline as the site's staging costs).
+     */
+    const openOrder = (
+        kind: MaintenanceKind,
+        siteId: string,
+        section: StructureSection,
+    ): MaintenanceOrder | undefined => {
+        const price = kind === 'repair' ? repairPrice(section) : upgradeCost(section.tier);
+        if (!price) {
+            return undefined; // brick sits at the top of the ladder
+        }
+        orderCounter = orderCounter + 1;
+        const order: MaintenanceOrder = {
+            id: `m-${orderCounter}`,
+            siteId,
+            sectionId: section.id,
+            kind,
+            item: price.item,
+            units: 'units' in price ? price.units : price.count,
+            work: price.work,
+            staged: 0,
+            workDone: 0,
+            state: 'open',
+        };
+        orders.push(order);
+        return order;
+    };
+
+    /** The one open order a section carries (repairs and upgrades share it). */
+    const openOrderOf = (siteId: string, sectionId: string): MaintenanceOrder | undefined =>
+        orders.find(
+            (order) => order.state === 'open' && order.siteId === siteId && order.sectionId === sectionId,
+        );
+
+    /**
+     * THE STRUCTURE SWEEP — once per world minute:
+     *  1. a site that just turned BUILT gets its section anatomy (and the
+     *     quarry cuts its bedrock, once);
+     *  2. records whose site left the registry (launch, god remove) drop
+     *     with it — and their open orders close;
+     *  3. THE WEAR CLOCK: every built section banks one worn minute (dead
+     *     material never heals — the living woods regrow through the forest
+     *     plugin, a wall does not);
+     *  4. THE AUTO-REPAIR TRIGGER: a section worn to REPAIR_TRIGGER of its
+     *     full health opens the crew's repair order (one open order per
+     *     section; upgrades are god-ordered only).
+     */
+    const syncStructures = (): void => {
+        const active = world;
+        if (!active) {
+            return;
+        }
+        // 1 — freshly built structures gain their sections; the quarry cuts
+        for (const site of sites.sites()) {
+            if (site.state !== 'built' || structureRecords.has(site.id)) {
+                continue;
+            }
+            structureRecords.set(site.id, {
+                siteId: site.id,
+                blueprintId: site.blueprintId,
+                sections: createSections(site.blueprintId),
+            });
+            if (site.blueprintId === 'quarry') {
+                openQuarryBedrock(site);
+            }
+        }
+        // 2 — records whose site vanished leave the ledger (orders with it)
+        for (const siteId of Array.from(structureRecords.keys())) {
+            if (sites.siteOf(siteId)) {
+                continue;
+            }
+            structureRecords.delete(siteId);
+            for (let index = orders.length - 1; index >= 0; index--) {
+                if (orders[index].siteId === siteId && orders[index].state === 'open') {
+                    orders.splice(index, 1);
+                }
+            }
+        }
+        // 3 — the wear clock (integer minutes, never float drift)
+        structureRecords.forEach((record) => {
+            record.sections.forEach((section) => {
+                section.wornMinutes = section.wornMinutes + 1;
+            });
+        });
+        // 4 — the auto-repair trigger (the crew keeps its works half-sound
+        // at worst; the god can order better)
+        structureRecords.forEach((record) => {
+            record.sections.forEach((section) => {
+                if (sectionHealth(section) > SECTION_MAX_HEALTH[section.tier] * REPAIR_TRIGGER) {
+                    return;
+                }
+                if (openOrderOf(record.siteId, section.id)) {
+                    return;
+                }
+                openOrder('repair', record.siteId, section);
+            });
+        });
+    };
+
+    /**
+     * The trek target for `actor` — the nearest cell holding `item` that no
+     * EARLIER actor (world.actors iteration order — deterministic) already
+     * claims for the same item. THE CONVOY RULE: when the whole crew seeks
+     * the SAME resource cell they funnel through one fine corridor, each
+     * body blocking the next (the seed-7 raft march: 25 world minutes per
+     * tile step, 83k haul-moves for 476 deliveries). Distinct nearest
+     * targets spread the crew across the island's stands and the treks run
+     * in parallel; when candidates run out the actor shares an earlier
+     * claim (nearest still wins).
+     */
+    const seekSource = (actor: FineMover, item: string): TerrainCell | null => {
+        const active = world;
+        if (!active) {
+            return null;
+        }
+        const candidates = inventory.cellsWithItem(item);
+        if (candidates.length === 0) {
+            return null;
+        }
+        const claimed = new Set<string>();
+        let mine: TerrainCell | null = null;
+        active.actors.forEach((other) => {
+            const open = candidates.filter((cell) => !claimed.has(`${cell.x},${cell.y}`));
+            const pick = nearestCell(other, open.length > 0 ? open : candidates);
+            if (!pick) {
+                return;
+            }
+            claimed.add(`${pick.x},${pick.y}`);
+            if (other.id === actor.id) {
+                mine = pick;
+            }
+        });
+        return mine ?? nearestCell(actor, candidates);
+    };
+
+    /**
+     * The maintain rung's FETCH half — the raw material an order owes, off
+     * the ground: the underfoot beat (the SHARED tile job, the same R6
+     * ledger the site fetches work) or the trek toward the nearest stocked
+     * cell. Stone revalidates the mine gate at completion (the behavior
+     * plugin's gather effect refuses the unskilled take).
+     */
+    const orderFetchPlan = (
+        active: World,
+        actor: TaskEntity,
+        item: string,
+    ): TaskSpec | undefined => {
+        // WOOD is never lying on a tile — it stands in trees: the order's
+        // wood is FELLED (the same shared chop job the materials rung and
+        // the lumber plugin work — R6 one job per tile)
+        if (item === 'wood') {
+            if (!mayChop(actor.type)) {
+                return undefined;
+            }
+            const key = tileWorkKey(actor.position.x, actor.position.y, CHOP_WORK_KIND);
+            if (tasks.tileWork.get(key)) {
+                return { kind: 'fell', label: 'fells a tree', minutes: 1 };
+            }
+            const standing = inventory.cellStock(actor.position.x, actor.position.y);
+            if ((standing.tree ?? 0) > 0) {
+                const carriesAxe = (inventory.of(actor.id).axe ?? 0) > 0;
+                tasks.tileWork.open({
+                    key,
+                    kind: CHOP_WORK_KIND,
+                    units: carriesAxe ? Math.max(1, Math.ceil(FELL_MINUTES / 2)) : FELL_MINUTES,
+                    skill: 'chop',
+                });
+                return { kind: 'fell', label: 'fells a tree', minutes: 1 };
+            }
+            const grove = seekSource(actor, 'tree');
+            if (!grove) {
+                return undefined;
+            }
+            return travelSpec(active, actor, 'seeks wood', grove, travel);
+        }
+        const stock = inventory.cellStock(actor.position.x, actor.position.y);
+        if ((stock[item] ?? 0) > 0) {
+            openGatherJob(tasks.tileWork, {
+                x: actor.position.x,
+                y: actor.position.y,
+                item,
+                units: TAKE_MINUTES,
+                skill: MINED_ITEMS.includes(item) ? 'mine' : 'forage',
+            });
+            return {
+                kind: 'gather',
+                label: `takes ${item}`,
+                minutes: 1,
+                payload: { item, beat: true, x: actor.position.x, y: actor.position.y },
+            };
+        }
+        const source = seekSource(actor, item);
+        if (!source) {
+            return undefined;
+        }
+        return travelSpec(active, actor, `seeks ${item}`, source, travel);
+    };
+
+    /**
+     * The maintain rung's BRICK half (R3) — an upgrade order owes bricks,
+     * and bricks are FIRED, not found: fetch the inputs (sand + stone) off
+     * the ground, CARRY them to a BUILT furnace, and craft beside it (the
+     * atomic craft consumes them). No furnace stands → the order waits —
+     * the gate is the whole point of building one.
+     */
+    const brickPlan = (
+        active: World,
+        actor: TaskEntity,
+    ): TaskSpec | undefined => {
+        const recipe = crafting.recipes().find((candidate) => candidate.id === 'brick');
+        if (!recipe) {
+            return undefined;
+        }
+        const bag = inventory.of(actor.id);
+        const ready = recipe.inputs.every((line) => (bag[line.item] ?? 0) >= line.count);
+        if (ready) {
+            // The inputs ride to the kiln — the craft only happens within
+            // arm's reach of a BUILT furnace (the kiln gate, revalidated by
+            // the craft effect at completion)
+            if (!nearBuiltFurnace(actor.position)) {
+                const furnace = builtFurnaceAnchor();
+                if (!furnace) {
+                    return undefined;
+                }
+                // travelSpec addresses a real cell — the furnace's tile
+                const furnaceCell = active.cellAt(furnace.x, furnace.y);
+                if (!furnaceCell) {
+                    return undefined;
+                }
+                return travelSpec(active, actor, 'carries brick inputs', furnaceCell, travel);
+            }
+            return {
+                kind: 'craft',
+                label: 'fires brick',
+                minutes: Math.max(1, recipe.minutes),
+                payload: { recipe: 'brick' },
+            };
+        }
+        // Fetch the first missing input (sand is the unlimited ground
+        // supply, stone the mined one — the quarry keeps it near)
+        const missing = recipe.inputs.find((line) => (bag[line.item] ?? 0) < line.count);
+        if (!missing) {
+            return undefined;
+        }
+        return orderFetchPlan(active, actor, missing.item);
+    };
+
+    /**
+     * R4 — the per-order maintenance planner: the haul (stage what the bag
+     * holds), the fetch (gather what the order still owes — gated by the
+     * kiln for brick, the mine ability for stone, and bag room for all),
+     * or the work (stand on the structure and spend a minute). Returns
+     * undefined when THIS order cannot be served right now; the caller
+     * (the maintain rung's plan) then tries the next open order. The gates
+     * live here, so a blocked order never bypasses one — it just yields
+     * no plan.
+     */
+    const planOrder = (
+        active: World,
+        actor: TaskEntity,
+        order: MaintenanceOrder,
+    ): TaskSpec | undefined => {
+        const site = sites.siteOf(order.siteId);
+        if (!site) {
+            return undefined;
+        }
+        const bag = inventory.of(actor.id);
+        // THE HAUL — the bag already holds order material: carry it to
+        // the footprint and stage it (the effect revalidates the
+        // arithmetic at completion)
+        if (order.staged < order.units && (bag[order.item] ?? 0) > 0) {
+            if (atSite(actor, site)) {
+                return {
+                    kind: 'stage',
+                    label: 'stages materials',
+                    minutes: DELIVER_MINUTES,
+                    payload: { orderId: order.id },
+                };
+            }
+            const spot = openSpot(site, actor.id);
+            if (!spot) {
+                return undefined;
+            }
+            const step = fineTargetStep(active, actor, { x: spot.tileX, y: spot.tileY }, { x: spot.x, y: spot.y });
+            if (!step) {
+                return undefined;
+            }
+            return {
+                kind: 'move',
+                label: 'hauls materials',
+                minutes: travel,
+                payload: { dx: step[0], dy: step[1] },
+            };
+        }
+        // THE FETCH — the order still owes material the bag does not
+        // hold. BRICK comes off the kiln (the furnace gate — no kiln, no
+        // brick); everything else off the ground.
+        if (order.staged < order.units) {
+            if (order.item === 'brick') {
+                return brickPlan(active, actor);
+            }
+            // THE MINE GATE — a stone order needs the 'mine' ability
+            // (the take revalidates at completion)
+            if (
+                MINED_ITEMS.includes(order.item) &&
+                profiles &&
+                !profiles.hasAbility(actor.type ?? '', 'mine')
+            ) {
+                return undefined;
+            }
+            // THE BAG ROOM GATE — a full hand fetches nothing
+            if (inventoryWeight(bag) >= inventory.capacityOf(actor.id)) {
+                return undefined;
+            }
+            return orderFetchPlan(active, actor, order.item);
+        }
+        // THE WORK — the order is fully staged: stand on the structure
+        // and work it, one minute per task (the effect commits the order
+        // on its last stage)
+        if (atSite(actor, site)) {
+            return {
+                kind: 'maintain',
+                label: order.kind === 'repair' ? 'repairs the structure' : 'upgrades the structure',
+                minutes: BUILD_MINUTES,
+                payload: { orderId: order.id },
+            };
+        }
+        const spot = openSpot(site, actor.id);
+        if (!spot) {
+            return undefined;
+        }
+        const step = fineTargetStep(active, actor, { x: spot.tileX, y: spot.tileY }, { x: spot.x, y: spot.y });
+        if (!step) {
+            return undefined;
+        }
+        return {
+            kind: 'move',
+            label: 'heads to the structure',
+            minutes: travel,
+            payload: { dx: step[0], dy: step[1] },
+        };
+    };
+
     // ── the plan cursor: place or advance ────────────────────────────────────
 
     /**
      * One plan-cursor pass: advances past completed projects, then places
      * the current project's site when nothing is live. The placement scan
-     * ranks the land cells by centrality (deterministic — ties keep the
-     * row-major order), vessels requiring a beach tile, and places on the
-     * FIRST tile the shared registry accepts (the hooks veto water,
-     * occupied fine spots and standing bodies).
+     * ranks the land cells by what the structure type WANTS (R1 — see the
+     * scan comments; deterministic — ties keep the row-major order), and
+     * places on the FIRST tile the shared registry accepts (the hooks veto
+     * water, occupied fine spots and standing bodies).
      */
     const placeOrAdvance = (): void => {
         for (;;) {
@@ -790,29 +1458,103 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
             // A crew is already serving a live site (never two at once)
             return;
         }
-        // The placement scan — row-major land cells, anchor at the tile's
-        // center fine cell. The anchor sits at the grid's exact middle, so
-        // the stock footprints (±1 offsets) never wrap across the world's
-        // edge: every resolved cell lands on the anchor tile or an immediate
-        // neighbour. Vessels moor on BEACH tiles (the shore the launch reads);
-        // the land structures stand on the first feasible dry tile.
+        // THE PLACEMENT SCAN (R1 — PRIORITY-AWARE SITING): row-major land
+        // cells, anchor at the tile's center fine cell. The anchor sits at
+        // the grid's exact middle, so the stock footprints (±1 offsets)
+        // never wrap across the world's edge: every resolved cell lands on
+        // the anchor tile or an immediate neighbour. Each structure type
+        // SCORES the ground it WANTS and the scan places on the highest
+        // score (ties keep the row-major order — deterministic):
+        //   shelter / house — the CAMP CLUSTER: near the fresh water (the
+        //     thirst treks are the longest errands in the game), near the
+        //     food ground (meadow and forest forage), near the cast (short
+        //     hauls from where the crew already stands);
+        //   fort — DEFENSIBLE first: the highland rock and its ridge
+        //     neighbours (walls on the heights command the island), then
+        //     near the assets it guards (the BUILT structures), then camp;
+        //   quarry — the rock ITSELF: only highland columns carry the
+        //     gravel bedrock the quarry cuts, the nearest of them to camp
+        //     (the stone hauls are the heaviest errands in the game);
+        //   furnace — near the rock (its body and its firing draw stone and
+        //     sand) and near camp;
+        //   vessels — a beach tile WITH a sea mooring (the launch needs the
+        //     water where the hull stands), the one nearest camp.
         const active = world;
         if (!active) {
             return;
         }
         const cells = active.landCells();
         const shoreOnly = VESSEL_BLUEPRINTS.includes(blueprint);
-        // The scan prefers the island's INTERIOR: land cells ranked by how
-        // close they sit to the canvas middle (Chebyshev), ties keeping the
-        // row-major order — the crew's hauling trips stay short for the
-        // whole campaign. Vessels moor on BEACH tiles WITH a water
-        // neighbour (the mooring the launch needs must exist where the
-        // hull is built); the land structures stand on the first feasible
-        // dry tile.
-        const halfX = (active.canvas.width - 1) / 2;
-        const halfY = (active.canvas.height - 1) / 2;
-        const centrality = (cell: { x: number; y: number }): number =>
-            Math.max(Math.abs(cell.x) / halfX, Math.abs(cell.y) / halfY);
+        const cheb = (a: { x: number; y: number }, b: { x: number; y: number }): number =>
+            Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
+        // The cast's standing cells — the camp the crew's errands radiate
+        // from (an empty pool zeroes the term: no cast, no preference)
+        const actorCells: Array<{ x: number; y: number }> = [];
+        active.actors.forEach((actor) => {
+            actorCells.push({ x: actor.position.x, y: actor.position.y });
+        });
+        // The BUILT structures' anchors — the assets a fort guards
+        const assetCells = sites
+            .sites()
+            .filter((site) => site.state === 'built')
+            .map((site) => site.parent[0]);
+        const nearestOf = (cell: { x: number; y: number }, pool: Array<{ x: number; y: number }>): number =>
+            pool.length === 0 ? 0 : Math.min(...pool.map((entry) => cheb(cell, entry)));
+        // How many cells within RADIUS satisfy TEST — the ground's character
+        // AROUND a candidate tile (water, food, rock)
+        const around = (
+            cell: { x: number; y: number },
+            radius: number,
+            test: (cell: TerrainCell) => boolean,
+        ): number => {
+            let count = 0;
+            for (let dy = -radius; dy <= radius; dy++) {
+                for (let dx = -radius; dx <= radius; dx++) {
+                    const neighbor = active.cellAt(cell.x + dx, cell.y + dy);
+                    if (neighbor && test(neighbor)) {
+                        count = count + 1;
+                    }
+                }
+            }
+            return count;
+        };
+        const isFresh = (cell: TerrainCell): boolean => cell.biome === 'lake' || cell.biome === 'pond';
+        const isFood = (cell: TerrainCell): boolean => cell.biome === 'meadow' || cell.biome === 'forest';
+        const isRock = (cell: TerrainCell): boolean => cell.biome === 'highland';
+        const scoreOf = (cell: TerrainCell): number => {
+            switch (blueprint) {
+                case 'shelter':
+                case 'house':
+                    // Home ground: water first (weight 4), food (3), then
+                    // the camp (2 per tile of distance)
+                    return (
+                        4 * around(cell, 3, isFresh) +
+                        3 * around(cell, 3, isFood) -
+                        2 * nearestOf(cell, actorCells)
+                    );
+                case 'fort':
+                    // Defensible rock DOMINATES (standing on it beats every
+                    // proximity term), rock neighbours next, then the assets
+                    // it guards, then the camp
+                    return (
+                        10 * (isRock(cell) ? 1 : 0) +
+                        2 * around(cell, 1, isRock) -
+                        2 * nearestOf(cell, assetCells) -
+                        nearestOf(cell, actorCells)
+                    );
+                case 'quarry':
+                    // Only highland columns are eligible (the filter below);
+                    // the best rock is the one nearest camp
+                    return -nearestOf(cell, actorCells);
+                case 'furnace':
+                    // Near the rock (the kiln's stone and sand draws) and
+                    // near camp
+                    return 2 * around(cell, 2, isRock) - nearestOf(cell, actorCells);
+                default:
+                    // Vessels: the moored beach nearest camp
+                    return -nearestOf(cell, actorCells);
+            }
+        };
         const mooring = (cell: { x: number; y: number }): boolean =>
             [
                 { x: cell.x - 1, y: cell.y },
@@ -829,8 +1571,18 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                     isSeaWater(neighborCell.biome);
             });
         const ranked = cells
-            .filter((cell) => !shoreOnly || (cell.biome === 'beach' && mooring(cell)))
-            .sort((left, right) => centrality(left) - centrality(right));
+            .filter((cell) => {
+                if (shoreOnly) {
+                    return cell.biome === 'beach' && mooring(cell);
+                }
+                // R3 — the quarry only stands on the highland gravel
+                // bedrock: cutting stone anywhere else cuts nothing
+                if (blueprint === 'quarry') {
+                    return isRock(cell);
+                }
+                return true;
+            })
+            .sort((left, right) => scoreOf(right) - scoreOf(left));
         for (let index = 0; index < ranked.length; index++) {
             const cell = ranked[index];
             const spec: SiteSpec = {
@@ -928,6 +1680,50 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
 
         vessels: () => [...moored],
 
+        structures: () =>
+            Array.from(structureRecords.values()).map((record) => ({
+                siteId: record.siteId,
+                blueprintId: record.blueprintId,
+                sections: sectionsView(record),
+            })),
+
+        sectionsOf: (siteId) => {
+            const record = structureRecords.get(siteId);
+            return record ? sectionsView(record) : undefined;
+        },
+
+        orders: () => orders.map((order) => ({ ...order })),
+
+        orderRepair: (siteId, sectionId) => {
+            const section = structureRecords
+                .get(siteId)
+                ?.sections.find((candidate) => candidate.id === sectionId);
+            if (!section) {
+                return undefined;
+            }
+            const existing = openOrderOf(siteId, sectionId);
+            if (existing) {
+                return { ...existing };
+            }
+            const opened = openOrder('repair', siteId, section);
+            return opened ? { ...opened } : undefined;
+        },
+
+        orderUpgrade: (siteId, sectionId) => {
+            const section = structureRecords
+                .get(siteId)
+                ?.sections.find((candidate) => candidate.id === sectionId);
+            if (!section || !upgradeCost(section.tier)) {
+                return undefined;
+            }
+            const existing = openOrderOf(siteId, sectionId);
+            if (existing) {
+                return { ...existing };
+            }
+            const opened = openOrder('upgrade', siteId, section);
+            return opened ? { ...opened } : undefined;
+        },
+
         launch: (siteId) => {
             const active = world;
             if (!active) {
@@ -960,6 +1756,11 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
             if (waterNeighbors.length === 0) {
                 return undefined;
             }
+            // THE MOORING TILE — the vessel floats on the sea neighbour, not
+            // on the shore it was built on (the hull left the beach). The
+            // scan order (west, east, north, south) makes the pick
+            // deterministic for a given anchor
+            const mooring = waterNeighbors[0];
             // The vessel leaves the shore: the site record is dropped (its
             // cells free — the beach is a beach again) and the concrete
             // output lives on as the moored vessel
@@ -974,14 +1775,14 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                 siteId,
                 blueprintId: site.blueprintId,
                 label: definition?.label ?? site.blueprintId,
-                x: anchor.x,
-                y: anchor.y,
+                x: mooring.x,
+                y: mooring.y,
                 launchedAt: active.ticker.elapsed(),
             };
             moored.push(vessel);
             active.events.emit({
                 kind: 'launch',
-                message: `The ${vessel.label.toLowerCase()} is launched into the water at (${anchor.x}, ${anchor.y}).`,
+                message: `The ${vessel.label.toLowerCase()} is launched into the water at (${mooring.x}, ${mooring.y}).`,
             });
             return vessel;
         },
@@ -1120,16 +1921,11 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                     // fine-targeted twin of the treks — the staging happens on
                     // exact subtile spots, and a taken cell would mill the
                     // hauler forever against it)
-                    const spot = workSpot(site, actor.id);
+                    const spot = openSpot(site, actor.id);
                     if (!spot) {
                         return undefined;
                     }
-                    const step = fineTargetStep(
-                        active,
-                        actor,
-                        { x: spot.tileX, y: spot.tileY },
-                        { x: spot.x, y: spot.y },
-                    );
+                    const step = fineTargetStep(active, actor, { x: spot.tileX, y: spot.tileY }, { x: spot.x, y: spot.y });
                     if (!step) {
                         return undefined;
                     }
@@ -1480,7 +2276,7 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                             });
                             return { kind: 'fell', label: 'fells a tree', minutes: 1 };
                         }
-                        const grove = nearestCell(actor, inventory.cellsWithItem('tree'));
+                        const grove = seekSource(actor, 'tree');
                         if (!grove) {
                             return undefined;
                         }
@@ -1505,7 +2301,7 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                             payload: { itemId: line.item },
                         };
                     }
-                    const source = nearestCell(actor, inventory.cellsWithItem(line.item));
+                    const source = seekSource(actor, line.item);
                     if (!source) {
                         return undefined;
                     }
@@ -1555,16 +2351,11 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                         // Walk to an open cell of the footprint first — the
                         // work happens ON the structure's cells (the taken
                         // ones are skipped, the gate the fallback)
-                        const spot = workSpot(site, subject.actor.id);
+                        const spot = openSpot(site, subject.actor.id);
                         if (!spot) {
                             return undefined;
                         }
-                        const step = fineTargetStep(
-                            active,
-                            subject.actor,
-                            { x: spot.tileX, y: spot.tileY },
-                            { x: spot.x, y: spot.y },
-                        );
+                        const step = fineTargetStep(active, subject.actor, { x: spot.tileX, y: spot.tileY }, { x: spot.x, y: spot.y });
                         if (!step) {
                             return undefined;
                         }
@@ -1578,6 +2369,61 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                 };
                 registered.push(`build-${definition.id}`);
                 tasks.behaviour(composed);
+            });
+
+            // MAINTAIN 15 (R4) — the upkeep of what already STANDS: one
+            // module serves every open maintenance order (repair or upgrade)
+            // on a BUILT structure. It plans the whole cycle for the FIRST
+            // open order: fetch the order's material (the underfoot beat,
+            // the trek — or BRICK through the built furnace, R3's kiln gate),
+            // haul it to the footprint and STAGE it, then WORK the order one
+            // world-minute stage at a time standing on the structure. The
+            // cooperative rule holds: the whole crew serves the same order
+            // (the first open one, creation order — deterministic). Below
+            // the live projects (21) and social (20), above the lumber
+            // chop (10): finished structures are mended after the plan's
+            // own staging and work are served.
+            registered.push('maintain');
+            tasks.behaviour({
+                id: 'maintain',
+                label: 'Maintain',
+                priority: MAINTAIN_PRIORITY,
+                appliesTo: (subject) =>
+                    subject.actor.kind !== 'creature' &&
+                    // The upkeep is construction work — the same craft
+                    // ability unlock the build rungs read
+                    mayCraft(subject.actor.type) &&
+                    orders.some((order) => order.state === 'open'),
+                plan: (subject) => {
+                    const active = world;
+                    if (!active) {
+                        return undefined;
+                    }
+                    // SERVICEABLE-ORDER SELECTION — the FIRST open order is
+                    // not necessarily one this subject can serve: a brick
+                    // upgrade with no BUILT furnace plans nothing (the kiln
+                    // gate closes its fetch), and pinning the rung to that
+                    // single order would starve every repair queued behind
+                    // it forever (the review's blocked-upgrade case). Walk
+                    // the open orders in registration order and take the
+                    // FIRST one that yields a plan; the gates live inside
+                    // planOrder, so a blocked order never bypasses one —
+                    // it simply contributes no plan and the walk moves on.
+                    let chosen: TaskSpec | undefined;
+                    arrayEach(
+                        orders.filter((candidate) => candidate.state === 'open'),
+                        ({ value: order }) => {
+                            const candidate = planOrder(active, subject.actor, order);
+                            if (candidate !== undefined) {
+                                chosen = candidate;
+                                // arrayEach short-circuits on a DEFINED
+                                // return — the first serviceable order wins
+                                return chosen;
+                            }
+                        },
+                    );
+                    return chosen;
+                },
             });
 
             // ── the construction effects: what each completed kind DOES ────
@@ -1597,6 +2443,14 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                     case 'craft': {
                         const recipeId = task.payload?.recipe;
                         if (typeof recipeId !== 'string') {
+                            return;
+                        }
+                        // R3 — THE KILN GATE (the effect half): brick is
+                        // FIRED at a furnace. The maintain rung planned the
+                        // craft beside one; if the kiln was demolished (or
+                        // the body wandered off) by completion, the inputs
+                        // stay unspent — no brick without a kiln.
+                        if (recipeId === 'brick' && !nearBuiltFurnace(actor.position)) {
                             return;
                         }
                         // THE ATOMIC CRAFT — the registry validates the whole
@@ -1727,6 +2581,87 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                         sites.workOn(site.id, BUILD_MINUTES);
                         return;
                     }
+                    case 'stage': {
+                        // R4 — stage the order's material onto the built
+                        // structure's footprint (the maintenance analogue of
+                        // 'deliver'). Revalidated at completion: the order
+                        // is still open, the worker still stands on the
+                        // footprint, and the take caps at the order's
+                        // remaining units and the live bag — exact
+                        // arithmetic, nothing conjured or lost.
+                        const orderId = task.payload?.orderId;
+                        if (typeof orderId !== 'string') {
+                            return;
+                        }
+                        const order = orders.find((candidate) => candidate.id === orderId);
+                        if (!order || order.state !== 'open') {
+                            return;
+                        }
+                        const site = sites.siteOf(order.siteId);
+                        if (!site || !atSite(actor, site)) {
+                            return;
+                        }
+                        const bag = inventory.of(actor.id);
+                        const remaining = order.units - order.staged;
+                        const held = bag[order.item] ?? 0;
+                        const take = Math.min(remaining, held);
+                        if (take <= 0) {
+                            return;
+                        }
+                        order.staged = order.staged + take;
+                        inventoryRemove(bag, order.item, take);
+                        return;
+                    }
+                    case 'maintain': {
+                        // R4 — one world-minute stage of an order's work.
+                        // The COMMIT lands when the order is fully staged
+                        // AND fully worked: a repair resets the section's
+                        // wear clock (the mended section stands sound — the
+                        // consumed material bought its health back), an
+                        // upgrade raises the tier AND resets the wear.
+                        const orderId = task.payload?.orderId;
+                        if (typeof orderId !== 'string') {
+                            return;
+                        }
+                        const order = orders.find((candidate) => candidate.id === orderId);
+                        if (!order || order.state !== 'open') {
+                            return;
+                        }
+                        const site = sites.siteOf(order.siteId);
+                        if (!site || !atSite(actor, site)) {
+                            return;
+                        }
+                        order.workDone = order.workDone + 1;
+                        if (order.workDone < order.work || order.staged < order.units) {
+                            return;
+                        }
+                        const record = structureRecords.get(order.siteId);
+                        const section = record?.sections.find(
+                            (candidate) => candidate.id === order.sectionId,
+                        );
+                        if (!record || !section) {
+                            // The structure left under the order (removed /
+                            // launched) — the order closes unspent
+                            order.state = 'done';
+                            return;
+                        }
+                        if (order.kind === 'upgrade') {
+                            const next = UPGRADE_LADDER[section.tier];
+                            if (next) {
+                                section.tier = next;
+                            }
+                        }
+                        section.wornMinutes = 0;
+                        order.state = 'done';
+                        active.events.emit({
+                            kind: 'maintain',
+                            message:
+                                order.kind === 'repair'
+                                    ? `The crew repairs the ${record.blueprintId} (${section.id}) with ${order.units} ${order.item}.`
+                                    : `The crew upgrades the ${record.blueprintId} (${section.id}) to ${section.tier}.`,
+                        });
+                        return;
+                    }
                     default:
                         // Other kinds belong to their own plugins
                         return;
@@ -1760,13 +2695,22 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
             completed.length = 0;
             projectIndex = 0;
             vesselCounter = 0;
+            // R3/R4 — the structure ledger and the orders go with it (the
+            // wear clock and the order counter restart with the next world)
+            structureRecords.clear();
+            orders.length = 0;
+            orderCounter = 0;
             world = null;
         },
 
         tick: () => {
             // The plan cursor (place the next project / advance past a
-            // finished one), then the sheltered-sleep bonus sweep
+            // finished one), then the structure sweep (R3/R4: section
+            // anatomy for freshly built sites, the quarry's bedrock cut,
+            // the wear clock, the auto-repair trigger), then the
+            // sheltered-sleep bonus sweep
             placeOrAdvance();
+            syncStructures();
             shelterRest();
         },
     };

@@ -145,8 +145,9 @@ export type IslandOptions = {
         lumber?: boolean;
         /**
          * The construction governance — the build/craft rungs over the
-         * shared @godspace blueprint/site/crafting registries (the shelter,
-         * house, fort, raft and boat projects). Needs tasks + behavior +
+         * shared @godspace blueprint/site/crafting registries (the seven
+         * PLAN_ORDER projects: shelter, raft, house, boat, quarry, furnace,
+         * fort). Needs tasks + behavior +
          * inventory + needs (its tasks ride the move/collect effects; the
          * staging reads the bags and the shelter bonus reads needs).
          * Default on.
@@ -220,8 +221,9 @@ export type IslandHandle = {
      * @godspace/blueprint blueprint + site registries and the island's
      * crafting recipes over @godspace/material (plugins/construction/
      * constructionPlugin.ts). Exposes the registries, the active project,
-     * the completed blueprint list, the moored vessels and the launch
-     * control for the god-view and the tests.
+     * the completed blueprint list, the moored vessels, the launch control
+     * and the R3/R4 maintenance surface (sectionsOf / orderRepair /
+     * orderUpgrade / orders) for the god-view and the tests.
      */
     construction: ConstructionPlugin;
     /**

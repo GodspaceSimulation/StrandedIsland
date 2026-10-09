@@ -81,6 +81,7 @@ import {
 } from '../plugins/inventory/items';
 import { tileSurfaceKey, type SurfaceKeyCount } from '../plugins/terrain/islandTerrain';
 import type { SiteCell, SiteState } from '@godspace/blueprint';
+import type { SectionView } from '../plugins/construction/constructionPlugin';
 
 // ── Voxel stack ──────────────────────────────────────────────────────────────
 
@@ -410,6 +411,13 @@ export type TileStructure = {
     workTotal: number;
     /** The staging ledger per requirement line (requirement order). */
     staged: Array<{ item: string; have: number; need: number }>;
+    /**
+     * R3/R4 — the material anatomy of a BUILT structure: its tier sections
+     * with LIVE health (the wear clock applied), in definition order.
+     * Undefined until the site completes (an unbuilt site has no sections
+     * to inspect — the staging ledger above is its anatomy meanwhile).
+     */
+    sections?: SectionView[];
 };
 
 /**
@@ -504,22 +512,41 @@ export const tileStructures = (island: IslandHandle, path: TilePath): TileStruct
                 have: site.delivered[line.item] ?? 0,
                 need: line.count,
             })),
+            // R3/R4 — a BUILT structure's material anatomy (tiers + live
+            // health, the construction plugin's section records); undefined
+            // while the site is still staged/building
+            sections: site.state === 'built' ? island.construction.sectionsOf(site.id) : undefined,
         });
     });
     return structures;
 };
 
-/** Human readable structure line: "Shelter · building · wood 2/2 · work 3/10". */
+/**
+ * Human readable structure line: "Shelter · building · wood 2/2 · work 3/10".
+ * A BUILT structure reads its material ANATOMY instead of the spent staging
+ * ledger: "Shelter · built · sections wood 100/100 + thatch 60/60 · work
+ * 240/240" (R3/R4 — tier + live health per section).
+ */
 export const structureLine = (structure: TileStructure): string => {
     const parts = [structure.label, structure.state];
     if (structure.gate) {
         parts.push('gate');
     }
-    const staging = structure.staged
-        .map((line) => `${line.item} ${line.have}/${line.need}`)
-        .join(' · ');
-    if (staging.length > 0) {
-        parts.push(staging);
+    if (structure.sections && structure.sections.length > 0) {
+        // The sections carry the built structure's state — the staging
+        // ledger below is history once the walls stand
+        parts.push(
+            `sections ${structure.sections
+                .map((section) => `${section.tier} ${section.health}/${section.maxHealth}`)
+                .join(' + ')}`,
+        );
+    } else {
+        const staging = structure.staged
+            .map((line) => `${line.item} ${line.have}/${line.need}`)
+            .join(' · ');
+        if (staging.length > 0) {
+            parts.push(staging);
+        }
     }
     parts.push(`work ${structure.workDone}/${structure.workTotal}`);
     return parts.join(' · ');

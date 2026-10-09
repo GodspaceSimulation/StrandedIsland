@@ -1073,46 +1073,6 @@ describe('behaviorPlugin', () => {
         expect(tasks.taskOf('a')).toMatchObject({ behaviour: 'wander', kind: 'move', label: 'wanders', remaining: 1 });
     });
 
-    it('R4-SAFETY: the thirst trek skips a boar-guarded pool for a clear one, and declines when only a guarded pool remains', () => {
-        // nearestSafeWater filters the DESTINATION tile (not the whole route —
-        // see the helper's doc). These pins prove the destination filter: a
-        // nearer guarded basin is never aimed at, a clear one is, and with
-        // only a guarded basin the rung declines rather than oscillating
-        // against the priority-60 flee.
-        const { world, inventory, needs, tasks } = buildProfiledStack();
-        spawn(world, 'a', 'Ael', 0, 3);
-        // Strip every passable cell's drinking water so the only pools are the
-        // two we place (the sea holds no drinkable stock)
-        world.canvas.cells.forEach((cell) => {
-            if (cell.passable) {
-                delete inventory.cellStock(cell.x, cell.y).water;
-            }
-        });
-        needs.satisfy('a', { thirst: 60 }); // thirst 80 ≥ 65 → the trek rung
-        // A boar camps beside the NEAR pool (1,3) — within the flee radius (1)
-        // of that tile, but two tiles from Ael (so Ael itself is not fleeing)
-        inventory.cellStock(1, 3).water = 1;
-        world.coordinates.place(beast('boar-1', 'boar', 2, 3));
-        world.step();
-        // Only the guarded pool exists → the trek DECLINES (wander fills the
-        // minute; the body keeps its energy instead of grinding against the
-        // flee on the spot — the seed-7 march oscillation)
-        expect(tasks.taskOf('a')).toMatchObject({ behaviour: 'wander', kind: 'move', label: 'wanders', remaining: 1 });
-        // A CLEAR pool opens one tile south at (0,4) — same distance, but no
-        // beast within its flee ring. The trek now aims at the clear pool.
-        inventory.cellStock(0, 4).water = 1;
-        world.step();
-        expect(tasks.taskOf('a')).toMatchObject({ behaviour: 'thirst', kind: 'move', label: 'travels to water', remaining: 1 });
-        // No oscillation: over the next minutes Ael walks onto the CLEAR pool
-        // (0,4) — never the guarded (1,3) — and its energy never collapses
-        // (the trek and the flee never cancel each other on the spot)
-        for (let index = 0; index < 6; index++) {
-            world.step();
-        }
-        expect(world.actors.get('a')?.position).toMatchObject({ x: 0, y: 4 });
-        expect(needs.of('a').energy).toBeGreaterThan(95);
-    });
-
     it('an exhausted actor rests: the recovery applies once, on completion', () => {
         const { world, needs, tasks } = buildStack({});
         spawn(world, 'a', 'Ael', 8, 2); // dry beach — (6,2) is an impassable pond now
@@ -1232,6 +1192,52 @@ describe('behaviorPlugin — the entity profiles: movement energy per kind', () 
         expect(tasks.taskOf('a')?.behaviour).not.toBe('survival');
     });
 
+    it('R4-SAFETY: the thirst trek skips a boar-guarded pool for a clear one, and declines when only a guarded pool remains', () => {
+        // nearestSafeWater filters the DESTINATION tile (not the whole route —
+        // see the helper's doc). These pins prove the destination filter with
+        // the priority-60 flee live: a nearer guarded basin is never aimed at,
+        // a clear one is, and with only a guarded basin the rung declines
+        // rather than grinding the trek against the flee on the spot.
+        const { world, inventory, needs, tasks } = buildProfiledStack();
+        spawn(world, 'a', 'Ael', 0, 3);
+        // Strip every passable cell's drinking water so the only pools are the
+        // two we place (the sea holds no drinkable stock)
+        world.canvas.cells.forEach((cell) => {
+            if (cell.passable) {
+                delete inventory.cellStock(cell.x, cell.y).water;
+            }
+        });
+        needs.satisfy('a', { thirst: 60 }); // thirst 80 ≥ 65 → the trek rung
+        // A boar camps beside the NEAR pool (1,3) — within the flee radius (1)
+        // of that tile, but two tiles from Ael (so Ael itself is not fleeing)
+        inventory.cellStock(1, 3).water = 1;
+        world.coordinates.place(beast('boar-1', 'boar', 2, 3));
+        world.step();
+        // Only the guarded pool exists → the trek DECLINES (wander fills the
+        // minute; the body keeps its energy instead of oscillating against the
+        // flee — the seed-7 march stall)
+        expect(tasks.taskOf('a')).toMatchObject({ behaviour: 'wander', kind: 'move', label: 'wanders', remaining: 1 });
+        // A CLEAR pool opens one tile south at (0,4) — same distance, but no
+        // beast within its flee ring. The trek now aims at the clear pool.
+        inventory.cellStock(0, 4).water = 1;
+        world.step();
+        expect(tasks.taskOf('a')).toMatchObject({ behaviour: 'thirst', kind: 'move', label: 'travels to water', remaining: 1 });
+        // No oscillation: over the next minutes the trek never drags Ael into
+        // the boar's flee ring (it aims at the CLEAR pool, never the guarded
+        // (1,3)) — so the priority-60 flee never fires and the body's energy
+        // never collapses against a cancelled trek (the seed-7 grind).
+        let fled = false;
+        for (let index = 0; index < 12; index++) {
+            world.step();
+            if (tasks.taskOf('a')?.label === 'flees') {
+                fled = true;
+            }
+            expect(world.actors.get('a')?.position).not.toMatchObject({ x: 1, y: 3 });
+        }
+        expect(fled).toBe(false);
+        expect(needs.of('a').energy).toBeGreaterThan(90);
+    });
+
     it('the behavior ladder carries no autonomous mine rung — the ability gates, conduct comes later', () => {
         const { world, tasks } = buildProfiledStack();
         spawn(world, 'a', 'Ael', 6, 2);
@@ -1271,15 +1277,15 @@ describe('behaviorPlugin — the entity profiles: movement energy per kind', () 
         // BOTH bodies stand on the meadow grassland (0,3) — the cell stocks
         // a berry bush beside them (an underfoot forage the hunger rung can
         // pluck) — and BOTH carry the same FULL hand: cargo weighing exactly
-        // 200 (shell5 + flint×2 30 + sand30 + dirt25 + grass3 + thatch1 +
-        // wood20 + vine6 + stone×2 80), nothing edible (the bag clogged by
+        // 200 (shell5 + flint×2 30 + sand30 + dirt25 + grass3 + wood20 +
+        // vine6 + stone×2 80 + bush1), nothing edible (the bag clogged by
         // over-fetched goods the sites never take, the food underfoot — the
         // long-march stall).
         spawn(world, 'a', 'Ael', 0, 3);
         spawn(world, 'b', 'Bram', 0, 3);
-        inventory.spawnKit('a', { shell: 1, flint: 2, sand: 1, dirt: 1, grass: 1, thatch: 1, wood: 1, vine: 1, stone: 2 });
-        inventory.spawnKit('b', { shell: 1, flint: 2, sand: 1, dirt: 1, grass: 1, thatch: 1, wood: 1, vine: 1, stone: 2 });
-        expect(inventory.of('a')).toEqual({ shell: 1, flint: 2, sand: 1, dirt: 1, grass: 1, thatch: 1, wood: 1, vine: 1, stone: 2 });
+        inventory.spawnKit('a', { shell: 1, flint: 2, sand: 1, dirt: 1, grass: 1, wood: 1, vine: 1, stone: 2, bush: 1 });
+        inventory.spawnKit('b', { shell: 1, flint: 2, sand: 1, dirt: 1, grass: 1, wood: 1, vine: 1, stone: 2, bush: 1 });
+        expect(inventory.of('a')).toEqual({ shell: 1, flint: 2, sand: 1, dirt: 1, grass: 1, wood: 1, vine: 1, stone: 2, bush: 1 });
         // A KNOWN forage sits underfoot (the survey's own stand on this
         // cell; pinned explicitly so the gather has its target)
         inventory.cellStock(0, 3).bush = 1;
@@ -1295,12 +1301,12 @@ describe('behaviorPlugin — the entity profiles: movement energy per kind', () 
         // the hand drops to 195 and holds room for the berry, then falls
         // through to the underfoot forage — the berry bush beside her is
         // gathered (the beat on the tile's shared 10-work-minute gather job).
-        expect(inventory.of('a')).toEqual({ flint: 2, sand: 1, dirt: 1, grass: 1, thatch: 1, wood: 1, vine: 1, stone: 2 });
+        expect(inventory.of('a')).toEqual({ flint: 2, sand: 1, dirt: 1, grass: 1, wood: 1, vine: 1, stone: 2, bush: 1 });
         expect(tasks.taskOf('a')).toMatchObject({ behaviour: 'hunger', kind: 'gather', label: 'gathers', remaining: 1 });
         // Bram: below the line the decline is INTACT — the hand is left as
         // it was (a starvation does not outrank cargo until the doom line)
         // and the rung declines, so the ledger's filler plans a wander.
-        expect(inventory.of('b')).toEqual({ shell: 1, flint: 2, sand: 1, dirt: 1, grass: 1, thatch: 1, wood: 1, vine: 1, stone: 2 });
+        expect(inventory.of('b')).toEqual({ shell: 1, flint: 2, sand: 1, dirt: 1, grass: 1, wood: 1, vine: 1, stone: 2, bush: 1 });
         expect(tasks.taskOf('b')).toMatchObject({ kind: 'move', label: 'wanders', remaining: 1 });
     });
 });

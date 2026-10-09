@@ -1364,15 +1364,17 @@ describe('App — the standing-job progress bars (R6)', () => {
             island.world.step();
             bumpRevision();
         });
-        // Minute 1 also STAGES the shelter on (0,0) — the site's 240-unit
-        // build work reads as a second standing bar beside the chop
-        // -- the ascii board: the same DOM track as the unicode view --
+        // Minute 1 also STAGES the shelter on its R1-scored tile — the
+        // site's 240-unit build work reads as a second standing bar beside
+        // the chop (the tile is READ from the site record: the scored
+        // placement is a campaign result, not a pinned coordinate)
         fireEvent.click(screen.getByTestId('canvas-tab-ascii'));
+        const shelterTile = island.construction.sites.sites().find((site) => site.blueprintId === 'shelter')?.parent[0] ?? { x: 0, y: 0 };
         const asciiChop = screen.getByTestId('work-bar--2-5-chop');
         expect(asciiChop.getAttribute('role')).toBe('progressbar');
         expect(asciiChop.getAttribute('aria-valuenow')).toBe('0');
         expect(asciiChop.getAttribute('aria-valuemax')).toBe('15');
-        const asciiSite = screen.getByTestId('work-bar-0-0-shelter');
+        const asciiSite = screen.getByTestId(`work-bar-${shelterTile.x}-${shelterTile.y}-shelter`);
         expect(asciiSite.getAttribute('aria-valuenow')).toBe('0');
         expect(asciiSite.getAttribute('aria-valuemax')).toBe('240');
         expect(asciiSite.getAttribute('aria-label')).toBe('shelter 0/240');
@@ -1383,7 +1385,7 @@ describe('App — the standing-job progress bars (R6)', () => {
         expect(svgChop.querySelector('title')?.textContent).toBe('chop 0/15');
         // Zero work — a zero-width strip (the bar never lies)
         expect(svgChop.getAttribute('width')).toBe('0');
-        const svgSite = screen.getByTestId('work-bar-svg-0-0-shelter');
+        const svgSite = screen.getByTestId(`work-bar-svg-${shelterTile.x}-${shelterTile.y}-shelter`);
         expect(svgSite.querySelector('title')?.textContent).toBe('shelter 0/240');
         // Minute 2: the chop beat banks a work-minute — the strip grows to
         // exactly 1/15 of the 22-unit inner tile width (the 26px frame)

@@ -65,13 +65,14 @@ src/
 │   │                 top of the ladder; a threat pre-empts every queue)
 │   ├── lumber/       The tree-felling rung (priority 10): fells trees into
 │   │                 wood (the chop → bag harvest)
-│   ├── construction/ The build/craft governance (priorities 21–24): the
+│   ├── construction/ The build/craft governance (priorities 15–24): the
 │   │                 stock blueprints and the construction sites over
 │   │                 @godspace/blueprint, the island recipes over
 │   │                 @godspace/material, the rungs (deliver / craft /
-│   │                 materials / build) composed from the core task
-│   │                 scheduler's behaviour factories; the sheltered sleep
-│   │                 bonus and the vessel launch
+│   │                 tool / materials / build / maintain) composed from
+│   │                 the core task scheduler's behaviour factories, the
+│   │                 section/wear/upgrade model (structureModel.ts), the
+│   │                 sheltered sleep bonus and the vessel launch
 │   └── sharks/       Sharks — water creatures swimming in past the edge;
 │                     swimming burns the swim row, a spent shark rests
 ├── scenario/      createIslandWorld() — assembles plugins into a ready world
@@ -295,7 +296,12 @@ reset would age recruited trees backwards.
   (`TRAVEL_MINUTES_PER_TILE`, scenario/island.ts): the simulation runs at
   Scale 0, the LOWEST level of the view ladder — the tile interiors, where
   the entities move around (one subtile cell per completed move task,
-  `world.relocateFine` flowing across tile boundaries).
+  `world.relocateFine` flowing across tile boundaries). Off the target
+  tile, the fine step books a TILE-HOP first (`plugins/movement/
+  fineMovement.ts tilePathHop` — a 4-neighbour BFS over passable tiles
+  returning the first route hop): greedy fine aiming ping-ponged against
+  concave coastlines (the peninsula livelock — a hauler frozen at a
+  shore corner while the sea blocked the direct line).
 - **The view ladder** — counts UP from the lowest level (@godspace/core
   src/scale): scale 0 the tile interior (the simulation ground), scale 1 the
   island — THE DEFAULT VIEW, which shows where the Scale-0 entities stand.
@@ -344,11 +350,14 @@ the island's BUILD and CRAFT governance, planned through the shared
   `buildTaskBehaviour`) with island gates layered on top.
 
 **The plan** — one stock structure at a time, cooperative and
-deterministic: `shelter → raft → house → boat → fort`. The tick places the
-current project on the island interior (land cells ranked by centrality;
-vessels require a beach tile WITH a SEA-water neighbour — the launch
-mooring; a lake beach never hosts a hull)
-when nothing is live, and advances when the project's site stands built.
+deterministic (R1): `shelter → raft → house → boat → quarry → furnace →
+fort` (`PLAN_ORDER`). The tick places the current project when nothing is
+live, ranked by PRIORITY-AWARE placement: land cells scored by centrality
+with beach/wood adjacency bonuses, and vessels require a beach tile WITH a
+SEA-water neighbour — the launch mooring; a lake beach never hosts a hull.
+The quarry and furnace come BEFORE the fort: the furnace fires the bricks
+the fort's upgrades need, and the axe/hammer tool chain the early projects
+owe (the tool rung, priority 23) keeps the crew equipped.
 
 **The rungs** (the ledger's planning order — needs always win):
 
@@ -357,10 +366,11 @@ when nothing is live, and advances when the project's site stands built.
 | flee | 60 | the survival plugin (unchanged) |
 | thirst / hunger / roost / sleep / rest | 50…25 | the survival needs (unchanged) |
 | deliver | 24 | the bag holds a material the site lacks → haul it to the footprint and stage it |
-| craft | 23 | the bag holds a recipe's inputs → the atomic craft (per recipe) |
-| materials | 22 | a fetch the site still lacks AND no single bag can already use → take it underfoot, fell a tree for wood, or travel to the nearest stocked cell |
+| craft / tool | 23 | the bag holds a recipe's inputs → the atomic craft (per recipe); the tool rung re-arms the crew's axe/hammer when they wear out |
+| fetch-* / materials | 22 | a fetch the site still lacks AND no single bag can already use → take it underfoot, fell a tree for wood, or travel to the nearest stocked cell |
 | build | 21 | the site is fully staged → one world-minute work stage per task |
 | social / lumber / wander | 20 / 10 / 0 | unchanged — construction outranks them |
+| maintain | 15 | the R4 upkeep rungs: stage an open repair/upgrade order's material onto the built structure's footprint, then work its minutes |
 
 **Demand direction** — the fetch gate measures the CREW's strongest single
 bag against the site's remaining demand, so the crew gathers exactly what
@@ -369,6 +379,47 @@ needing (a crew-total read would deadlock: rope needs two vines in ONE bag,
 and 1+1 split across two bags satisfies a total while nothing can be
 crafted). Deliveries are PROGRESSIVE: the house's twelve staging units ride
 several eight-unit trips.
+
+**Literal totals (R2)** — every island blueprint stages material units
+that map 1:1 to its work minutes (`ISLAND_BLUEPRINT_WORK` /
+`ISLAND_BLUEPRINT_REQUIRES`): shelter wood 120 + thatch 120 / work 240;
+raft wood 320 + rope 160 / 480; house wood 1440 + plank 1440 + thatch
+1440 / 4320; boat plank 720 + rope 480 + cloth 240 / 1440; quarry wood
+240 + sand 240 / 480; furnace stone 120 + sand 120 / 240; fort stone
+1920 + wood 960 / 2880. The totals are the CONTRACT — the tests pin the
+exact end state, and the drive settles the pacing.
+
+**Sections and upgrades (R3)** — a BUILT structure stands as material-
+defined sections (`plugins/construction/structureModel.ts`
+`BLUEPRINT_SECTIONS`): a shelter is a wood frame under a thatch roof, the
+fort is four stone walls, the furnace is stone-built. Each tier carries
+its own full health — thatch 60, wood 100, stone 200, brick 300 — and the
+upgrade ladder walks wood → stone (stone 10 + 100 work) → brick (brick
+10 + 100 work). The brick rung only FIRES beside a BUILT furnace: the god
+may order the rung at any time, but bricks are kiln-fired (sand 2 +
+stone 1 → brick) and without the kiln the crew cannot make one — the raw
+inputs stay unspent and the order waits (while never starving a serviceable
+repair queued behind it: the maintain rung walks its open orders and
+serves the first one that can actually be worked).
+
+**The quarry cut (R3)** — a built quarry opens its highland tile's gravel
+bedrock ONCE: 2400 stone land on the anchor tile's deposit record AND its
+gatherable stock at the cut (the stock is what `takeFromCell` and
+`cellsWithItem` read — the survey seeds it from the deposit only at
+survey time, so a deposit-only cut would be unmineable). From then on the
+two layers draw down in step, and a resurvey rebuilds the stock from the
+deposit — the yield is counted once, never minted twice.
+
+**Wear and repair (R4)** — every section banks wear: one health point per
+100 world minutes (`WEAR_MINUTES_PER_HEALTH`, exact integer math). The
+crew opens a repair order on its own once a section wears to half its
+full health (`REPAIR_TRIGGER` 0.5); a repair mends with the section's own
+material — one unit per 10 missing health, 5 work-minutes per unit
+(`repairPrice`). The god can order a repair or an upgrade at any time
+(`construction.orderRepair` / `construction.orderUpgrade`), and the
+maintain rung (15) works them: stage the material onto the footprint,
+then spend the minutes. `construction.sectionsOf(siteId)` reads the
+anatomy; worn sections render in the Tile Inspector.
 
 **The gate (doorway) and the walls** — a site's walkable cell is the
 resolved FIRST definition cell (every stock blueprint's `cells[0]`).
@@ -389,15 +440,16 @@ construction tick sweep). The sheltered night is the safe night.
 `construction.launch(siteId)` requires a SEA-water neighbour beside the
 shore tile (ocean/shallows — the fresh basins are impassable AND landlocked,
 so only the salt carries a vessel), frees the site (no refund — the materials sail with
-the hull), records the moored vessel (`construction.vessels()`, ids
-`v-1`, …) and logs the launch. The map resources replenish for the
+the hull), records the moored vessel at the FIRST sea neighbour in scan
+order west → east → north → south (`construction.vessels()`, ids `v-1`,
+…) and logs the launch at the mooring tile. The map resources replenish for the
 campaign: vines re-hang on an 80-minute rhythm and palm fronds shed
 beneath the standing trees every 60 minutes (offset 45 — the fronds the
 thatch/cloth chains weave).
 
 **Inspection and render** — the Tile Inspector lists a Structures section
 at every zoom level (`features/tileDetails.ts tileStructures`,
-"Shelter · built · gate · wood 2/2 · thatch 2/2 · work 10/10"); the
+"Shelter · built · sections wood 100/100 + thatch 60/60 · work 240/240"); the
 interior (scale-0) views draw every footprint cell as a structure entry
 (the unicode tab the blueprint emoji — 🏕️ 🏠 🏰 🛶 ⛵ — through the
 `STRUCTURE_TYPE_GLYPHS` palette, the ascii twin the blueprint initial);

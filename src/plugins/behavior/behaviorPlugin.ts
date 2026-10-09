@@ -150,7 +150,7 @@ import {
     type PluginContext,
     type WorldPlugin,
 } from '@godspace/core';
-import { itemDef, inventoryWeight, MINED_ITEMS } from '../inventory/items';
+import { ITEM_WEIGHTS, itemDef, inventoryWeight, MINED_ITEMS } from '../inventory/items';
 import { beatGatherJob, openGatherJob } from '../tasks/gatherWork';
 import {
     chebyshev,
@@ -646,12 +646,22 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                     //    abandon ONE expendable unit (abandonOneUnit) and
                     //    FALL THROUGH to the collect / trek below — the
                     //    pool underfoot is reachable again.
-                    if (inventoryWeight(bag) >= inventory.capacityOf(actor.id)) {
+                    // THE WATER-FIT GATE - the old `weight >= capacity` test
+                    // missed the NEAR-FULL hand a heavy unit still cannot
+                    // enter: wood weighs 20, so a bag at 193/200 reads "not
+                    // full" yet water (15) can never be taken - the collect
+                    // beat banks, the claim payout refuses, and the body
+                    // stalls re-planning (the seed-7 thirst death at
+                    // (-6,-1), minute 497, once R2's literal totals filled
+                    // the crew's bags with timber). The gate now asks the
+                    // real question: can this bag hold ONE unit of water?
+                    const waterWeight = ITEM_WEIGHTS.water ?? 1;
+                    if (inventoryWeight(bag) + waterWeight > inventory.capacityOf(actor.id)) {
                         const desperate = needs.of(actor.id).thirst >= DESPERATION_LINE;
                         if (
                             !desperate ||
                             abandonOneUnit(actor) === null ||
-                            inventoryWeight(bag) >= inventory.capacityOf(actor.id)
+                            inventoryWeight(bag) + waterWeight > inventory.capacityOf(actor.id)
                         ) {
                             return undefined;
                         }

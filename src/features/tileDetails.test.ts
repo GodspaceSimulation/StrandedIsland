@@ -920,10 +920,13 @@ describe('tileProgress / progressLine — the standing jobs (R6)', () => {
 
     it('lists the live site build work beside the tile jobs, and drops built sites', () => {
         const march = createIslandWorld({ seed: 7 });
-        // Minute 1: the shelter site stands on the centrality-first tile
-        // (0,0) — staged, its ISLAND work cost (240) charged at placement
+        // Minute 1: the shelter site stands on its R1-scored tile — the
+        // placement is a campaign result, so the inspected tile is READ
+        // from the site record (never pinned to a placement minute)
         march.world.step();
-        expect(tileProgress(march, [{ x: 0, y: 0 }])).toEqual([{ label: 'shelter', done: 0, total: 240 }]);
+        const placed = march.construction.sites.sites().find((site) => site.blueprintId === 'shelter');
+        const tile = placed?.parent[0] ?? { x: 0, y: 0 };
+        expect(tileProgress(march, [{ x: tile.x, y: tile.y }])).toEqual([{ label: 'shelter', done: 0, total: 240 }]);
         expect(progressLine({ label: 'shelter', done: 120, total: 240 })).toBe('shelter 120/240');
         // A tile with neither a job nor a site reads empty
         expect(tileProgress(march, [{ x: -11, y: 0 }])).toEqual([]);
@@ -947,7 +950,11 @@ describe('tileProgress / progressLine — the standing jobs (R6)', () => {
         // cell it covers. The Tile Inspector (tileJobs default true) still
         // reads the root ledger at every zoom.
         const march = createIslandWorld({ seed: 7 });
-        march.world.step(); // minute 1: chop opens on (-2,5), the shelter stands on (0,0)
+        march.world.step(); // minute 1: chop opens on (-2,5), the shelter stands on its scored tile
+        // The shelter's R1-scored placement tile (read from the site record,
+        // not pinned — the scored placement can shift with the campaign)
+        const shelter = march.construction.sites.sites().find((site) => site.blueprintId === 'shelter');
+        const tile = shelter?.parent[0] ?? { x: 0, y: 0 };
         // A fine cell under the chop-bearing tile (-2,5): the interior BOARD
         // read (tileJobs:false) shows NOTHING — the root chop is never
         // stamped onto the subtile...
@@ -957,13 +964,12 @@ describe('tileProgress / progressLine — the standing jobs (R6)', () => {
         expect(tileProgress(march, [{ x: -2, y: 5 }, { x: 0, y: 0 }])).toEqual([{ label: 'chop', done: 0, total: 15 }]);
         // The shelter's exact footprint fine cell resolves the SITE even with
         // the ledger half suppressed.
-        const shelter = march.construction.sites.sites().find((site) => site.blueprintId === 'shelter');
         const fine = march.construction.sites.cellsOf(shelter?.id ?? '')[0];
-        expect(tileProgress(march, [{ x: 0, y: 0 }, { x: fine.x, y: fine.y }], { tileJobs: false })).toEqual([
+        expect(tileProgress(march, [{ x: tile.x, y: tile.y }, { x: fine.x, y: fine.y }], { tileJobs: false })).toEqual([
             { label: 'shelter', done: 0, total: 240 },
         ]);
         // A fine cell on the SAME tile the shelter does NOT cover reads empty
         // (no site, and the board read carries no ledger either).
-        expect(tileProgress(march, [{ x: 0, y: 0 }, { x: fine.x + 1, y: fine.y + 1 }], { tileJobs: false })).toEqual([]);
+        expect(tileProgress(march, [{ x: tile.x, y: tile.y }, { x: fine.x + 1, y: fine.y + 1 }], { tileJobs: false })).toEqual([]);
     });
 });

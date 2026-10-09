@@ -203,10 +203,90 @@ export const strictFineStep = (
 };
 
 /**
+ * THE TILE HOP (the peninsula livelock fix) — the NEXT tile on a
+ * breadth-first walk over the PASSABLE tile grid from the mover's tile to
+ * the target tile. The greedy walkers step toward the TARGET TILE, and a
+ * tile ringed by water on the target side (the seed-7 hauler frozen at
+ * (-3,-3) facing the shelter at (-4,-1): the west and north neighbours are
+ * sea, the walker ping-pongs one fine row forever) has no direct step —
+ * the fallback mills, never COMMITS around the bay. The hop re-points the
+ * greedy ladder at the first tile of a real route, so the body walks the
+ * route instead of the straight line. Null when already on the target
+ * tile, when the target tile is unreachable (water-locked or impassable —
+ * the caller keeps its old greedy behaviour), or off-canvas.
+ *
+ * 4-neighbour hops only: a diagonal tile crossing wraps two boundaries and
+ * fineStep validates only the corner cell, so the route stays orthogonal
+ * (a hair longer, never corner-cutting through wet).
+ */
+export const tilePathHop = (
+    world: World,
+    from: { x: number; y: number },
+    to: { x: number; y: number },
+): { x: number; y: number } | null => {
+    if (from.x === to.x && from.y === to.y) {
+        return null;
+    }
+    const key = (x: number, y: number): string => `${x},${y}`;
+    // BFS with a came-from trail over the passable tile grid (the island
+    // canvas is small — a full sweep is cheap, no bound needed)
+    const cameFrom = new Map<string, string>();
+    const queue: Array<{ x: number; y: number }> = [from];
+    cameFrom.set(key(from.x, from.y), '');
+    let head = 0;
+    let found = false;
+    while (head < queue.length) {
+        const current = queue[head];
+        head = head + 1;
+        if (current.x === to.x && current.y === to.y) {
+            found = true;
+            break;
+        }
+        for (const [ox, oy] of [
+            [1, 0],
+            [-1, 0],
+            [0, 1],
+            [0, -1],
+        ]) {
+            const nx = current.x + ox;
+            const ny = current.y + oy;
+            if (cameFrom.has(key(nx, ny))) {
+                continue;
+            }
+            const cell = world.cellAt(nx, ny);
+            if (!cell || !cell.passable) {
+                continue;
+            }
+            cameFrom.set(key(nx, ny), key(current.x, current.y));
+            queue.push({ x: nx, y: ny });
+        }
+    }
+    if (!found) {
+        return null;
+    }
+    // Walk the trail BACK from the target until the node whose parent is
+    // the start — that node is the first hop of the route
+    let cursor = key(to.x, to.y);
+    let hop = to;
+    const startKey = key(from.x, from.y);
+    while (cameFrom.get(cursor) !== undefined && cameFrom.get(cursor) !== startKey) {
+        const [px, py] = (cameFrom.get(cursor) as string).split(',').map(Number);
+        cursor = key(px, py);
+        hop = { x: px, y: py };
+    }
+    return hop;
+};
+
+/**
  * One greedy fine step from the actor toward the target TILE (tx, ty):
  * preferred steps dx→0 then dy→0, diagonal fallback, then any valid fine
  * direction — chosen deterministically against the CURRENT occupancy.
  * Null when the actor cannot fine-step at all.
+ *
+ * HOP-BOOKED: when the mover's tile differs from the target tile, the
+ * greedy ladder aims at tilePathHop's first route tile instead of the
+ * straight-line target (the peninsula fix above); on the target tile the
+ * direct greedy stands (the fine milling to the exact spot is local).
  */
 export const greedyFineStep = (
     world: World,
@@ -214,8 +294,11 @@ export const greedyFineStep = (
     tx: number,
     ty: number,
 ): [number, number] | null => {
-    const dx = Math.sign(tx - mover.position.x);
-    const dy = Math.sign(ty - mover.position.y);
+    const hop = tilePathHop(world, mover.position, { x: tx, y: ty });
+    const aimX = hop ? hop.x : tx;
+    const aimY = hop ? hop.y : ty;
+    const dx = Math.sign(aimX - mover.position.x);
+    const dy = Math.sign(aimY - mover.position.y);
 
     // Preferred step directions, most direct first
     const preferred: Array<[number, number]> = [];
@@ -311,10 +394,23 @@ export const fineTargetStep = (
     if (!sub) {
         return null;
     }
-    const here = fineSpotAddress(mover.position.x, mover.position.y, sub.x, sub.y, world.canvas);
-    const there = fineSpotAddress(targetTile.x, targetTile.y, targetFine.x, targetFine.y, world.canvas);
-    const dx = Math.sign(there.x - here.x);
-    const dy = Math.sign(there.y - here.y);
+    // HOP-BOOKED like greedyFineStep: OFF the target tile the ladder aims
+    // at the first tile of the BFS route (the peninsula livelock fix - the
+    // straight-line fine aim walks the body into a water-locked edge and
+    // mills it there forever); once ON the target tile the exact fine spot
+    // is the aim (the local approach to the gate cell)
+    const hop = tilePathHop(world, mover.position, targetTile);
+    let dx: number;
+    let dy: number;
+    if (hop) {
+        dx = Math.sign(hop.x - mover.position.x);
+        dy = Math.sign(hop.y - mover.position.y);
+    } else {
+        const here = fineSpotAddress(mover.position.x, mover.position.y, sub.x, sub.y, world.canvas);
+        const there = fineSpotAddress(targetTile.x, targetTile.y, targetFine.x, targetFine.y, world.canvas);
+        dx = Math.sign(there.x - here.x);
+        dy = Math.sign(there.y - here.y);
+    }
 
     // Preferred steps, most direct first (the greedy walker's ladder)
     const preferred: Array<[number, number]> = [];
