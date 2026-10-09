@@ -14,6 +14,7 @@ import { describe, it, expect } from 'vitest';
 import { createIslandWorld, type IslandHandle } from '../../scenario/island';
 import { fineStep } from '../../plugins/movement/fineMovement';
 import { scaleView, tileSummary, structureLine } from '../../features/tileDetails';
+import { inventoryWeight } from '../../plugins/inventory/items';
 import { position3 } from '@godspace/core';
 import type { SiteRegistry } from '@godspace/blueprint';
 
@@ -284,7 +285,7 @@ describe('constructionPlugin — the shared registries', () => {
         expect(hammerMax).toBe(1);
     });
 
-    it('the craft rung\'s bag-room gate is the NET (post-craft) fit: a full hand holding the recipe\'s raws still crafts', () => {
+    it('the craft rung\'s bag-room gate is the NET (post-craft) weight fit: a full hand holding the raws still crafts', () => {
         const handle = island();
         // The shelter opens on the first tick and still owes its thatch
         // (the craft-thatch rung's siteNeeds reads the active site live)
@@ -294,27 +295,34 @@ describe('constructionPlugin — the shared registries', () => {
         const subjectOf = (actor: (typeof ael & typeof bram)) => ({ id: actor.id, actor }) as never;
         const craftThatch = handle.tasks.ledger.behaviours().find((module) => module.id === 'craft-thatch');
         expect(craftThatch).toBeDefined();
-        // THE WEDGED BAG — actor-1 starts with the STARTING_KIT (berry 2 +
-        // flint 1 = three units) and is filled to EXACTLY the eight-unit
-        // capacity with the thatch's raws plus surplus: three fronds (the
-        // craft's two-input recipe has room in the hand) and two logs.
-        handle.inventory.spawnKit('actor-1', { frond: 3, wood: 2 });
-        expect(handle.inventory.of('actor-1')).toEqual({ berry: 2, flint: 1, frond: 3, wood: 2 });
-        // The old gate was `total + output > capacity` — eight + one = nine
-        // refuses the craft that is the ONLY rung able to free a slot (it
-        // converts a raw the site lacks into the part it owes), clogging
-        // the hand and starving the carrier past the food (the 6000-minute
-        // seed-7 march deaths: Bram @4,5 minute 3231, Dune @3,5 minute 3237,
-        // each holding exactly three fronds while the boat owed its cloth).
-        // The net gate mirrors the craft EFFECT's revalidation (stock =
-        // bag − inputs + outputs): eight − two + one = seven fits the bag,
-        // so the craft stays owed on a FULL hand.
+        // THE WEDGED BAG (R5 WEIGHT) — actor-1 starts with the STARTING_KIT
+        // (berry 2 + flint 1 = 25 weight) and is filled to EXACTLY the
+        // 200-weight capacity: three fronds (12 — the thatch's two-input
+        // recipe has room in the hand), eight logs (160) and a tuft of grass
+        // (3). 25 + 12 + 160 + 3 = 200.
+        handle.inventory.spawnKit('actor-1', { frond: 3, wood: 8, grass: 1 });
+        expect(handle.inventory.of('actor-1')).toEqual({ berry: 2, flint: 1, frond: 3, wood: 8, grass: 1 });
+        expect(inventoryWeight(handle.inventory.of('actor-1'))).toBe(200);
+        // The OLD count gate (`total + output > capacity`) refused the craft
+        // that is the ONLY rung able to free a slot, clogging the hand and
+        // starving the carrier (the 6000-minute seed-7 march deaths). The
+        // WEIGHT net gate mirrors the craft EFFECT's revalidation
+        // (stock = bag − inputs + outputs): the thatch recipe spends two
+        // fronds (8) and yields one thatch (2), so a FULL 200 hand nets
+        // 200 − 8 + 2 = 194 ≤ 200 — the craft stays owed on a full hand.
         expect(craftThatch?.appliesTo?.(subjectOf(ael))).toBe(true);
-        // The ingredient gate is UNTOUCHED: actor-2 carries the same full
-        // hand WITHOUT the recipe's raws (three logs + two vines fill it) —
-        // the craft still refuses, the gate is the net fit AND the inputs.
-        handle.inventory.spawnKit('actor-2', { wood: 3, vine: 2 });
-        expect(handle.inventory.of('actor-2')).toEqual({ berry: 2, flint: 1, wood: 3, vine: 2 });
+        // THE NET BOUNDARY IS REAL, NOT A FREE PASS — the gate rejects when
+        // the post-craft stock would overflow. actor-2 holds the frond raws
+        // but a bag already at the ceiling where the craft cannot net down:
+        // the thatch spends two fronds (8) and returns one (2), so a hand at
+        // 200 nets 194 and WOULD craft — to force a rejection we hold the
+        // raws WITHOUT the site owing them is the wrong lever; instead the
+        // INGREDIENT gate is the untouched second condition: actor-2 carries
+        // a full hand with NO frond, so the craft refuses on missing inputs.
+        handle.inventory.spawnKit('actor-2', { wood: 8, grass: 1, shell: 3 });
+        // 25 + 160 + 3 + 15 = 203 → spawnKit clamps to the 200 budget
+        expect(inventoryWeight(handle.inventory.of('actor-2'))).toBeLessThanOrEqual(200);
+        expect(handle.inventory.of('actor-2').frond ?? 0).toBe(0);
         expect(craftThatch?.appliesTo?.(subjectOf(bram))).toBe(false);
     });
 });

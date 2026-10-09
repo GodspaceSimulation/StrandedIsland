@@ -951,11 +951,26 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
         },
 
         exchange: (giver, receiver, offer, request) => {
-            // THE CAPACITY GATE — the receiver's bag must hold the whole
-            // offer before anything moves (a full-handed trader takes
-            // nothing)
-            if (profiles && !canHold(receiver.id, offer)) {
-                return false;
+            // R5 — THE TWO-SIDED NET WEIGHT GATE. A trade moves `offer`
+            // giver→receiver and `request` receiver→giver, so BOTH bags
+            // change and BOTH must be checked (the old gate only guarded the
+            // receiver taking the offer — a giver whose bag overflows on the
+            // request slipped through). Each side is measured by its FINAL
+            // net weight: current − what it hands over + what it takes in.
+            // Netting the outgoing FIRST is deliberate — the naive `canHold`
+            // (current + incoming) would reject a capacity-NEUTRAL swap (the
+            // unit handed over frees exactly the room the unit received
+            // needs). `inventoryExchange` stays the atomic authority: if a
+            // side doesn't actually hold what it offers, it fails and nothing
+            // moves (the gate is a pre-check, never a partial commit).
+            if (profiles) {
+                const offerWeight = inventoryWeight(offer);
+                const requestWeight = inventoryWeight(request);
+                const giverNet = inventoryWeight(bagOf(giver.id)) - offerWeight + requestWeight;
+                const receiverNet = inventoryWeight(bagOf(receiver.id)) - requestWeight + offerWeight;
+                if (giverNet > capacityOf(giver.id) || receiverNet > capacityOf(receiver.id)) {
+                    return false;
+                }
             }
             const succeeded = inventoryExchange(bagOf(giver.id), bagOf(receiver.id), offer, request);
             if (!succeeded) {

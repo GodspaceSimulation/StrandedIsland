@@ -662,25 +662,71 @@ describe('inventoryPlugin — the entity profiles: bag sizes and the mine gate',
         expect(island.of('a')).toEqual({ dirt: 8 });
     });
 
-    it('exchange and give refuse when the receiver bag cannot hold the goods', () => {
+    it('exchange refuses when the RECEIVER overflows on the net (R5 two-sided gate)', () => {
+        const { world, island } = buildProfiled();
+        const ael = world.spawn(actor('a', 'Ael', -7, 0));
+        const bram = world.spawn(actor('b', 'Bram', -7, 1));
+        // Ael offers a 60-weight iron, Bram pays one 40-weight stone: Bram's
+        // full 200 bag nets 200 − 40 + 60 = 220 — OVER, so nothing moves
+        island.spawnKit('a', { iron: 1 });
+        island.spawnKit('b', { stone: 5 });
+        expect(island.exchange(ael, bram, { iron: 1 }, { stone: 1 })).toBe(false);
+        expect(island.of('a')).toEqual({ iron: 1 });
+        expect(island.of('b')).toEqual({ stone: 5 });
+    });
+
+    it('exchange refuses when the GIVER overflows on the net (the gate the old receiver-only check missed)', () => {
+        const { world, island } = buildProfiled();
+        const ael = world.spawn(actor('a', 'Ael', -7, 0));
+        const bram = world.spawn(actor('b', 'Bram', -7, 1));
+        // Ael's full 200 bag hands a 40-weight stone for a 60-weight iron:
+        // Ael nets 200 − 40 + 60 = 220 — OVER. Bram (60 carried) nets fine, so
+        // the ONLY reason to refuse is the giver's overflow (the old gate
+        // checked just the receiver and let this through).
+        island.spawnKit('a', { stone: 5 });
+        island.spawnKit('b', { iron: 1 });
+        expect(island.exchange(ael, bram, { stone: 1 }, { iron: 1 })).toBe(false);
+        expect(island.of('a')).toEqual({ stone: 5 });
+        expect(island.of('b')).toEqual({ iron: 1 });
+    });
+
+    it('exchange ACCEPTS a capacity-neutral swap between two full bags (net, not naive canHold)', () => {
+        const { world, island } = buildProfiled();
+        const ael = world.spawn(actor('a', 'Ael', -7, 0));
+        const bram = world.spawn(actor('b', 'Bram', -7, 1));
+        // Ael hands two 20-weight logs (40) for one 40-weight stone. Bram's
+        // bag is FULL (200) but the stone he pays frees exactly the room the
+        // logs need: net 200 − 40 + 40 = 200 ≤ 200. The naive canHold
+        // (carried + incoming = 240) would wrongly refuse this equal-weight
+        // swap; the net gate lets it through.
+        island.spawnKit('a', { wood: 2, stone: 3 }); // 40 + 120 = 160
+        island.spawnKit('b', { stone: 5 }); // 200
+        expect(island.exchange(ael, bram, { wood: 2 }, { stone: 1 })).toBe(true);
+        // Ael hands BOTH logs away for one stone: {wood:2, stone:3} → {stone:4}
+        expect(island.of('a')).toEqual({ stone: 4 });
+        expect(island.of('b')).toEqual({ stone: 4, wood: 2 });
+        // Conservation: the weight is unchanged on both sides
+        expect(inventoryWeight(island.of('a'))).toBe(160);
+        expect(inventoryWeight(island.of('b'))).toBe(200);
+    });
+
+    it('exchange ACCEPTS an imbalance that stays within the cap (a full bag trading DOWN in weight)', () => {
         const { world, island } = buildProfiled();
         const ael = world.spawn(actor('a', 'Ael', -7, 0));
         const bram = world.spawn(actor('b', 'Bram', -7, 1));
         island.spawnKit('a', { berry: 5 });
-        // Bram's bag is full to its 200 WEIGHT budget (five 40-weight stones)
+        // Bram's bag is full to 200 (five stones) but he pays a 40-weight
+        // stone for a 5-weight berry: net 200 − 40 + 5 = 165 ≤ 200 — the
+        // trade frees room, so it goes through (the old gate refused it).
         island.spawnKit('b', { stone: 5 });
-        expect(inventoryWeight(island.of('b'))).toBe(200);
-        // A one-berry offer (5 weight) does not fit Bram's full bag — nothing moves
-        expect(island.exchange(ael, bram, { berry: 1 }, { stone: 1 })).toBe(false);
-        expect(island.of('a')).toEqual({ berry: 5 });
-        expect(island.of('b')).toEqual({ stone: 5 });
-        // The gift route refuses too
-        expect(island.give(ael, bram, 'berry', 1)).toBe(false);
-        // One stone of room (160 carried): the trade goes through — Bram pays
-        // a stone and takes the berry (165 carried)
-        island.consume(bram, 'stone');
         expect(island.exchange(ael, bram, { berry: 1 }, { stone: 1 })).toBe(true);
-        expect(island.of('b')).toEqual({ stone: 3, berry: 1 });
+        expect(island.of('a')).toEqual({ berry: 4, stone: 1 });
+        expect(island.of('b')).toEqual({ stone: 4, berry: 1 });
+        // The one-way GIFT still guards the receiver alone (no incoming to
+        // net). Bram now carries 165 (four stones + a berry), so a 5-weight
+        // berry gift fits (170 ≤ 200) — but a full 200 bag would refuse it.
+        expect(island.give(ael, bram, 'berry', 1)).toBe(true);
+        expect(island.of('b')).toEqual({ stone: 4, berry: 2 });
     });
 
     it('spawnKit clamps the starting kit to the WEIGHT budget', () => {

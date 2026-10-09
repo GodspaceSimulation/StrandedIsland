@@ -765,7 +765,7 @@ describe('createIslandWorld', () => {
         // crew fetches the raw materials demand-directed (never bagfuls of
         // lumber the site stopped needing), crafts the processed parts
         // (frond→thatch/cloth, vine→rope, wood→plank), ferries the staging
-        // progressively past the eight-unit bag, and works the site one
+        // progressively past the 200-weight bag, and works the site one
         // world-minute stage at a time once it is fully staged. The needs
         // ladder always outranks the construction rungs (rest 25 … flee 60),
         // so nobody starves building. Captured from the seed-7 reference
@@ -833,8 +833,9 @@ describe('createIslandWorld', () => {
         expect(Array.from(handle.world.actors.keys())).toEqual(['actor-1', 'actor-2', 'actor-3', 'actor-4']);
         // FIVE stock structures stand complete: the shelter (wood 2 +
         // thatch 2, 240 work), the raft (wood 4 + rope 2, 480), the house
-        // (wood 4 + plank 4 + thatch 4 — TWELVE staging units through
-        // eight-unit bags, 4320 work — three days of honest labor), the
+        // (wood 4 + plank 4 + thatch 4 — 148 weight of staging ferried
+        // through the 200-weight bag, 4320 work — three days of honest
+        // labor), the
         // boat (plank 6 + rope 4 + cloth 2, 1440) and the fort (stone 8 +
         // wood 4, 2880 work) — the ISLAND work costs (ISLAND_BLUEPRINT_WORK)
         // each site was charged at placement.

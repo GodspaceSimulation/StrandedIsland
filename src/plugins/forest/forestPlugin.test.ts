@@ -22,6 +22,7 @@ import { islandTerrainPlugin, forestTreeCount } from '../terrain/islandTerrain';
 import { inventoryPlugin } from '../inventory/inventoryPlugin';
 import { forestPlugin, type ForestPacingOptions } from './forestPlugin';
 import { entityPlugin } from '../entity/entityPlugin';
+import { inventoryWeight } from '../inventory/items';
 import { position3 } from '@godspace/core';
 import type { Actor } from '../../engine/types';
 
@@ -768,6 +769,26 @@ describe('forestPlugin — the harvest integration (inventory flow)', () => {
         expect(inventory.of('a')).toEqual({ stone: 4, wood: 1 });
         expect(ecology.standOf({ x: 0, y: 0 })).toEqual({ trees: 135, wood: 487 });
         // The gatherable stock mirrors the stand exactly (no ghosts)
+        expect(inventory.cellStock(0, 0).tree).toBe(135);
+    });
+
+    it('R5 — a PARTIAL-capacity chop pays only the logs that fit and conserves the tree', () => {
+        const { world, inventory, ecology } = buildWired();
+        const ael = world.spawn(actor('a', 'Ael', 0, 0));
+        // The fine (4,4) tree holds a pool of 7. Four stones (160) + one berry
+        // (5) = 165 carried: the 35-weight room fits exactly ONE 20-weight log,
+        // so a 3-wood request clamps to 1 — the tree keeps the rest standing.
+        inventory.spawnKit('a', { stone: 4, berry: 1 });
+        expect(inventoryWeight(inventory.of('a'))).toBe(165);
+        const before = ecology.standOf({ x: 0, y: 0 })!;
+        expect(before).toEqual({ trees: 135, wood: 488 });
+        expect(inventory.harvest(ael, 'tree', 'wood', 3)).toBe(true);
+        // Exactly ONE log entered the bag (not three) — the bag nets 185
+        expect(inventory.of('a')).toEqual({ stone: 4, berry: 1, wood: 1 });
+        expect(inventoryWeight(inventory.of('a'))).toBe(185);
+        // Conservation: the stand paid for exactly what was cut (488 → 487)
+        // and the pool-7 tree STANDS (no over-fell, no phantom wood)
+        expect(ecology.standOf({ x: 0, y: 0 })).toEqual({ trees: 135, wood: 487 });
         expect(inventory.cellStock(0, 0).tree).toBe(135);
     });
 

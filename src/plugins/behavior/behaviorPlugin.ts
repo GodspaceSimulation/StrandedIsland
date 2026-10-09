@@ -237,13 +237,17 @@ const threatNearTile = (world: World, x: number, y: number): boolean => {
 };
 
 /**
- * The nearest PASSABLE water cell whose tile is currently CLEAR of a threat —
- * route safety at the tile granularity the trek steps along (the destination
- * tile is the tile the trek walks into). Returns null when every reachable
- * basin is guarded, so the caller DECLINES the trek rather than marching the
- * body into the flee ring: the water is reached when it is safe, never
- * invented, and the actor's energy is preserved for the minute the beast
- * roams off. Ties resolve to the earliest candidate (deterministic, like
+ * The nearest PASSABLE water cell whose DESTINATION tile is currently CLEAR of
+ * a threat. This is DESTINATION safety only — the trek refuses to AIM at a
+ * basin a beast camps on. It does NOT prove the whole walking route is clear:
+ * the route planner (`greedyFineStep`, plugins/movement/fineMovement.ts) is a
+ * single greedy step with no path enumeration, so an intermediate tile on the
+ * way to a clear basin could still brush a flee ring (the residual routing
+ * limitation — see the thirst rung's step 4). Returns null when every
+ * reachable basin's tile is guarded, so the caller DECLINES the trek rather
+ * than marching the body into the flee ring: the water is reached when it is
+ * safe, never invented, and the actor's energy is preserved for the minute the
+ * beast roams off. Ties resolve to the earliest candidate (deterministic, like
  * `nearestCell`).
  */
 const nearestSafeWater = (

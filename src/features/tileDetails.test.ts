@@ -939,4 +939,31 @@ describe('tileProgress / progressLine — the standing jobs (R6)', () => {
         expect(tileProgress(march, [{ x: 2, y: 5 }])).toEqual([{ label: 'berry', done: 3, total: 10 }]);
         expect(progressLine({ label: 'berry', done: 3, total: 10 })).toBe('berry 3/10');
     });
+
+    it('a length-2 interior path rides the LEDGER on the ROOT tile and resolves SITES on the exact fine cell', () => {
+        // R1/R6 placement — the interior board must NOT duplicate the parent
+        // tile's chop onto every subtile (the ledger holds no fine-cell state),
+        // while the exact construction footprint still resolves on the fine
+        // cell it covers. The Tile Inspector (tileJobs default true) still
+        // reads the root ledger at every zoom.
+        const march = createIslandWorld({ seed: 7 });
+        march.world.step(); // minute 1: chop opens on (-2,5), the shelter stands on (0,0)
+        // A fine cell under the chop-bearing tile (-2,5): the interior BOARD
+        // read (tileJobs:false) shows NOTHING — the root chop is never
+        // stamped onto the subtile...
+        expect(tileProgress(march, [{ x: -2, y: 5 }, { x: 0, y: 0 }], { tileJobs: false })).toEqual([]);
+        // ...while the inspector read (default tileJobs:true) rides the ROOT
+        // ledger on path[0], regardless of the fine tail.
+        expect(tileProgress(march, [{ x: -2, y: 5 }, { x: 0, y: 0 }])).toEqual([{ label: 'chop', done: 0, total: 15 }]);
+        // The shelter's exact footprint fine cell resolves the SITE even with
+        // the ledger half suppressed.
+        const shelter = march.construction.sites.sites().find((site) => site.blueprintId === 'shelter');
+        const fine = march.construction.sites.cellsOf(shelter?.id ?? '')[0];
+        expect(tileProgress(march, [{ x: 0, y: 0 }, { x: fine.x, y: fine.y }], { tileJobs: false })).toEqual([
+            { label: 'shelter', done: 0, total: 240 },
+        ]);
+        // A fine cell on the SAME tile the shelter does NOT cover reads empty
+        // (no site, and the board read carries no ledger either).
+        expect(tileProgress(march, [{ x: 0, y: 0 }, { x: fine.x + 1, y: fine.y + 1 }], { tileJobs: false })).toEqual([]);
+    });
 });

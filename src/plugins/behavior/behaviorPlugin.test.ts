@@ -1073,6 +1073,46 @@ describe('behaviorPlugin', () => {
         expect(tasks.taskOf('a')).toMatchObject({ behaviour: 'wander', kind: 'move', label: 'wanders', remaining: 1 });
     });
 
+    it('R4-SAFETY: the thirst trek skips a boar-guarded pool for a clear one, and declines when only a guarded pool remains', () => {
+        // nearestSafeWater filters the DESTINATION tile (not the whole route —
+        // see the helper's doc). These pins prove the destination filter: a
+        // nearer guarded basin is never aimed at, a clear one is, and with
+        // only a guarded basin the rung declines rather than oscillating
+        // against the priority-60 flee.
+        const { world, inventory, needs, tasks } = buildProfiledStack();
+        spawn(world, 'a', 'Ael', 0, 3);
+        // Strip every passable cell's drinking water so the only pools are the
+        // two we place (the sea holds no drinkable stock)
+        world.canvas.cells.forEach((cell) => {
+            if (cell.passable) {
+                delete inventory.cellStock(cell.x, cell.y).water;
+            }
+        });
+        needs.satisfy('a', { thirst: 60 }); // thirst 80 ≥ 65 → the trek rung
+        // A boar camps beside the NEAR pool (1,3) — within the flee radius (1)
+        // of that tile, but two tiles from Ael (so Ael itself is not fleeing)
+        inventory.cellStock(1, 3).water = 1;
+        world.coordinates.place(beast('boar-1', 'boar', 2, 3));
+        world.step();
+        // Only the guarded pool exists → the trek DECLINES (wander fills the
+        // minute; the body keeps its energy instead of grinding against the
+        // flee on the spot — the seed-7 march oscillation)
+        expect(tasks.taskOf('a')).toMatchObject({ behaviour: 'wander', kind: 'move', label: 'wanders', remaining: 1 });
+        // A CLEAR pool opens one tile south at (0,4) — same distance, but no
+        // beast within its flee ring. The trek now aims at the clear pool.
+        inventory.cellStock(0, 4).water = 1;
+        world.step();
+        expect(tasks.taskOf('a')).toMatchObject({ behaviour: 'thirst', kind: 'move', label: 'travels to water', remaining: 1 });
+        // No oscillation: over the next minutes Ael walks onto the CLEAR pool
+        // (0,4) — never the guarded (1,3) — and its energy never collapses
+        // (the trek and the flee never cancel each other on the spot)
+        for (let index = 0; index < 6; index++) {
+            world.step();
+        }
+        expect(world.actors.get('a')?.position).toMatchObject({ x: 0, y: 4 });
+        expect(needs.of('a').energy).toBeGreaterThan(95);
+    });
+
     it('an exhausted actor rests: the recovery applies once, on completion', () => {
         const { world, needs, tasks } = buildStack({});
         spawn(world, 'a', 'Ael', 8, 2); // dry beach — (6,2) is an impassable pond now

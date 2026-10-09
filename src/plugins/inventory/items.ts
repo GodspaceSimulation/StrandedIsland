@@ -114,8 +114,11 @@ export const ITEM_CATALOG: Record<string, ItemDef> = {
  * physical kind so the load reads honestly: a unit of WOOD is 20 (the
  * requirement's anchor — ten logs fill a person), stone/iron are heavy
  * (40/60), the unlimited ground (grass) is light (3), foods sit in the 5–30
- * band, and the hand tools weigh their raws (axe 30, hammer 35). Unknown ids
- * fall back to the minimum 1 (an unlisted thing is light, never free).
+ * band, and the hand tools weigh their raws (axe 30, hammer 35). The CRAFTED
+ * parts carry explicit weights too (no silent fallback): a plank 15 (a sawn
+ * board is bulkier than the log it came from), rope 6 (twisted vine), cloth 4
+ * (woven frond), thatch 2 (a loose frond bundle). Unknown ids fall back to the
+ * minimum 1 (an unlisted thing is light, never free).
  */
 export const ITEM_WEIGHTS: Record<string, number> = {
     berry: 5,
@@ -138,6 +141,12 @@ export const ITEM_WEIGHTS: Record<string, number> = {
     flint: 15,
     axe: 30,
     hammer: 35,
+    // R5 — the crafted parts (ISLAND_RECIPES outputs): explicit weights so a
+    // craft's net-weight gate reads the real load, never the fallback 1.
+    plank: 15,
+    rope: 6,
+    cloth: 4,
+    thatch: 2,
 };
 
 /** The weight of ONE unit of an item — always ≥ 1 (unknown ids are light). */
