@@ -5,6 +5,15 @@
 // bilinear + smoothstep) shaped by a radial falloff so the center rises above
 // the water line and the edges fall into the sea — a small island.
 //
+// R4 — THE RIVERS: after the basins drown, the generator carves up to
+// RIVER_COUNT meandering fresh-water courses from the interior highlands down
+// to the open sea (the generateIsland river pass documents the walk: greedy
+// height descent + keyed per-cell jitter + direction persistence, cardinal
+// connectivity guaranteed, a BFS corridor finishing any stalled course). A
+// river cell is a PASSABLE shallow ford (engine/types.ts Biome 'river') whose
+// water the inventory gathers INEXHAUSTIBLY (plugins/inventory) — the island
+// reads organic and its fresh water never runs dry.
+//
 // Every column also carries RESOURCE DEPOSITS (TileResources on engine/types)
 // under two rules:
 //
@@ -258,6 +267,50 @@ export const MEADOW_INGRESS_CARDINAL = 8;
  * ingresses 8 + 3 = 11 spots, not 8).
  */
 export const MEADOW_INGRESS_DIAGONAL = 3;
+
+// ── The river carving (R4) ───────────────────────────────────────────────────
+//
+// The R4 fix for the straight/flat island: meandering fresh-water courses
+// carved from the interior down to the sea. The four constants steer the
+// greedy downhill walk documented at the carve site (generateIsland); the
+// shore tests pin them as the documented tuning, and the river-shape tests
+// re-derive the courses from the same numbers.
+
+/**
+ * How many rivers the generator attempts per island. The second course
+ * only starts when a source cell clear of the first channel exists (see
+ * RIVER_SOURCE_GAP) — small/degenerate boards may carry fewer.
+ */
+export const RIVER_COUNT = 2;
+
+/**
+ * The meander amplitude — the per-cell keyed jitter added to every step
+ * score, comparable to a one-voxel height step: the descent still wins on
+ * real slopes, but on the height plateaus the jitter steers the course, so
+ * the river CURVES instead of dropping in straight staircase lines.
+ */
+export const RIVER_JITTER = 0.6;
+
+/**
+ * The persistence bonus for keeping the previous step's direction — the
+ * jitter bends stay gentle sweeps, never per-cell zigzags.
+ */
+export const RIVER_PERSIST = 0.4;
+
+/**
+ * The minimum Chebyshev distance between a second river's source and every
+ * already-carved cell — the two courses never stack into one channel.
+ */
+export const RIVER_SOURCE_GAP = 5;
+
+/**
+ * The river's canvas color — EXPORTED for the scenario palette integration
+ * (scenario/island.ts joins it into GRASS_TILE_PALETTE as the 'river'
+ * surface key, beside the lake/pond water blues: a flowing course reads a
+ * shade brighter than the still lake). The terrain package owns the hue so
+ * generation and palette never drift.
+ */
+export const RIVER_TILE_COLOR = '#4a90d9';
 
 /**
  * The BASE standing-tree count of a forest tile: FOREST_COVERAGE of the
@@ -1305,6 +1358,260 @@ export const generateIsland = (
         }
     });
 
+    // ── THE RIVERS (R4) ──────────────────────────────────────────────────────
+    // Meandering fresh-water courses from the island's interior to the sea —
+    // the R4 answer to the straight/flat island. Each river is ONE CARDINALLY
+    // CONNECTED path (no diagonal-only links, no disconnected scatter): a
+    // greedy walk from an interior source toward the open sea, scored by three
+    // deterministic terms —
+    //   GROUND HEIGHT — the walk prefers the lowest neighbor (water seeks the
+    //     sea; the descent bias is what makes the course flow interior → coast
+    //     instead of wandering the highlands);
+    //   KEYED JITTER  — one draw per cell address from the `river:<col>,<row>`
+    //     stream namespace (independent of every other stream, so the coarse/
+    //     fine/moisture/vein lattices and the shore waves stay untouched),
+    //     RIVER_JITTER-tall: on the quantized height plateaus the jitter
+    //     steers, so the course MEANDERS instead of dropping in straight
+    //     staircase runs;
+    //   PERSISTENCE   — RIVER_PERSIST off the score for keeping the previous
+    //     step's direction, so the jitter bends stay gentle sweeps.
+    // The walk ENDS the moment its current cell CARDINALLY touches open sea
+    // (pass-1 submerged geometry — a drowned basin is not the sea): the
+    // coastal ring cell becomes the river's last cell, so the course visibly
+    // crosses the beach into the water. A stalled walk (every candidate
+    // claimed) falls back to a BFS corridor through the remaining dry cells to
+    // the nearest sea-adjacent cell — connectivity is guaranteed, never
+    // diagonal-only, never scattered.
+    // THE SOURCES — the highest dry cells (pass-1 height, row-major tie),
+    // skipping cells that already touch the sea (an INTERIOR origin) and, for
+    // the second course, anything within RIVER_SOURCE_GAP of the first (two
+    // distinct channels).
+    // THE CARVE — every path cell is rebuilt as a shallow fresh column: the
+    // basin's drowned shape (ground one voxel under the water line, sand bed +
+    // one water voxel) but PASSABLE — the river is a FORD, not a drowning
+    // (engine/types.ts Biome 'river'). Its deposits and neighborhood carve
+    // wash away (no trees or rock stand in the channel; the inventory seeds
+    // the cell's INEXHAUSTIBLE drinking water from the biome — plugins/
+    // inventory). A course crossing a lake/pond basin DRAINS it (the river
+    // overwrites the drowned cell — the census moves that cell back to land);
+    // a course over a wood takes the tile off the forest census. The
+    // outermost ring stays open sea (the walk only ever steps on dry cells —
+    // the island never touches the border). Deterministic: the source
+    // ranking is row-major and the jitter reads the keyed per-cell stream —
+    // same seed, byte-identical rivers.
+    {
+        const inGrid = (col: number, row: number): boolean =>
+            col >= 0 && col < width && row >= 0 && row < height;
+        const indexAt = (col: number, row: number): number => row * width + col;
+        // The four CARDINAL steps — the river's connectivity vocabulary (a
+        // diagonal step would let two cells touch without a real crossing)
+        const RIVER_STEPS: Array<[number, number]> = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+        // Whether a cell cardinally borders OPEN SEA (pass-1 submerged
+        // geometry — basins drowned after pass 1 are not the sea)
+        const touchesSea = (index: number): boolean => {
+            const col = index % width;
+            const row = Math.floor(index / width);
+            return RIVER_STEPS.some(
+                ([dx, dy]) =>
+                    inGrid(col + dx, row + dy) && coast[indexAt(col + dx, row + dy)].submerged,
+            );
+        };
+        // The per-cell meander draw — one keyed stream value per address,
+        // stable regardless of walk order (the `river:` namespace is its own)
+        const jitterAt = (col: number, row: number): number =>
+            randomKeyed(options.seed ?? 1, `river:${col},${row}`)();
+        // Every cell claimed by any course so far (walk + corridor) — the
+        // channels never merge, never self-cross, and the second source is
+        // measured against it
+        const carved = new Set<number>();
+        // Source ranking: dry cells by pass-1 ground height DESCENDING,
+        // row-major tie — the interior highlands first (the same peak rule
+        // the stone guarantee's fallback reads)
+        const ranked: number[] = [];
+        for (let index = 0; index < height * width; index++) {
+            if (!coast[index].submerged) {
+                ranked.push(index);
+            }
+        }
+        ranked.sort((left, right) => coast[right].groundHeight - coast[left].groundHeight || left - right);
+        for (let river = 0; river < RIVER_COUNT; river++) {
+            // The next valid source: unclaimed, interior (no sea touch), and
+            // clear of every carved cell by the source gap
+            const source = ranked.find((index) => {
+                if (carved.has(index) || touchesSea(index)) {
+                    return false;
+                }
+                const col = index % width;
+                const row = Math.floor(index / width);
+                for (const claim of carved) {
+                    const dx = Math.abs((claim % width) - col);
+                    const dy = Math.abs(Math.floor(claim / width) - row);
+                    if (Math.max(dx, dy) < RIVER_SOURCE_GAP) {
+                        return false;
+                    }
+                }
+                return true;
+            });
+            if (source === undefined) {
+                // No room for another course on this board — the island keeps
+                // the rivers it has (small/degenerate boards carry fewer)
+                break;
+            }
+            // ── the greedy downhill meander ───────────────────────────────
+            const path: number[] = [source];
+            carved.add(source);
+            let current = source;
+            let lastStep: [number, number] | undefined;
+            // A cell never repeats, so the walk terminates inside the cell
+            // count; the guard is the belt to the visited set
+            let guard = width * height;
+            while (guard-- > 0 && !touchesSea(current)) {
+                const col = current % width;
+                const row = Math.floor(current / width);
+                let best = -1;
+                let bestScore = 0;
+                let bestStep: [number, number] | undefined;
+                for (const step of RIVER_STEPS) {
+                    const ncol = col + step[0];
+                    const nrow = row + step[1];
+                    if (!inGrid(ncol, nrow)) {
+                        continue;
+                    }
+                    const nindex = indexAt(ncol, nrow);
+                    // Only DRY, UNCLAIMED cells — the rim ring is sea (never
+                    // stepped) and the channel never crosses itself
+                    if (coast[nindex].submerged || carved.has(nindex)) {
+                        continue;
+                    }
+                    // Height descent dominates, the jitter meanders the
+                    // plateaus, persistence keeps the bends gentle
+                    let score = coast[nindex].groundHeight + jitterAt(ncol, nrow);
+                    if (lastStep && step[0] === lastStep[0] && step[1] === lastStep[1]) {
+                        score = score - RIVER_PERSIST;
+                    }
+                    // Strict improvement in the fixed step order — the first
+                    // best wins ties (deterministic, no stream involved)
+                    if (best === -1 || score < bestScore) {
+                        best = nindex;
+                        bestScore = score;
+                        bestStep = step;
+                    }
+                }
+                if (best === -1) {
+                    // Stalled (every candidate claimed) — the BFS corridor
+                    // below finishes the course
+                    break;
+                }
+                path.push(best);
+                carved.add(best);
+                current = best;
+                lastStep = bestStep;
+            }
+            // ── the stall fallback: a BFS corridor to the nearest mouth ────
+            if (!touchesSea(current)) {
+                const cameFrom = new Map<number, number>();
+                const seen = new Set<number>([current]);
+                const frontier: number[] = [current];
+                let mouth = -1;
+                for (let head = 0; head < frontier.length; head++) {
+                    const cell = frontier[head];
+                    if (touchesSea(cell)) {
+                        mouth = cell;
+                        break;
+                    }
+                    const col = cell % width;
+                    const row = Math.floor(cell / width);
+                    for (const [dx, dy] of RIVER_STEPS) {
+                        const ncol = col + dx;
+                        const nrow = row + dy;
+                        if (!inGrid(ncol, nrow)) {
+                            continue;
+                        }
+                        const nindex = indexAt(ncol, nrow);
+                        // The corridor walks DRY unclaimed cells only — it
+                        // joins the sea adjacency without re-crossing the
+                        // channel or stepping into the water
+                        if (coast[nindex].submerged || seen.has(nindex)) {
+                            continue;
+                        }
+                        seen.add(nindex);
+                        cameFrom.set(nindex, cell);
+                        frontier.push(nindex);
+                    }
+                }
+                // Trace the corridor back and append it — the tail joins the
+                // channel cardinally (the BFS walked cardinal steps too)
+                if (mouth !== -1 && mouth !== current) {
+                    const corridor: number[] = [];
+                    for (let cell = mouth; cell !== current; cell = cameFrom.get(cell) as number) {
+                        corridor.push(cell);
+                    }
+                    corridor.reverse();
+                    for (const cell of corridor) {
+                        path.push(cell);
+                        carved.add(cell);
+                    }
+                }
+            }
+            // ── the carve: rebuild every path cell as a passable shallow ford
+            path.forEach((index) => {
+                const cell = cells[index];
+                // A drained basin cell moves back from the water census; a
+                // drowned wood leaves the forest census (the basin pass's
+                // census rules, mirrored for the river)
+                const wasWater = !cell.passable;
+                const wasForested = cell.voxels.includes('forest');
+                // The basin's drowned column shape — ground one voxel under
+                // the water line, sand bed, one water voxel up to the line
+                const ground = seaLevel - 1;
+                const stack: VoxelKind[] = [];
+                if (ground >= 3) {
+                    for (let bedrock = 0; bedrock < ground - 2; bedrock++) {
+                        stack.push('gravel');
+                    }
+                }
+                if (ground >= 2) {
+                    stack.push('dirt');
+                }
+                stack.push('sand');
+                for (let water = 0; water < seaLevel - ground; water++) {
+                    stack.push('water');
+                }
+                cell.voxels = stack;
+                cell.height = ground;
+                cell.biome = 'river';
+                // THE FORD — the river is the one water the land crosses
+                // (passable true; the basins and the sea stay impassable)
+                cell.passable = true;
+                // The submerged-shape rule: the channel carries no deposits
+                // and no carve (the inventory seeds its inexhaustible water
+                // from the biome, not from the tile resources). R4 — the
+                // FINITE stocks a carved rock site/lode carried leave the
+                // census with the cell (stats must match the cells: a
+                // highland's stone or a vein's iron washed into the channel
+                // is gone; a zeroed iron census lets the R5 guarantee
+                // re-stamp the lode on a surviving highland)
+                const washedStone = cell.resources.stone ?? 0;
+                const washedIron = cell.resources.iron ?? 0;
+                if (washedStone > 0) {
+                    stats.stone = stats.stone - washedStone;
+                }
+                if (washedIron > 0) {
+                    stats.iron = stats.iron - washedIron;
+                }
+                cell.resources = {};
+                delete cell.carving;
+                if (wasWater) {
+                    stats.water = stats.water - 1;
+                    stats.land = stats.land + 1;
+                }
+                if (wasForested) {
+                    stats.forest = stats.forest - 1;
+                }
+            });
+        }
+    }
+
     // ── THE IRON GUARANTEE (R5) ─────────────────────────────────────────────
     // The vein noise keeps lodes a rare landmark, which leaves the DEFAULT
     // 25×17 seed-7 island with ZERO lodes (every vein sample lands under
@@ -1363,8 +1670,10 @@ export const generateIsland = (
         } else {
             // The peak fallback: the highest dry cell (row-major tie) carries
             // the whole shortfall. Rank the dry cells by height descending,
-            // ties by the row-major index; prefer a NON-forested peak so the
-            // stone heap shows its own 🪨 marker instead of a tree canopy.
+            // ties by the row-major index; prefer a NON-forested, NON-RIVER
+            // peak so the stone heap shows its own 🪨 marker instead of a
+            // tree canopy or a ford (R4 — the river pass ran before the
+            // guarantees; a heap stamped in the channel would sit on water).
             // A FULLY DROWNED board (a public seaLevel above every column)
             // has no dry cell at all — the optional reads below resolve the
             // fallback to undefined and the guarantee simply CANNOT floor the
@@ -1376,7 +1685,8 @@ export const generateIsland = (
                 .filter(({ cell }) => cell.passable)
                 .sort((left, right) => right.cell.height - left.cell.height || left.index - right.index);
             const fallbackCell =
-                ranked.find(({ cell }) => cell.biome !== 'forest')?.cell ?? ranked[0]?.cell;
+                ranked.find(({ cell }) => cell.biome !== 'forest' && cell.biome !== 'river')?.cell ??
+                ranked[0]?.cell;
             if (fallbackCell) {
                 fallbackCell.resources.stone = (fallbackCell.resources.stone ?? 0) + shortfall;
                 stoneTotal = stoneTotal + shortfall;

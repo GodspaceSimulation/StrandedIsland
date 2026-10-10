@@ -41,6 +41,8 @@ import {
     STONE_GUARANTEE_MIN,
 } from './islandTerrain';
 import { createWorld } from '../../engine/world';
+// R4 — the river predicate the ford contract pins (engine/types)
+import { isFreshBasin } from '../../engine/types';
 
 // The R3 coastal-band geometry, verified against the generator's own rules
 // WITHOUT reaching into its internals: the band formula (boards ≤5 across run
@@ -111,15 +113,18 @@ describe('generateIsland', () => {
         );
         expect(map).toEqual([
             'shallows shallows shallows shallows shallows shallows ocean',
-            'shallows shallows beach beach beach shallows ocean',
-            'shallows beach beach forest beach beach shallows',
+            'shallows shallows river beach beach shallows ocean',
+            'shallows beach river forest beach beach shallows',
             'ocean beach beach beach beach beach shallows',
             'ocean ocean ocean ocean ocean ocean shallows',
         ]);
         // R1/R3 shifted the 7×5: the lone forest now sits on the center
-        // (0,0) and the coastal sand band trimmed the beaches; the finite-
-        // stone guarantee stamps the 7×5's highland-less board with its full
-        // 12-stone heap on the peak (stats counts UNITS)
+        // (0,0) and the coastal sand band trimmed the beaches; R4's river
+        // pass fords the two beach cells (−1,0)/(−1,−1) as the one-cell
+        // course (source (−1,0) → downhill ford (−1,−1) → mouth onto the
+        // (−1,−2) shallows); the finite-stone guarantee stamps the 7×5's
+        // highland-less board with its full 12-stone heap on the dry peak
+        // (0,1) — the old (−1,0) peak was forded (stats counts UNITS)
         expect(island.stats).toEqual({ land: 13, water: 22, forest: 1, iron: 0, stone: 12 });
     });
 
@@ -141,13 +146,13 @@ describe('generateIsland', () => {
         // connected wetland on the north coast and scattered on the lowlands
         expect(map).toEqual([
             "shshshshshshococococococococococococshshshshshshsh",
-            "shocshococshshbebebebebebebebebebebebeshshshshshsh",
-            "shshshshshbebebebebebebebebebebebebebebeshshbeshsh",
-            "shshshbebebebebebememememelalalafobebebebeshshshsh",
-            "ocshshbebebebememememememelalafofofobebebebeshshsh",
-            "ocshbebebemememepomememememefofofofofobebebebeshsh",
-            "shshbebebemememepopofomememefofofofofofobebebeshsh",
-            "shshbebefofomememefomehihimefofofofofofofobebeshsh",
+            "shocshococshshbebebebebeberibebebebebeshshshshshsh",
+            "shshshshshbebebebebebebeberibebebebebebeshshbeshsh",
+            "shshshbebebebebebemememeririlalafobebebebeshshshsh",
+            "ocshshbebebebememememeririlalafofofoririririshshsh",
+            "ocshbebebemememepomemerimemefofofofofobebebebeshsh",
+            "shshbebebemememepopoforimemefofofofofofobebebeshsh",
+            "shshbebefofomememefomerihimefofofofofofofobebeshsh",
             "shbebebefofopofofomehihihihifofofofofofofobebebesh",
             "shbebebebefofofofomemehihihifofofofomemefobebebesh",
             "shshbebebebefopomemememememefofofopopofobebebeshsh",
@@ -159,15 +164,17 @@ describe('generateIsland', () => {
             "ococococococococococococococococococshshshshshshsh",
         ]);
         // R5's finite mineable guarantee: the default island carries exactly
-        // 1 iron lode (stamped on the first highland) — census iron 1; the
-        // finite-stone census reads 27 units (the 9 highlands ×
-        // STONE_PER_HIGHLAND 3 — at/above the guarantee floor, untouched).
-        // R4 — the 13 basin cells are WATER now: the census moves them from
-        // land to water (282−13 = 269 land, 143+13 = 156 water), and the 9
-        // of them that were forested leave the forest count (68−9 = 59 —
-        // exactly the 59 forest-biome tiles the biome map shows; the drowned
-        // woods no longer stand).
-        expect(island.stats).toEqual({ land: 269, water: 156, forest: 59, iron: 1, stone: 27 });
+        // 1 iron lode (stamped on the first SURVIVING highland — R4's river
+        // forded the old (−1,−1) peak, so the row-major stamp moved to
+        // (0,−1)) — census iron 1; the finite-stone census reads 24 units
+        // (the 8 surviving highlands × STONE_PER_HIGHLAND 3 — the carved
+        // peak's 3 units washed into the channel and left the census with
+        // the cell; still at/above the guarantee floor, untouched).
+        // R4 — the 12 basin cells are WATER (the river drained the 13th
+        // lake into its channel); the 13 river fords are PASSABLE, so the
+        // census counts them land (269+1 = 270 land, 156−1 = 155 water);
+        // none of the fords was forested on this board, forest holds 59.
+        expect(island.stats).toEqual({ land: 270, water: 155, forest: 59, iron: 1, stone: 24 });
     });
 
     it('carries resource deposits: the voxel ground supply, the neighborhood tree stands, bare sea', () => {
@@ -225,18 +232,12 @@ describe('generateIsland', () => {
         // meadow tiles (63) carry ingress; T2's denser fringe (8/3) lifted
         // the per-edge counts — 44 meadows carry trees
         expect(meadowCounts).toBe(
-            '-3,-5:0 -2,-5:0 -1,-5:0 0,-5:0 -5,-4:0 -4,-4:0 -3,-4:0 -2,-4:0 ' +
-            '-1,-4:0 0,-4:0 -7,-3:0 -6,-3:0 -5,-3:0 -3,-3:11 -2,-3:11 -1,-3:3 0,-3:0 ' +
-            '1,-3:14 -7,-2:11 -6,-2:3 -5,-2:0 -1,-2:8 0,-2:0 1,-2:14 ' +
-            '-6,-1:22 -5,-1:14 -4,-1:22 -2,-1:19 1,-1:14 -3,0:19 -3,1:11 -2,1:0 ' +
-            '6,1:36 7,1:33 -4,2:19 -3,2:3 -2,2:0 -1,2:0 0,2:0 1,2:11 -5,3:11 -4,3:3 ' +
-            '-3,3:0 -2,3:0 -1,3:3 0,3:8 1,3:6 2,3:11 3,3:25 -5,4:0 -4,4:0 -3,4:0 ' +
-            '-2,4:3 -1,4:19 1,4:19 2,4:3 3,4:11 -5,5:0 -4,5:0 -3,5:0 -2,5:8 2,5:8 3,5:3',
+            '-3,-5:0 -2,-5:0 -1,-5:0 -5,-4:0 -4,-4:0 -3,-4:0 -2,-4:0 -7,-3:0 -6,-3:0 -5,-3:0 -3,-3:11 -2,-3:11 0,-3:0 1,-3:14 -7,-2:11 -6,-2:3 -5,-2:0 0,-2:0 1,-2:14 -6,-1:22 -5,-1:14 -4,-1:22 -2,-1:19 1,-1:14 -3,0:19 -3,1:11 -2,1:0 6,1:36 7,1:33 -4,2:19 -3,2:3 -2,2:0 -1,2:0 0,2:0 1,2:11 -5,3:11 -4,3:3 -3,3:0 -2,3:0 -1,3:3 0,3:8 1,3:6 2,3:11 3,3:25 -5,4:0 -4,4:0 -3,4:0 -2,4:3 -1,4:19 1,4:19 2,4:3 3,4:11 -5,5:0 -4,5:0 -3,5:0 -2,5:8 2,5:8 3,5:3',
         );
-        // The treed-tile census: 59 woods + the 35 ingressed meadows — 94
-        // (R4 washes the 13 basin cells clean: the drowned fringe deposits
-        // are gone with the ground supply — no trees stand on open water)
-        expect(island.cells.filter((cell) => (cell.resources.tree ?? 0) > 0).length).toBe(94);
+        // The treed-tile census: 59 woods + the 33 ingressed meadows — 92
+        // (R4's river fords washed 2 more treed meadow cells clean — the
+        // drowned fringe deposits are gone with the ground supply)
+        expect(island.cells.filter((cell) => (cell.resources.tree ?? 0) > 0).length).toBe(92);
         // Beach (−4,−7): the column is dirt/sand — the unlimited ground
         // supply (the gravel bedrock supplies no stone anymore)
         expect(island.cells.find((cell) => cell.x === -4 && cell.y === -7)?.resources).toEqual({
@@ -258,24 +259,28 @@ describe('generateIsland', () => {
         // — the drowned basin reads as water, not meadow); sand only the
         // beaches — R3's 2-tile coastal band shrank the sands from 160 to
         // 138 (the basins sit inland, so the sand census stands).
-        // STONE is FINITE now: it blankets the 9 highland rock sites (the
-        // localized rock terrain — 3 units each, 27 units in all), never the
-        // 269-cell dry land (the old bedrock-stone mirror is gone — the
+        // STONE is FINITE now: it blankets the 8 SURVIVING highland rock
+        // sites (the localized rock terrain — 3 units each, 24 units in
+        // all; R4's river forded the ninth, the (−1,−1) peak — its stock
+        // washed into the channel and left the census with the cell), never
+        // the 257-cell dry land (the old bedrock-stone mirror is gone — the
         // finite-stone rule)
-        expect(island.cells.filter((cell) => (cell.resources.stone ?? 0) > 0).length).toBe(9);
+        expect(island.cells.filter((cell) => (cell.resources.stone ?? 0) > 0).length).toBe(8);
         expect(
             island.cells
                 .filter((cell) => (cell.resources.stone ?? 0) > 0)
                 .map((cell) => [cell.x, cell.y, cell.resources.stone])
                 .sort((a, b) => a[1] - b[1] || a[0] - b[0]),
         ).toEqual([
-            [-1, -1, 3], [0, -1, 3], [-2, 0, 3], [-1, 0, 3], [0, 0, 3],
-            [1, 0, 3], [-1, 1, 3], [0, 1, 3], [1, 1, 3],
+            [0, -1, 3], [-2, 0, 3], [-1, 0, 3], [0, 0, 3], [1, 0, 3],
+            [-1, 1, 3], [0, 1, 3], [1, 1, 3],
         ]);
-        expect(island.cells.reduce((sum, cell) => sum + (cell.resources.stone ?? 0), 0)).toBe(27);
-        expect(island.cells.filter((cell) => (cell.resources.dirt ?? 0) > 0).length).toBe(269);
-        expect(island.cells.filter((cell) => (cell.resources.grass ?? 0) > 0).length).toBe(122);
-        expect(island.cells.filter((cell) => (cell.resources.sand ?? 0) > 0).length).toBe(138);
+        expect(island.cells.reduce((sum, cell) => sum + (cell.resources.stone ?? 0), 0)).toBe(24);
+        // R4's river fords cut 12 dry cells (the channel supplies nothing):
+        // dirt 269−12 = 257, grass 122−5 = 117, sand 138−6 = 132
+        expect(island.cells.filter((cell) => (cell.resources.dirt ?? 0) > 0).length).toBe(257);
+        expect(island.cells.filter((cell) => (cell.resources.grass ?? 0) > 0).length).toBe(117);
+        expect(island.cells.filter((cell) => (cell.resources.sand ?? 0) > 0).length).toBe(132);
         // Sea (−12,−8): no deposits — submerged columns supply nothing
         expect(island.cells.find((cell) => cell.x === -12 && cell.y === -8)?.resources).toEqual({});
     });
@@ -299,8 +304,11 @@ describe('generateIsland', () => {
             dirt: 1,
             iron: 1,
         });
-        // …while the plain highland next door keeps its stone + dirt supply
-        expect(reference.cells.find((cell) => cell.x === -7 && cell.y === 0)?.resources).toEqual({
+        // …while the plain highland beside the lode belt keeps its stone +
+        // dirt supply (R4 — the (−7,0) site next door was forded by the
+        // river: its stock washed into the channel, so the pin moved one
+        // cell east to the surviving (−6,0))
+        expect(reference.cells.find((cell) => cell.x === -6 && cell.y === 0)?.resources).toEqual({
             stone: 3,
             dirt: 1,
         });
@@ -371,8 +379,11 @@ describe('generateIsland', () => {
             return cell ? [cell.x, cell.y] : null;
         };
         expect(generateIsland({ seed: 7, width: 25, height: 17 }).stats.iron).toBe(1);
-        expect(lodeOf(7)).toEqual([-1, -1]);
-        expect(lodeOf(1)).toEqual([-2, 0]);
+        // R4 — the river forded seed 7's first highland (−1,−1), so the
+        // row-major stamp moved to the surviving (0,−1); seed 1's only
+        // highland was forded too — the board is left lode-less (no host)
+        expect(lodeOf(7)).toEqual([0, -1]);
+        expect(lodeOf(1)).toBeNull();
     });
 
     it('T2: every island floors its finite stone at STONE_GUARANTEE_MIN (multi-seed)', () => {
@@ -380,10 +391,11 @@ describe('generateIsland', () => {
         // stone-gated (1-stone axe, 8-stone fort), so every playable island
         // carries at least STONE_GUARANTEE_MIN stone UNITS. The per-highland
         // base (STONE_PER_HIGHLAND each) supplies the stone-rich boards
-        // untouched (25×17 seed-7: 9 highlands × 3 = 27 ≥ 12); short boards
-        // top up cyclically or stamp the whole shortfall on their peak
-        // (highland-less 7×5: the exact 12 on (−1,0) — the voxel column
-        // reference pins the heap's cell). Net invariant across seeds.
+        // untouched (25×17 seed-7: 8 surviving highlands × 3 = 24 ≥ 12 —
+        // R4's river forded the ninth); short boards top up cyclically or
+        // stamp the whole shortfall on their peak (highland-less 7×5: the
+        // exact 12 on (0,1) — the voxel column reference pins the heap's
+        // cell; R4's river forded the old (−1,0) peak). Net invariant.
         expect(STONE_GUARANTEE_MIN).toBe(12);
         expect(STONE_PER_HIGHLAND).toBe(3);
         for (let seed = 1; seed <= 12; seed++) {
@@ -413,9 +425,9 @@ describe('generateIsland', () => {
             }
         }
         // The default island is stone-RICH: the guarantee left it exactly as
-        // generated — 9 highlands × STONE_PER_HIGHLAND = 27 (the census
-        // pins the cell list)
-        expect(generateIsland({ seed: 7 }).stats.stone).toBe(27);
+        // generated — 8 surviving highlands × STONE_PER_HIGHLAND = 24 (the
+        // river forded the ninth; the census pins the cell list)
+        expect(generateIsland({ seed: 7 }).stats.stone).toBe(24);
         // The highland-less 7×5 and the highland-less 21×13 are exactly
         // floored — the whole guarantee rides their peak
         expect(generateIsland({ seed: 7, width: 7, height: 5 }).stats.stone).toBe(STONE_GUARANTEE_MIN);
@@ -441,11 +453,13 @@ describe('generateIsland', () => {
         const island = generateIsland({ seed: 7, width: 7, height: 5 });
         // Landmarks win: the 7×5 island surfaces as tree / sand (the
         // treed woods, the beaches) — the seabed keeps its biome
-        // R1/R3 reshaped the 7×5: the single center tree + the trimmed sands
+        // R1/R3 reshaped the 7×5: the single center tree + the trimmed sands;
+        // R4's river fords surface as 'river' (the water top outranks the
+        // sand ground — the ford reads as the fresh channel it is)
         expect(island.cells.map((cell) => tileSurfaceKey(cell))).toEqual([
             'shallows', 'shallows', 'shallows', 'shallows', 'shallows', 'shallows', 'ocean',
-            'shallows', 'shallows', 'sand', 'sand', 'sand', 'shallows', 'ocean',
-            'shallows', 'sand', 'sand', 'tree', 'sand', 'sand', 'shallows',
+            'shallows', 'shallows', 'river', 'sand', 'sand', 'shallows', 'ocean',
+            'shallows', 'sand', 'river', 'tree', 'sand', 'sand', 'shallows',
             'ocean', 'sand', 'sand', 'sand', 'sand', 'sand', 'shallows',
             'ocean', 'ocean', 'ocean', 'ocean', 'ocean', 'ocean', 'shallows',
         ]);
@@ -523,8 +537,9 @@ describe('generateIsland', () => {
         const island = generateIsland({ seed: 7, width: 7, height: 5 });
         // Forest cell (0,0) — the canvas middle (R1's lone 7×5 wood): GRAVEL
         // bedrock (R4: the stone mirror is gone — the 7×5 has no highland,
-        // so the guarantee's 12-stone heap lands one cell over at (−1,0),
-        // whose sand surface outranks its stock in the surface derivation),
+        // so the guarantee's 12-stone heap lands on the dry peak (0,1) —
+        // R4's river forded the old (−1,0) — whose sand surface outranks
+        // its stock in the surface derivation),
         // dirt, grass surface, forest on top, the 21-tree neighbor-priced
         // stand mirrored (T2's densified 7×5 base — the 7×5 island's woods
         // are still just (0,0); its meadow neighbors feed it at full R1
@@ -539,11 +554,13 @@ describe('generateIsland', () => {
             passable: true,
             resources: { dirt: 1, grass: 1, tree: 21 },
         });
-        // The no-highland GUARANTEE HEAP: the 7×5's single dry peak (−1,0)
-        // carries the finite STONE_GUARANTEE_MIN of 12 (stats.stone 12) —
+        // The no-highland GUARANTEE HEAP: the 7×5's highest dry peak carries
+        // the finite STONE_GUARANTEE_MIN of 12 (stats.stone 12). R4 — the
+        // river forded the old (−1,0) peak (a heap cannot stand in the
+        // channel), so the fallback stamped the next-highest dry cell (0,1);
         // its sand top keeps the sandbar look (the heap is stock, the look
         // follows the surface)
-        expect(island.cells.find((cell) => cell.x === -1 && cell.y === 0)).toMatchObject({
+        expect(island.cells.find((cell) => cell.x === 0 && cell.y === 1)).toMatchObject({
             resources: { stone: 12 },
         });
         // Top-left corner (−3,−2): shallow seabed sand + water stacked to
@@ -586,15 +603,23 @@ describe('generateIsland', () => {
         expect(landCells.length).toBe(13);
         // Every impassable column's surface voxel is water
         expect(waterCells.every((cell) => cell.voxels[cell.voxels.length - 1] === 'water')).toBe(true);
-        // No walkable column's surface is water
-        expect(landCells.every((cell) => cell.voxels[cell.voxels.length - 1] !== 'water')).toBe(true);
+        // R4 — THE FORD EXCEPTION: the river is the one walkable water (the
+        // land crosses it), so the no-water-surface rule holds for every
+        // DRY walkable column; the two river fords are exactly the
+        // passable-and-water-topped cells (the channel shape)
+        const dryCells = landCells.filter((cell) => cell.biome !== 'river');
+        expect(dryCells.every((cell) => cell.voxels[cell.voxels.length - 1] !== 'water')).toBe(true);
+        const fords = landCells.filter((cell) => cell.biome === 'river');
+        expect(fords.length).toBe(2);
+        expect(fords.every((cell) => cell.voxels[cell.voxels.length - 1] === 'water')).toBe(true);
     });
 
     it('the fresh basins are drowned: impassable, water-topped, deposit-free (R4)', () => {
         const island = generateIsland({ seed: 7 });
         const basins = island.cells.filter((cell) => cell.biome === 'lake' || cell.biome === 'pond');
-        // The seed-7 island's 5 lakes + 8 ponds
-        expect(basins.length).toBe(13);
+        // The seed-7 island's 4 lakes + 8 ponds (R4's river drained one
+        // lake cell into its channel — the ford is passable, not a basin)
+        expect(basins.length).toBe(12);
         basins.forEach((cell) => {
             // Impassable water columns — the ground sits a step under the
             // sea line and the column tops with water
@@ -612,6 +637,100 @@ describe('generateIsland', () => {
                 .some((cell) => cell.biome === 'lake' || cell.biome === 'pond'),
         ).toBe(false);
     });
+
+    // ── R4 — THE RIVERS ─────────────────────────────────────────────────────
+    // The meandering fresh-water courses: reproducible downhill walks from
+    // the interior high ground to the sea, carved as PASSABLE shallow fords
+    // (the one water the land crosses — and the water the thirst trek drinks
+    // from, inexhaustibly, through the inventory). The exact seed-7 courses
+    // are the determinism contract; the multi-seed sweep pins the shape
+    // invariants (cardinal connectivity, a sea mouth per course, the ford
+    // column shape, the empty channel, the open-sea rim).
+
+    it('R4: the seed-7 island carries two meandering rivers (exact courses)', () => {
+        const island = generateIsland({ seed: 7 });
+        const rivers = island.cells.filter((cell) => cell.biome === 'river');
+        // THE EXACT CAPTURED COURSES (row-major): the 9-cell northern course
+        // from the (−1,−1) highland source, meandering west-northwest then
+        // northeast into the (1,−8) ocean mouth, and the 4-cell eastern
+        // course (6,−4)→(9,−4) into the (10,−4) shallows — both span many
+        // tiles and bend (never a straight line)
+        expect(rivers.map((cell) => [cell.x, cell.y])).toEqual([
+            [1, -7], [1, -6], [0, -5], [1, -5], [-1, -4], [0, -4],
+            [6, -4], [7, -4], [8, -4], [9, -4], [-1, -3], [-1, -2], [-1, -1],
+        ]);
+        // Reproducibility: the same seed regenerates the exact same courses
+        const again = generateIsland({ seed: 7 });
+        expect(again.cells.filter((cell) => cell.biome === 'river').map((cell) => [cell.x, cell.y]))
+            .toEqual(rivers.map((cell) => [cell.x, cell.y]));
+        // THE FORD CONTRACT: every river cell is passable fresh water — the
+        // drowned basin column shape (ground one under the sea line, sand
+        // bed, water to the line) but walkable, deposit-free and carve-free
+        rivers.forEach((cell) => {
+            expect(cell.passable).toBe(true);
+            expect(isFreshBasin(cell.biome)).toBe(true);
+            expect(cell.voxels).toEqual(['dirt', 'sand', 'water']);
+            expect(cell.resources).toEqual({});
+            expect(cell.carving).toBeUndefined();
+        });
+        // The courses never touch the canvas rim (the edge stays open sea —
+        // the rivers MOUTH onto it, they do not run along it)
+        rivers.forEach((cell) => {
+            expect(Math.abs(cell.x)).toBeLessThan(12);
+            expect(Math.abs(cell.y)).toBeLessThan(8);
+        });
+    });
+
+    it('R4: every river course is cardinal-connected and mouths on the sea (multi-seed)', () => {
+        // Across 8 seeds on the default board: the river cells split into
+        // cardinal-connected components (the walk only steps N/E/S/W), every
+        // component HOLDS A MOUTH (a cell cardinally adjacent to an
+        // impassable sea column — the course reaches the ocean, it never
+        // dies inland), and the seed-7 board proves the MULTI-TILE span
+        // (the longest course runs 9 cells).
+        const indexAt = (island: ReturnType<typeof generateIsland>, x: number, y: number) =>
+            island.cells.find((cell) => cell.x === x && cell.y === y);
+        for (let seed = 1; seed <= 8; seed++) {
+            const island = generateIsland({ seed });
+            const rivers = island.cells.filter((cell) => cell.biome === 'river');
+            const seen = new Set<string>();
+            const key = (x: number, y: number) => `${x},${y}`;
+            rivers.forEach((start) => {
+                if (seen.has(key(start.x, start.y))) {
+                    return;
+                }
+                // Flood the component over cardinal river steps
+                const component: Array<{ x: number; y: number }> = [];
+                const queue = [start];
+                seen.add(key(start.x, start.y));
+                let touchesSea = false;
+                while (queue.length > 0) {
+                    const cell = queue.shift()!;
+                    component.push(cell);
+                    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+                        const neighbor = indexAt(island, cell.x + dx, cell.y + dy);
+                        if (neighbor === undefined) {
+                            continue;
+                        }
+                        if (!neighbor.passable) {
+                            // A cardinally adjacent impassable column is the
+                            // mouth — the course drains into the sea
+                            touchesSea = true;
+                        } else if (neighbor.biome === 'river' && !seen.has(key(neighbor.x, neighbor.y))) {
+                            seen.add(key(neighbor.x, neighbor.y));
+                            queue.push(neighbor);
+                        }
+                    }
+                }
+                expect(touchesSea, `seed ${seed} course at ${key(start.x, start.y)} must mouth on the sea`).toBe(true);
+            });
+            if (seed === 7) {
+                // The northern course spans 9 cells — a real multi-tile river
+                const northern = rivers.filter((cell) => cell.y <= -1 && cell.x <= 1);
+                expect(northern.length).toBe(9);
+            }
+        }
+    });
 });
 
 describe('islandTerrainPlugin', () => {
@@ -627,7 +746,7 @@ describe('islandTerrainPlugin', () => {
         const plugin = islandTerrainPlugin({ width: 7, height: 5 });
         createWorld({ seed: 7, plugins: [plugin] });
         // The no-highland 7×5 still carries its finite-stone guarantee heap
-        // (12 units on the peak (−1,0) — see the voxel column reference)
+        // (12 units on the dry peak (0,1) — see the voxel column reference)
         expect(plugin.stats()).toEqual({ land: 13, water: 22, forest: 1, iron: 0, stone: 12 });
     });
 
@@ -656,12 +775,13 @@ describe('islandTerrainPlugin', () => {
         expect(world.canvas.height).toBe(13);
         expect(world.canvas.cells.length).toBe(273);
         expect(plugin.size()).toEqual({ width: 21, height: 13 });
-        // R1's meadow-feed re-grew the 21×13 woods slightly (40 vs 44);
-        // R4's finite stone adds the guarantee heap (21×13 has no highland →
-        // the floor 12 lands on its peak — stats stone 12); R4's impassable
-        // basins move 3 drowned cells from land to water (162−3 = 159 land,
-        // 111+3 = 114 water — none of them was forested, forest holds 40)
-        expect(plugin.stats()).toEqual({ land: 159, water: 114, forest: 40, iron: 0, stone: 12 });
+        // R1's meadow-feed re-grew the 21×13 woods slightly; R4's finite
+        // stone adds the guarantee heap (21×13 has no highland → the floor
+        // 12 lands on its peak — stats stone 12); R4's impassable basins
+        // move 3 drowned cells from land to water (162−3 = 159 land, 111+3
+        // = 114 water); R4's river forded 3 forested cells on this board —
+        // the drowned woods leave the forest census (40−3 = 37)
+        expect(plugin.stats()).toEqual({ land: 159, water: 114, forest: 37, iron: 0, stone: 12 });
         // The redraw is announced on the story feed (a world-scale
         // happening — the god reshaped the world)
         expect(world.events.log()[events]).toEqual({
@@ -882,26 +1002,27 @@ describe('islandTerrainPlugin', () => {
     it('R4: mirrors the finite stone stock onto fine cells — live, never resurrected', () => {
         const plugin = islandTerrainPlugin({ width: 7, height: 5 });
         const world = createWorld({ seed: 7, plugins: [plugin] });
-        // The 7×5's rock site: the guarantee heap on the peak (−1,0) — 12
-        // units on a sand-surfaced column (GRAVEL bedrock underneath: the
-        // ground the piles stand on, itself no supplier)
-        const heap = world.cellAt(-1, 0)!;
+        // The 7×5's rock site: the guarantee heap on the dry peak (0,1) —
+        // 12 units on a sand-surfaced column (GRAVEL bedrock underneath:
+        // the ground the piles stand on, itself no supplier; R4's river
+        // forded the old (−1,0) peak, so the heap moved)
+        const heap = world.cellAt(0, 1)!;
         expect(heap.resources.stone).toBe(12);
-        const sub = plugin.canvasFor([{ x: -1, y: 0 }])!;
+        const sub = plugin.canvasFor([{ x: 0, y: 1 }])!;
         // The stock scatters one unit per seeded subtile — 12 loose piles,
         // never stacked, each a single unit
         const piles = sub.cells.filter((cell) => (cell.resources.stone ?? 0) > 0);
         expect(piles.length).toBe(12);
         expect(piles.every((cell) => cell.resources.stone === 1)).toBe(true);
         // An UNCHANGED parent serves the cached grid (the fingerprint holds)
-        expect(plugin.canvasFor([{ x: -1, y: 0 }])).toBe(sub);
+        expect(plugin.canvasFor([{ x: 0, y: 1 }])).toBe(sub);
         // Mine the parent down to 5 — the stock count rides the fingerprint,
         // so the cached grid invalidates and the mirror re-reads the LIVE
         // stock: five units stand, every one of them a pile the 12-unit
         // scatter already showed (mining draws units OFF the site — the
         // stale cache resurrects nothing)
         heap.resources.stone = 5;
-        const after = plugin.canvasFor([{ x: -1, y: 0 }])!;
+        const after = plugin.canvasFor([{ x: 0, y: 1 }])!;
         const survivors = after.cells.filter((cell) => (cell.resources.stone ?? 0) > 0);
         expect(survivors.length).toBe(5);
         const pileSet = new Set(piles.map((cell) => `${cell.x},${cell.y}`));
@@ -911,10 +1032,10 @@ describe('islandTerrainPlugin', () => {
         // seeded stream + the row-major grid, no history in the layout)
         const fresh = islandTerrainPlugin({ width: 7, height: 5 });
         const freshWorld = createWorld({ seed: 7, plugins: [fresh] });
-        freshWorld.cellAt(-1, 0)!.resources.stone = 5;
+        freshWorld.cellAt(0, 1)!.resources.stone = 5;
         expect(
             fresh
-                .canvasFor([{ x: -1, y: 0 }])!
+                .canvasFor([{ x: 0, y: 1 }])!
                 .cells.filter((cell) => (cell.resources.stone ?? 0) > 0)
                 .map((cell) => `${cell.x},${cell.y}`),
         ).toEqual(survivors.map((cell) => `${cell.x},${cell.y}`));
@@ -925,7 +1046,7 @@ describe('islandTerrainPlugin', () => {
         // read too: their column is the lowered seabed the sea columns get
         // (the beach slopes into its sea), not the parent's bedrock.
         heap.resources.stone = 0;
-        const bare = plugin.canvasFor([{ x: -1, y: 0 }])!;
+        const bare = plugin.canvasFor([{ x: 0, y: 1 }])!;
         expect(bare.cells.every((cell) => cell.resources.stone === undefined)).toBe(true);
         expect(bare.cells.every((cell) => !cell.passable || cell.voxels.includes('gravel'))).toBe(true);
     });

@@ -79,9 +79,9 @@
 // view) sit under a translucent night veil whose alpha is the world clock's
 // dark side: elapsed world minutes → scenario/dayCycle.ts daylightAt (the
 // shared clock contract, the same pure functions the sleep plugin reads) →
-// ambient light in [NIGHT_LIGHT_FLOOR 0.35, 1] → veil alpha = 1 − ambient.
+// ambient light in [NIGHT_LIGHT_FLOOR 0.8, 1] → veil alpha = 1 − ambient.
 // Full daylight 07:30–16:30 paints nothing; the 18:00–06:00 night paints
-// the readable 0.65 floor (the R6 "nonblocking readable night floor" rule —
+// the slight 0.2-alpha shade (the R6 "nonblocking readable night floor" rule —
 // every tile stays visible and clickable through the veil, which is
 // pointer-events: none); dusk (16:30→18:00) and dawn (06:00→07:30) ride
 // 90-minute smoothstep ramps so the light never jumps between minutes. The
@@ -101,7 +101,11 @@ import {
     type UnicodeFrame,
 } from '@godspace/canvas';
 import type { TilePath } from '@godspace/core';
+import type { Canvas, TerrainCell } from '../engine/types';
 import type { IslandHandle } from '../scenario/island';
+// R5 — the farm plot glyphs (the single source the scenario's decoration
+// resolver and the legend both read — immature sprout / ripe berries)
+import { FARM_STAGE_GLYPHS } from '../plugins/farming/farmingPlugin';
 import { PALETTE } from '../styles/theme';
 import { styled } from '../styles/styled';
 import { Panel, PanelTitle } from '../components/panel';
@@ -143,11 +147,16 @@ const Grid = styled<{ columns: number; size: number }>('div', {
     alignContent: 'start',
 });
 
-// background/border are prop-driven ('custom' sentinel resolves rest[key])
-const Cell = styled<{ background: string; border: string }>('div', {
+// background/border are prop-driven ('custom' sentinel resolves rest[key]).
+// R4 — borderRadius is prop-driven too: the views pass the tile's coast
+// curve string ('NW NE SE SW' px, see coastRadiusCss) so region boundaries
+// round while interior tiles keep the base 3px look (the function returns
+// the string untouched — styleStructure passes strings through; the
+// fallback '3px' covers any caller that passes no radius).
+const Cell = styled<{ background: string; border: string; radius?: string }>('div', {
     background: 'custom',
     border: 'custom',
-    borderRadius: 3,
+    borderRadius: ({ radius }) => radius ?? '3px',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -329,9 +338,10 @@ const BoardShell = styled('div', {
 // The NIGHT VEIL (R5) — the god-view's dynamic lighting overlay over a DOM
 // tile board. One translucent wash whose alpha is the clock's dark side
 // (1 − ambient, scenario/dayCycle.ts daylightAt): 0 through the daylight
-// plateau, 0.65 at the night floor (NIGHT_LIGHT_FLOOR 0.35 — the R6
-// "nonblocking readable night floor": every tile keeps 35 % of its color and
-// stays readable), a smoothstep value in between across dusk/dawn. The wash
+// plateau, 0.2 at the night floor (NIGHT_LIGHT_FLOOR 0.8 — the R6
+// "nonblocking readable night floor": a SLIGHT shade only, every tile keeps
+// 80 % of its color and stays plainly visible), a smoothstep value in
+// between across dusk/dawn. The wash
 // is night BLUE (not black) so the moonlit board keeps its hue contrast.
 // Rounded to 3 decimals — the smoothstep ramp's float noise stays out of the
 // CSS string, the paint and the tests read the exact rounded value.
@@ -409,9 +419,12 @@ const SURFACE_ORDER: string[] = [
     'forest',
     'highland',
     // R4 — the interior fresh-water basins surface as their own water keys
-    // (the palette joins them in scenario/island.ts GRASS_TILE_PALETTE)
+    // (the palette joins them in scenario/island.ts GRASS_TILE_PALETTE),
+    // and so do the river courses (the RIVER_TILE_COLOR the terrain exports
+    // joins the same palette — the scenario writer wires the mapping)
     'lake',
     'pond',
+    'river',
 ];
 
 // Board layer — the wheel-zoom wrapper around each mounted tile board
@@ -447,6 +460,111 @@ const tileBorder = (isSelected: boolean, isInspected: boolean): string =>
 // width shorthand)
 const tileStroke = (isSelected: boolean, isInspected: boolean): string =>
     isSelected ? PALETTE.accent : isInspected ? PALETTE.tileAccent : 'rgba(0,0,0,0.3)';
+
+// ── R4 — neighborhood-aware coast curves ────────────────────────────────────
+//
+// The board's staircase coastline is a RENDERING artifact, not a simulation
+// fact: the DOM grids draw every cell as a rounded rect and the SVG twin an
+// inset rect, so the sea/land boundary (and every biome edge) reads as a
+// hard staircase of 90° steps. The fix is a PURE read of the CURRENT view's
+// cell grid — the root canvas at the island view, the zoomed slice's canvas
+// at the interior, i.e. the very grid the simulation walks, so a curve can
+// never disagree with fine-grid passability — that rounds the corners where
+// visual REGIONS meet:
+//
+//   WATER — impassable columns (ocean, shallows, lake, pond)
+//   RIVER — the passable fresh fords (their banks curve like shores)
+//   LAND  — passable dry ground
+//
+// Per corner, the two cardinal edges meeting there are compared against the
+// tile's own region (out-of-grid neighbors read as WATER — the canvas rim is
+// always open sea):
+//   both edges differ   → CURVE_RADIUS (12) — the region CORNER (headland
+//                         and cove — exactly where the staircase turns) gets
+//                         the big round;
+//   exactly one differs → CURVE_RADIUS_SOFT (6) — the boundary sweeps
+//                         through the corner: a straight coastal run rounds
+//                         its water-facing corners, so the seam bulges into
+//                         a scalloped curve instead of a hard line;
+//   neither differs     → CURVE_BASE (3) — region interior: the tile keeps
+//                         the pre-R4 look exactly (the mass stays a mass).
+//
+// The DOM boards paint the radii through the Cell's `radius` prop (the
+// border-radius shorthand, 'NW NE SE SW' px order — a STRING value, so the
+// styled factory passes it through styleStructure untouched). The SVG twin
+// draws the same corners as quarter-arc path TABS in the tile's own color
+// (see CoastCurve) — the vector coastline curves without touching the rect/
+// group structure the tests and interactions address, and the night veil
+// stays the document's last child (the overlay contract is untouched).
+//
+// The helpers are PURE and EXPORTED — the curve tests (worldGridCurves.
+// test.tsx) pin the exact radii per neighborhood shape AND the boards'
+// agreement with the helper, through the real rendered DOM.
+
+/** The three visual regions the coast curves read (see the rule block). */
+type RegionClass = 'water' | 'river' | 'land';
+
+/** The big round at a corner where two boundary edges meet (headland/cove). */
+export const CURVE_RADIUS = 12;
+
+/** The soft round where the boundary sweeps through one edge of a corner. */
+export const CURVE_RADIUS_SOFT = 6;
+
+/** The base corner — region interior keeps the pre-R4 tile look. */
+export const CURVE_BASE = 3;
+
+/** Which visual region a cell belongs to (a river banks like a shore). */
+const regionOf = (cell: TerrainCell | undefined): RegionClass => {
+    // Out-of-grid reads as WATER — the canvas rim is always open sea
+    if (!cell) {
+        return 'water';
+    }
+    if (cell.biome === 'river') {
+        return 'river';
+    }
+    return cell.passable ? 'land' : 'water';
+};
+
+/**
+ * The four corner radii of one tile in the CURRENT view's grid, in CSS
+ * border-radius order [NW, NE, SE, SW] (row 0 is the board's TOP, so y−1
+ * is north). Pure — the same canvas the view renders from.
+ */
+export const coastCornerRadii = (
+    canvas: Canvas,
+    x: number,
+    y: number,
+): [number, number, number, number] => {
+    const halfX = (canvas.width - 1) / 2;
+    const halfY = (canvas.height - 1) / 2;
+    // The centered row-major read (the terrain plugin's cellOn shape)
+    const at = (cx: number, cy: number): TerrainCell | undefined =>
+        cx >= -halfX && cx <= halfX && cy >= -halfY && cy <= halfY
+            ? canvas.cells[(cy + halfY) * canvas.width + (cx + halfX)]
+            : undefined;
+    const self = regionOf(at(x, y));
+    // Cardinal edge flags — does the region CHANGE across this edge?
+    const north = regionOf(at(x, y - 1)) !== self;
+    const east = regionOf(at(x + 1, y)) !== self;
+    const south = regionOf(at(x, y + 1)) !== self;
+    const west = regionOf(at(x - 1, y)) !== self;
+    // The corner rule: both edges differ → the big round; exactly one →
+    // the soft sweep; neither → the base look
+    const corner = (edgeA: boolean, edgeB: boolean): number =>
+        edgeA && edgeB ? CURVE_RADIUS : edgeA !== edgeB ? CURVE_RADIUS_SOFT : CURVE_BASE;
+    return [
+        corner(north, west),
+        corner(north, east),
+        corner(south, east),
+        corner(south, west),
+    ];
+};
+
+/** The border-radius CSS string ('NW NE SE SW' px) of one tile. */
+export const coastRadiusCss = (canvas: Canvas, x: number, y: number): string =>
+    coastCornerRadii(canvas, x, y)
+        .map((radius) => `${radius}px`)
+        .join(' ');
 
 export const WorldGrid = () => {
     const island = useWorld();
@@ -507,7 +625,7 @@ export const WorldGrid = () => {
     // bumps it, worldBridge — re-renders this component, so the lighting
     // tracks the ticker exactly like every other panel) and map through the
     // shared clock contract (scenario/dayCycle.ts):
-    //   daylightAt — the smooth ambient in [NIGHT_LIGHT_FLOOR 0.35, 1]:
+    //   daylightAt — the smooth ambient in [NIGHT_LIGHT_FLOOR 0.8, 1]:
     //                full daylight 07:30–16:30, the floor through the
     //                18:00–06:00 night, 90-minute smoothstep ramps between
     //   isNight    — the phase flag (the night floor's window, save the
@@ -549,6 +667,18 @@ export const WorldGrid = () => {
     const inspectedTail = inspected
         ? { x: inspected[inspected.length - 1].x, y: inspected[inspected.length - 1].y }
         : null;
+
+    // R4 — THE CURVE SOURCE: the CURRENT view's cell grid (the root canvas
+    // at the island view, the zoomed slice's canvas at the interior — the
+    // very grid the simulation walks, so the coast curves can never
+    // disagree with fine-grid passability). The pure helpers classify the
+    // water/river/land regions and round the corners where they meet (see
+    // the curve rule block above); the DOM boards consume the radius CSS
+    // string, the SVG board the raw corner radii for its arc tabs.
+    const curveCanvas: Canvas = slice ? slice.canvas : world.canvas;
+    const radiusOf = (x: number, y: number): string => coastRadiusCss(curveCanvas, x, y);
+    const cornersOf = (x: number, y: number): [number, number, number, number] =>
+        coastCornerRadii(curveCanvas, x, y);
 
     // A tile click wires the same two inspections regardless of which canvas
     // is showing (all four frames carry identical coordinates) —
@@ -703,6 +833,8 @@ export const WorldGrid = () => {
                                 inspected={inspectedTail}
                                 selected={selected}
                                 size={26}
+                                // R4 — the coast curve radii of the current view
+                                radiusOf={radiusOf}
                                 // R5 — the night veil's alpha (1 − ambient,
                                 // computed once in WorldGrid)
                                 veilAlpha={veilAlpha}
@@ -725,6 +857,8 @@ export const WorldGrid = () => {
                                 // tabs now share the ascii grid so switching never breaks
                                 // the layout
                                 size={26}
+                                // R4 — the coast curve radii of the current view
+                                radiusOf={radiusOf}
                                 // The island view (the ladder's top — no zoomed slice)
                                 // fades the tree decorations by the tile's TRUE scale-0
                                 // coverage; the interior view stands at full opacity
@@ -746,6 +880,9 @@ export const WorldGrid = () => {
                                 palette={svg.palette().tiles}
                                 inspected={inspectedTail}
                                 selected={selected}
+                                // R4 — the coast curve radii of the current view
+                                // (the SVG twin draws quarter-arc tabs, see CoastCurve)
+                                cornersOf={cornersOf}
                                 // Same island-view flag as the unicode view above — the
                                 // coverage fade applies to the island view only (the
                                 // interior view's drawn cells are trees by construction)
@@ -791,6 +928,16 @@ const LegendSwatch = styled<{ color: string }>('span', {
     display: 'inline-block',
 });
 
+// R5 — the legend's glyph entries: farm plots are standing DECORATIONS (the
+// emoji icons the unicode/svg boards draw on empty tiles), not surfaces —
+// the swatch ladder cannot show them, so the legend appends one glyph item
+// per plot stage (the exact FARM_STAGE_GLYPHS the boards draw — legend and
+// board can never disagree)
+const LegendGlyph = styled('span', {
+    fontSize: 11,
+    lineHeight: 1,
+});
+
 const AsciiView = ({
     world,
     frame,
@@ -798,6 +945,7 @@ const AsciiView = ({
     inspected,
     selected,
     size,
+    radiusOf,
     veilAlpha,
     progressFor,
     onTile,
@@ -809,9 +957,13 @@ const AsciiView = ({
     inspected: { x: number; y: number } | null;
     selected: string | null;
     size: number;
+    // R4 — the tile's coast-curve border-radius string ('NW NE SE SW' px,
+    // coastRadiusCss over the CURRENT view's canvas — see WorldGrid's curve
+    // source); interior tiles get the base '3px' look
+    radiusOf: (x: number, y: number) => string;
     // R5 — the night veil's alpha (1 − ambient, scenario/dayCycle.ts
     // daylightAt; computed once in WorldGrid so every canvas reads the
-    // same rounded value). 0 paints nothing, 0.65 the night floor.
+    // same rounded value). 0 paints nothing, 0.2 the slight night shade.
     veilAlpha: number;
     // R6 — the standing jobs of a tile (the shared tile-work ledger + the
     // live site build work) — drawn as the bottom-edge progress bars
@@ -846,6 +998,8 @@ const AsciiView = ({
                             key={`${tile.x},${tile.y}`}
                             background={tile.background}
                             border={tileBorder(isSelected, isInspected)}
+                            // R4 — the coast curve radii of the current view
+                            radius={radiusOf(tile.x, tile.y)}
                             title={tile.title}
                             data-testid={`grid-tile-${tile.x}-${tile.y}`}
                             onClick={() => onTile(tile, castaway?.id)}
@@ -896,6 +1050,7 @@ const UnicodeView = ({
     selected,
     size,
     islandView,
+    radiusOf,
     veilAlpha,
     progressFor,
     onTile,
@@ -915,9 +1070,13 @@ const UnicodeView = ({
     // scatters exactly the deposited units, one per cell), so its true
     // on-screen coverage is 100 %
     islandView: boolean;
+    // R4 — the tile's coast-curve border-radius string ('NW NE SE SW' px,
+    // coastRadiusCss over the CURRENT view's canvas — see WorldGrid's curve
+    // source); interior tiles get the base '3px' look
+    radiusOf: (x: number, y: number) => string;
     // R5 — the night veil's alpha (1 − ambient, scenario/dayCycle.ts
     // daylightAt; computed once in WorldGrid so every canvas reads the
-    // same rounded value). 0 paints nothing, 0.65 the night floor.
+    // same rounded value). 0 paints nothing, 0.2 the slight night shade.
     veilAlpha: number;
     // R6 — the standing jobs of a tile (the shared tile-work ledger + the
     // live site build work) — drawn as the bottom-edge progress bars
@@ -954,13 +1113,23 @@ const UnicodeView = ({
                     // always wins the tile over the decoration. Everything else
                     // stays bare — terrain shows through its background color
                     // alone (no per-tile emoji flood)
+                    // R5 — the farm stages join the decoration ladder
+                    // ('farm' immature / 'farm-ripe', the scenario's
+                    // decorationOfCell reads the plot's clock-derived stage
+                    // through farming.plotAt): an entity still wins the
+                    // tile, so a farmer standing on its plot never masks
+                    // the farmer — the glyph returns the minute they leave
                     const decorationGlyph =
                         glyph === undefined
                             ? tile.decoration === 'rock'
                                 ? '🪨'
                                 : tile.decoration === 'tree'
                                   ? '🌳'
-                                  : null
+                                  : tile.decoration === 'farm'
+                                    ? FARM_STAGE_GLYPHS.immature
+                                    : tile.decoration === 'farm-ripe'
+                                      ? FARM_STAGE_GLYPHS.ripe
+                                      : null
                             : null;
                     // THE SCALE-1 TREE OPACITY — at the island view the tree
                     // icon fades by the tile's TRUE scale-0 tree coverage: its
@@ -987,6 +1156,8 @@ const UnicodeView = ({
                             key={`${tile.x},${tile.y}`}
                             background={tile.background}
                             border={tileBorder(isSelected, isInspected)}
+                            // R4 — the coast curve radii of the current view
+                            radius={radiusOf(tile.x, tile.y)}
                             title={tile.title}
                             data-testid={`unicode-tile-${tile.x}-${tile.y}`}
                             onClick={() => onTile(tile, castaway?.id)}
@@ -1008,7 +1179,11 @@ const UnicodeView = ({
                                     color={
                                         decorationGlyph === '🪨'
                                             ? (palette.stone ?? '#8d939e')
-                                            : (palette.tree ?? '#4caf50')
+                                            : decorationGlyph === FARM_STAGE_GLYPHS.immature
+                                              ? '#7cb342' // sprout green — the planted bed
+                                              : decorationGlyph === FARM_STAGE_GLYPHS.ripe
+                                                ? '#b0439f' // berry magenta — the fruiting plot
+                                                : (palette.tree ?? '#4caf50')
                                     }
                                     // The coverage fade (tree, island view
                                     // only) — undefined omits the attribute
@@ -1016,7 +1191,10 @@ const UnicodeView = ({
                                     data-testid={
                                         decorationGlyph === '🪨'
                                             ? 'rock-icon-unicode'
-                                            : 'tree-icon-unicode'
+                                            : decorationGlyph === FARM_STAGE_GLYPHS.immature ||
+                                              decorationGlyph === FARM_STAGE_GLYPHS.ripe
+                                              ? 'farm-icon-unicode'
+                                              : 'tree-icon-unicode'
                                     }
                                 >
                                     {decorationGlyph}
@@ -1044,6 +1222,15 @@ const UnicodeView = ({
                     {surface}
                 </LegendItem>
             ))}
+            {/* R5 — the farm plot glyphs (the exact stage icons the board
+                draws — the legend teaches the decor without claiming a
+                surface color the plots do not have) */}
+            <LegendItem key="farm-immature" color="currentColor">
+                <LegendGlyph>{FARM_STAGE_GLYPHS.immature}</LegendGlyph> farm
+            </LegendItem>
+            <LegendItem key="farm-ripe" color="currentColor">
+                <LegendGlyph>{FARM_STAGE_GLYPHS.ripe}</LegendGlyph> ripe farm
+            </LegendItem>
         </Legend>
     </>
 );
@@ -1161,6 +1348,76 @@ const SvgTree = ({
     </>
 );
 
+// R4 — the SVG twin of the DOM border-radius curve rule (see the curve
+// block above tileStroke). One path per boundary tile: every corner the
+// region rule rounds PAST the base gets a quarter-arc TAB painted in the
+// tile's OWN color, spilling the region's color around the cell corner up
+// to the arc — the 1-unit seam gap (the SvgTile inset) gets covered to the
+// arc, so the coastline reads as a curve instead of a staircase. The arc
+// uses a quadratic Bézier with the cell corner as control point (the
+// fillet bulges toward the corner — the region's color wins the corner
+// point itself). Interior tiles (all corners at the base radius) draw
+// NOTHING — the mass stays a mass. The path rides INSIDE the tile's <g>,
+// painted right after the rect: glyphs, decorations and work bars stay on
+// top, and the night veil stays the document's last child (the R5 overlay
+// contract is untouched).
+const CoastCurve = ({
+    x,
+    y,
+    size,
+    radii,
+    fill,
+    tileX,
+    tileY,
+}: {
+    // The tile's CELL-BOX origin (column·size, row·size — NOT the inset
+    // rect box: the tab must reach the seam gap, which lives outside the
+    // rect but inside the cell box)
+    x: number;
+    y: number;
+    size: number;
+    // The corner radii [NW, NE, SE, SW] from coastCornerRadii
+    radii: [number, number, number, number];
+    // The tile's own background — the region color the tab spills
+    fill: string;
+    // The engine coordinates — only for the test id (the curve tests
+    // address the tab by tile, never by pixel)
+    tileX: number;
+    tileY: number;
+}) => {
+    const [nw, ne, se, sw] = radii;
+    const x1 = x + size;
+    const y1 = y + size;
+    const parts: string[] = [];
+    // Each tab: edge point → arc (control = the cell corner) → edge point
+    // → close through the corner, so the filled sliver hugs the corner
+    if (nw > CURVE_BASE) {
+        parts.push(`M ${x + nw} ${y} Q ${x} ${y} ${x} ${y + nw} L ${x} ${y} Z`);
+    }
+    if (ne > CURVE_BASE) {
+        parts.push(`M ${x1 - ne} ${y} Q ${x1} ${y} ${x1} ${y + ne} L ${x1} ${y} Z`);
+    }
+    if (se > CURVE_BASE) {
+        parts.push(`M ${x1} ${y1 - se} Q ${x1} ${y1} ${x1 - se} ${y1} L ${x1} ${y1} Z`);
+    }
+    if (sw > CURVE_BASE) {
+        parts.push(`M ${x} ${y1 - sw} Q ${x} ${y1} ${x + sw} ${y1} L ${x} ${y1} Z`);
+    }
+    // Region interior — nothing to draw (the base 3px rect corner stands)
+    if (parts.length === 0) {
+        return null;
+    }
+    // The test id keys the tile's ENGINE coordinates (the curve tests
+    // address the tab by tile, never by pixel)
+    return (
+        <path
+            data-testid={`coast-curve-${tileX}-${tileY}`}
+            d={parts.join(' ')}
+            fill={fill}
+        />
+    );
+};
+
 const SvgView = ({
     world,
     frame,
@@ -1168,6 +1425,7 @@ const SvgView = ({
     inspected,
     selected,
     islandView,
+    cornersOf,
     veilAlpha,
     progressFor,
     onTile,
@@ -1184,9 +1442,13 @@ const SvgView = ({
     // features/tileDetails treeIconOpacity); the interior view stands at
     // full opacity (its drawn cells are trees by construction)
     islandView: boolean;
+    // R4 — the tile's coast corner radii [NW, NE, SE, SW] (coastCornerRadii
+    // over the CURRENT view's canvas — see WorldGrid's curve source); the
+    // CoastCurve tabs paint every corner rounded past the base
+    cornersOf: (x: number, y: number) => [number, number, number, number];
     // R5 — the night veil's alpha (1 − ambient, scenario/dayCycle.ts
     // daylightAt; computed once in WorldGrid so every canvas reads the
-    // same rounded value). 0 paints nothing, 0.65 the night floor.
+    // same rounded value). 0 paints nothing, 0.2 the slight night shade.
     veilAlpha: number;
     // R6 — the standing jobs of a tile (the shared tile-work ledger + the
     // live site build work) — drawn as the bottom-edge progress bars
@@ -1247,6 +1509,19 @@ const SvgView = ({
                             fill={tile.background}
                             stroke={tileStroke(isSelected, isInspected)}
                         />
+                        {/* R4 — the coast curve tabs (the SVG twin of the
+                            DOM border-radius rule): painted right after the
+                            rect so glyphs/decorations/bars stay on top and
+                            the night veil stays the document's last child */}
+                        <CoastCurve
+                            x={column * frame.size}
+                            y={row * frame.size}
+                            size={frame.size}
+                            radii={cornersOf(tile.x, tile.y)}
+                            fill={tile.background}
+                            tileX={tile.x}
+                            tileY={tile.y}
+                        />
                         {/* THE SCALE-1 TREE OPACITY — the island view fades
                             the vector tree icon by the tile's TRUE scale-0
                             tree coverage (the live `resources.tree` units
@@ -1287,6 +1562,21 @@ const SvgView = ({
                                 y={row * frame.size + frame.size / 2}
                                 size={frame.size}
                             />
+                        ) : tile.decoration === 'farm' || tile.decoration === 'farm-ripe' ? (
+                            // R5 — the farm plot: the stage emoji drawn as
+                            // vector text (the same FARM_STAGE_GLYPHS the
+                            // unicode board and the legend read — one
+                            // source; an entity glyph still wins the tile)
+                            <SvgGlyph
+                                x={column * frame.size + frame.size / 2}
+                                y={row * frame.size + frame.size / 2}
+                                fill={tile.decoration === 'farm' ? '#7cb342' : '#b0439f'}
+                                data-testid={`farm-icon-svg-${tile.x}-${tile.y}`}
+                            >
+                                {tile.decoration === 'farm'
+                                    ? FARM_STAGE_GLYPHS.immature
+                                    : FARM_STAGE_GLYPHS.ripe}
+                            </SvgGlyph>
                         ) : null}
                         {/* R6 — the standing jobs' progress bars (the shared
                             tile work + the live site build work): a 2-unit
@@ -1342,6 +1632,14 @@ const SvgView = ({
                     {surface}
                 </LegendItem>
             ))}
+            {/* R5 — the farm plot glyphs (same pair the unicode legend and
+                the vector board carry) */}
+            <LegendItem key="farm-immature" color="currentColor">
+                <LegendGlyph>{FARM_STAGE_GLYPHS.immature}</LegendGlyph> farm
+            </LegendItem>
+            <LegendItem key="farm-ripe" color="currentColor">
+                <LegendGlyph>{FARM_STAGE_GLYPHS.ripe}</LegendGlyph> ripe farm
+            </LegendItem>
         </Legend>
     </>
 );

@@ -96,7 +96,9 @@ describe('App', () => {
         fireEvent.click(screen.getByTestId('story-tab'));
         expect(screen.getAllByTestId('story-entry').length).toBe(5);
         // The roster rows now carry the actors' current task labels
-        expect(screen.getByTestId('actor-task-actor-1').textContent).toBe('· travels to trees');
+        // R5 — Ael's first minute now belongs to the farm rung (a berry
+        // plot beside his landing outranks the wood trek)
+        expect(screen.getByTestId('actor-task-actor-1').textContent).toBe('· travels to the farm');
         expect(screen.getByTestId('actor-task-actor-4').textContent).toBe('· chops a tree');
     });
 
@@ -229,7 +231,8 @@ describe('App', () => {
         // unicode canvas at (-2,5) — tile (5+8)×25+(-2+12) = 335
         fireEvent.click(screen.getByTestId('actor-chip-Cove'));
         expect(screen.getByTestId('actor-profile').textContent).toBe('♀ female');
-        expect(screen.getByTestId('world-grid-unicode').children[335].textContent).toBe('🧍‍♀️');
+        // Cove's river-era landing (−3,5) → child 13×25+9 = 334
+        expect(screen.getByTestId('world-grid-unicode').children[334].textContent).toBe('🧍‍♀️');
     });
 
     it('the bonds list holds exactly one row per fellow castaway — never self, never foreign pairs', () => {
@@ -257,7 +260,7 @@ describe('App', () => {
         const stepped = screen.getByTestId('actor-relations');
         expect(
             Array.from(stepped.children).map((child) => child.textContent),
-        ).toEqual(['Bram — neutral (0)', 'Cove — neutral (3)', 'Dune — neutral (0)']);
+        ).toEqual(['Bram — neutral (0)', 'Cove — neutral (11)', 'Dune — neutral (0)']);
 
         // A different selection never shows its own name either — the list is
         // always the OTHER castaways, so pairs between third parties cannot
@@ -394,12 +397,12 @@ describe('App', () => {
         ).toEqual(['Kiki — bird · flying-2 · z 2']);
         // Highland floor: the ground supply — generalized to categories
         // (R4: the rock stock counts its THREE finite units — 3 stone +
-        // 1 dirt = 4 materials). This run's highland hid a flint too (the
-        // survey's chance stream moved with the richer map) — the tool is
-        // its own category
+        // 1 dirt = 4 materials). R4-RIVERS — this tile is now a water
+        // cell on the river path, so the DRINKS category joins the row
+        // (the tool cache the old survey hid here is gone)
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
-        ).toEqual(['Materials ×4', 'Tools ×1']);
+        ).toEqual(['Drinks ×1', 'Materials ×4']);
         // …but the tile click selects no entity — no inspector card opens
         // (the resident ROW would; the tile click alone does not)
         expect(screen.queryByTestId('actor-inventory')).toBeNull();
@@ -410,10 +413,10 @@ describe('App', () => {
 
     it('the tile inspector follows every subsequent click', () => {
         render(<App seed={7} />);
-        // First inspect Dune's landing spot (the rim-ranked pick moved with
-        // the R4 basins — (-5,-1) now)…
-        fireEvent.click(screen.getByTestId('unicode-tile--5--1'));
-        expect(screen.getByTestId('tile-position').textContent).toBe('(-5, -1) · grass');
+        // First inspect Dune's landing spot (the river-era rim ranking
+        // moved it to (5,-2) — a treed tile)…
+        fireEvent.click(screen.getByTestId('unicode-tile-5--2'));
+        expect(screen.getByTestId('tile-position').textContent).toBe('(5, -2) · forest');
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['Dune — human · well']);
@@ -617,8 +620,8 @@ describe('App', () => {
         expect(treed.querySelector('[data-testid="tree-icon-unicode"]')).not.toBeNull();
         expect(treed.title).toContain('tree ×383');
         // A castaway standing on his landing tile: Dune came ashore on
-        // (-5,-1) — the entity wins the tile, no tree icon
-        expect(screen.getByTestId('unicode-tile--5--1').textContent).toBe('🧍‍♂️');
+        // (5,-2) — the entity wins the tile, no tree icon
+        expect(screen.getByTestId('unicode-tile-5--2').textContent).toBe('🧍‍♂️');
         // A bare meadow tile draws nothing — terrain is color-only (the
         // no-flood rule the decorations never break; (0,-3) has no woods
         // beside it, so no ingress fringe and no tree)
@@ -676,7 +679,7 @@ describe('App', () => {
         // An ENTITY glyph stands at full strength — its Marker carries no
         // opacity rule at all (the fade belongs to the decorations only)
         const entity = screen
-            .getByTestId('unicode-tile--5--1')
+            .getByTestId('unicode-tile-5--2')
             .querySelector('span') as HTMLElement;
         expect(entity.textContent).toBe('🧍‍♂️');
         expect(ruleFor(entity.className)).not.toContain('opacity');
@@ -1326,12 +1329,13 @@ describe('App — the standing-job progress bars (R6)', () => {
         const island = createIslandWorld({ seed: 7 });
         render(<Dashboard island={island} onReroll={() => undefined} />);
         // Minute 1: the woodless cast opens the shared chop job on the
-        // treed tile (-2,5) — 15 work-minutes, nothing banked yet
+        // treed tile (5,-2) — Dune's river-era landing is forest, he
+        // fells at once — 15 work-minutes, nothing banked yet
         act(() => {
             island.world.step();
             bumpRevision();
         });
-        const bar = screen.getByTestId('work-bar--2-5-chop');
+        const bar = screen.getByTestId('work-bar-5--2-chop');
         expect(bar.getAttribute('role')).toBe('progressbar');
         expect(bar.getAttribute('aria-valuenow')).toBe('0');
         expect(bar.getAttribute('aria-valuemin')).toBe('0');
@@ -1342,11 +1346,11 @@ describe('App — the standing-job progress bars (R6)', () => {
             island.world.step();
             bumpRevision();
         });
-        expect(screen.getByTestId('work-bar--2-5-chop').getAttribute('aria-valuenow')).toBe('1');
-        expect(screen.getByTestId('work-bar--2-5-chop').getAttribute('aria-label')).toBe('chop 1/15');
+        expect(screen.getByTestId('work-bar-5--2-chop').getAttribute('aria-valuenow')).toBe('1');
+        expect(screen.getByTestId('work-bar-5--2-chop').getAttribute('aria-label')).toBe('chop 1/15');
         // The Tile Inspector reads the same standing job: the exact line
         // beside a track carrying the same aria triple
-        fireEvent.click(screen.getByTestId('unicode-tile--2-5'));
+        fireEvent.click(screen.getByTestId('unicode-tile-5--2'));
         expect(screen.getByTestId('tile-work-chop').textContent).toBe('chop 1/15');
         const track = (
             screen.getByTestId('tile-work-chop').parentElement as HTMLElement
@@ -1370,7 +1374,7 @@ describe('App — the standing-job progress bars (R6)', () => {
         // placement is a campaign result, not a pinned coordinate)
         fireEvent.click(screen.getByTestId('canvas-tab-ascii'));
         const shelterTile = island.construction.sites.sites().find((site) => site.blueprintId === 'shelter')?.parent[0] ?? { x: 0, y: 0 };
-        const asciiChop = screen.getByTestId('work-bar--2-5-chop');
+        const asciiChop = screen.getByTestId('work-bar-5--2-chop');
         expect(asciiChop.getAttribute('role')).toBe('progressbar');
         expect(asciiChop.getAttribute('aria-valuenow')).toBe('0');
         expect(asciiChop.getAttribute('aria-valuemax')).toBe('15');
@@ -1380,7 +1384,7 @@ describe('App — the standing-job progress bars (R6)', () => {
         expect(asciiSite.getAttribute('aria-label')).toBe('shelter 0/240');
         // -- the SVG board: strips carrying the accessible <title> read --
         fireEvent.click(screen.getByTestId('canvas-tab-svg'));
-        const svgChop = screen.getByTestId('work-bar-svg--2-5-chop');
+        const svgChop = screen.getByTestId('work-bar-svg-5--2-chop');
         expect(svgChop.tagName.toLowerCase()).toBe('rect');
         expect(svgChop.querySelector('title')?.textContent).toBe('chop 0/15');
         // Zero work — a zero-width strip (the bar never lies)
@@ -1393,11 +1397,11 @@ describe('App — the standing-job progress bars (R6)', () => {
             island.world.step();
             bumpRevision();
         });
-        expect(screen.getByTestId('work-bar-svg--2-5-chop').getAttribute('width')).toBe(
+        expect(screen.getByTestId('work-bar-svg-5--2-chop').getAttribute('width')).toBe(
             String(Math.max(0, Math.min(1, 1 / 15) * (26 - 4))),
         );
         expect(
-            screen.getByTestId('work-bar-svg--2-5-chop').querySelector('title')?.textContent,
+            screen.getByTestId('work-bar-svg-5--2-chop').querySelector('title')?.textContent,
         ).toBe('chop 1/15');
     });
 

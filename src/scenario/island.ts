@@ -55,6 +55,7 @@ import {
     islandTerrainPlugin,
     tileDepositSummary,
     tileSurfaceKey,
+    RIVER_TILE_COLOR,
     type IslandTerrainOptions,
 } from '../plugins/terrain/islandTerrain';
 import { inventoryPlugin, type InventoryPlugin } from '../plugins/inventory/inventoryPlugin';
@@ -73,6 +74,11 @@ import {
     STRUCTURE_TYPE_GLYPHS,
     type ConstructionPlugin,
 } from '../plugins/construction/constructionPlugin';
+// R5 — the farming governance: cultivated berry plots as the island's food
+// floor (plugins/farming). Mounted beside the other ledger rungs; the
+// handle exposes it so the god-view (board decor, inspector, legend) and the
+// tests read the plots through the public API.
+import { createFarmPlugin, type FarmingPlugin } from '../plugins/farming/farmingPlugin';
 import { storyPlugin, type StoryPlugin } from '../plugins/story/storyPlugin';
 import {
     birdsPlugin,
@@ -152,7 +158,15 @@ export type IslandOptions = {
          * staging reads the bags and the shelter bonus reads needs).
          * Default on.
          */
-        construction?: boolean;
+         construction?: boolean;
+         /**
+         * R5 — the farming governance — cultivated berry plots: actors
+         * autonomously site, plant, tend and harvest plots that fruit on
+         * the world clock (plugins/farming/farmingPlugin.ts). Needs tasks +
+         * behavior + inventory + needs (the rungs ride the ledger and the
+         * behavior planning sweep). Default on.
+         */
+         farming?: boolean;
         /**
          * The storyteller — scenario encounters sampled from the one-shot
          * deck, injected into the log as story blocks. Needs needs +
@@ -226,6 +240,14 @@ export type IslandHandle = {
      * orderUpgrade / orders) for the god-view and the tests.
      */
     construction: ConstructionPlugin;
+    /**
+     * R5 — the farming plugin — cultivated berry plots (plugins/farming/
+     * farmingPlugin.ts): the autonomous plant/tend/harvest rungs, the plot
+     * reads the god-view draws (plots / plotAt + FARM_STAGE_GLYPHS), the
+     * eligibility check and the regeneration reset. Exposed on the handle
+     * even when unmounted, matching every other plugin instance.
+     */
+    farming: FarmingPlugin;
     /**
      * The storyteller plugin — samples one unused scenario per encounter
      * (two castaways within the meeting ring), routes the play's profile
@@ -320,6 +342,7 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         survival: true,
         lumber: true,
         construction: true,
+        farming: true,
         story: true,
         birds: true,
         sharks: true,
@@ -367,7 +390,19 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     // first so an explicit option wins.
     const needs = needsPlugin({ ...options.needs, profiles, tasks: toggles.tasks ? tasks : undefined });
     const relationship = relationshipPlugin();
-    const sleep = sleepPlugin({ needs, tasks });
+    // R3-INTEGRATION — the SHELTER TREK wiring: sleep reads the built
+    // roofed gates through a DEFERRED callback (the scenario mounts sleep
+    // before construction, so the reference resolves at plan time, after
+    // every plugin stands — the construction const is in scope but not yet
+    // initialized at this line; the arrow never runs before world creation
+    // completes). With no roof standing the provider returns [] and every
+    // body sleeps where it falls (the location-agnostic fallback).
+    const sleep = sleepPlugin({
+        needs,
+        tasks,
+        shelters: () => construction.shelters(),
+        travelMinutesPerTile: TRAVEL_MINUTES_PER_TILE,
+    });
     const story = storyPlugin({ needs, relationship });
     const behavior = behaviorPlugin({
         inventory,
@@ -385,7 +420,15 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     //     behavior plugin applies, so it mounts only beside it
     //   lumber   — the wood-production rung (priority 10): fells trees into
     //     wood; needs the inventory (harvest) and the move effect too
-    const survival = survivalPlugin({ tasks, travelMinutesPerTile: TRAVEL_MINUTES_PER_TILE });
+    // R3-INTEGRATION — the shelter gate: a body standing on a built roofed
+    // gate does not bolt from the land beasts its walls keep out (the
+    // deferred construction read — sleep's trek pattern; the flee rung
+    // itself stays mounted and dominant for every other meeting)
+    const survival = survivalPlugin({
+        tasks,
+        travelMinutesPerTile: TRAVEL_MINUTES_PER_TILE,
+        sheltered: toggles.construction ? (id) => construction.isSheltered(id) : undefined,
+    });
     const lumber = lumberPlugin({
         inventory,
         tasks,
@@ -412,7 +455,30 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     // the lumbering pace from the boar's Speed attribute and make roaming
     // burn the walk row. The tasks handle gates the roam against the boars'
     // own ledger tasks (planned creatures never double-step)
-    const predators = predatorsPlugin({ needs, profiles, tasks: toggles.tasks ? tasks : undefined });
+    // R3-INTEGRATION — the shelter gate on the bite too: a victim standing
+    // behind a built roof's walls cannot be mauled through them (bounded
+    // protection — the gate cell only, while the roof stands; the roll
+    // stays consumed so the beast stream never shifts)
+    const predators = predatorsPlugin({
+        needs,
+        profiles,
+        tasks: toggles.tasks ? tasks : undefined,
+        sheltered: toggles.construction ? (id) => construction.isSheltered(id) : undefined,
+    });
+    // R5 — the farming governance — cultivated berry plots (plugins/farming).
+    // Declared after the ledger/inventory/needs trio it coordinates with;
+    // its two rungs (farm 12, the hungry-hand harvest bridge 41) register
+    // into the ledger at setup and ride the behavior planning sweep, so it
+    // MOUNTS after behavior (see the mounted list). The 'forage' skill gate
+    // reads the species profiles — the same work ability the wild gather
+    // uses, no new ability coined.
+    const farming = createFarmPlugin({
+        tasks,
+        inventory,
+        needs,
+        profiles,
+        travelMinutesPerTile: TRAVEL_MINUTES_PER_TILE,
+    });
 
     // The view-scale ladder — godspace/core owns the scale concept (the
     // ladder counts UP from the lowest level: scale 0 the simulation
@@ -516,9 +582,35 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     // but if one ever lands, the 🪨 must not hide under the (coverage-
     // faded, possibly 0.1-opacity) tree canopy.
     const decorationOfCell = (cell: unknown): string | undefined => {
-        const slice = cell as { biome?: string; resources?: TileResources };
-        if (slice.biome === 'lake' || slice.biome === 'pond') {
+        const slice = cell as { x?: number; y?: number; biome?: string; resources?: TileResources };
+        // R2/R4 — water paints its surface: the standing decorations are
+        // suppressed on the basins AND the river courses (a tree or rock
+        // icon on a flowing ford would read as dry ground; the river is
+        // passable shallow WATER — its glyph budget is the color alone)
+        if (slice.biome === 'lake' || slice.biome === 'pond' || slice.biome === 'river') {
             return undefined;
+        }
+        // R5 — THE FARM — a standing cultivated plot marks the tile with its
+        // stage glyph ('farm' immature / 'farm-ripe'), read through the
+        // plugin's public plotAt (the lazy clock-derived stage — the decor
+        // re-derives every frame, so the plot visibly ripens). The farm
+        // ranks ABOVE rock/tree: cultivated ground is the deliberate
+        // feature (and eligibility already refuses boulder tiles, so the
+        // rock co-occurrence cannot happen; a plot may share a treed tile
+        // while the stand is being worked, and the farm is what the god
+        // must see there). Root tiles only — plots are keyed to island-scale
+        // addresses, so a zoomed fine cell (never equal to a root cell)
+        // falls through to the stock rules (the identity check mirrors
+        // surfaceOfCell above).
+        if (
+            slice.x !== undefined &&
+            slice.y !== undefined &&
+            terrain.cellFor([{ x: slice.x, y: slice.y }]) === (cell as TerrainCell)
+        ) {
+            const plot = farming.plotAt(slice.x, slice.y);
+            if (plot) {
+                return plot.stage === 'ripe' ? 'farm-ripe' : 'farm';
+            }
         }
         // A live finite stone stock — the localized rock site — marks the
         // rock icon (the binary stock-driven rule above)
@@ -559,6 +651,11 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         grass: GRASS_TILE_COLOR,
         lake: LAKE_TILE_COLOR,
         pond: POND_TILE_COLOR,
+        // R4 — the meandering fresh-water courses surface with the terrain
+        // plugin's own river color (single source of truth — the theme's
+        // BIOME_COLORS.river joins the same export; the legend reads the
+        // palette, so the swatch and the painted tiles can never disagree)
+        river: RIVER_TILE_COLOR,
     };
 
     // The representation plugin from @godspace/canvas — binds itself through
@@ -685,6 +782,14 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         ...(toggles.construction && toggles.tasks && toggles.behavior && toggles.inventory && toggles.needs
             ? [construction]
             : []),
+        // R5 — the farming rungs mount right behind the construction block
+        // (same governance shape: the modules register into the ledger at
+        // setup and ride the behavior planning sweep; the plot growth is
+        // clock-derived, so the plugin's tick only drives the siting trek
+        // and the standing jobs — no ecology schedules to step)
+        ...(toggles.farming && toggles.tasks && toggles.behavior && toggles.inventory && toggles.needs
+            ? [farming]
+            : []),
         // The storyteller runs after the whole environment minute (needs,
         // tasks, behavior, sleep) — an encounter reads the freshest state
         // and needs the needs + relationship systems
@@ -760,5 +865,5 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         birds.release();
     }
 
-    return { world, terrain, entity, inventory, forest, needs, relationship, tasks, sleep, survival, lumber, construction, story, birds, sharks, predators, scale, ascii, unicode, svg, data };
+    return { world, terrain, entity, inventory, forest, needs, relationship, tasks, sleep, survival, lumber, construction, farming, story, birds, sharks, predators, scale, ascii, unicode, svg, data };
 };

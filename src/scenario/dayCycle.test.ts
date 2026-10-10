@@ -45,7 +45,7 @@ describe('dayCycle — the shared clock constants', () => {
         expect(DAY_MINUTES).toBe(1440);
         expect(SLEEP_START_MINUTE).toBe(1320); // 22:00 — inside the night window
         expect(WAKE_MINUTE).toBe(360); // 06:00 — the night window's end
-        expect(NIGHT_LIGHT_FLOOR).toBe(0.35); // the readable night ambient
+        expect(NIGHT_LIGHT_FLOOR).toBe(0.8); // the slight-shade night ambient (0.2-alpha veil)
     });
 });
 
@@ -133,9 +133,9 @@ describe('daylightAt — the smooth ambient', () => {
     });
 
     it('rides the dusk ramp down with exact smoothstep values', () => {
-        expect(daylightAt(420)).toBe(0.8314814814814815); // 17:00 — t 30/90 = 1/3
-        expect(daylightAt(435)).toBe(0.675); // 17:15 — t 45/90 = 1/2
-        expect(daylightAt(479)).toBe(0.35023895747599443); // 17:59 — t 89/90
+        expect(daylightAt(420)).toBe(0.9481481481481482); // 17:00 — t 30/90 = 1/3
+        expect(daylightAt(435)).toBe(0.9); // 17:15 — t 45/90 = 1/2
+        expect(daylightAt(479)).toBe(0.8000735253772291); // 17:59 — t 89/90
     });
 
     it('lands the exact night floor at 18:00 and holds it through the night', () => {
@@ -147,9 +147,9 @@ describe('daylightAt — the smooth ambient', () => {
 
     it('opens the dawn ramp at the floor and rides up with exact smoothstep values', () => {
         expect(daylightAt(1200)).toBe(NIGHT_LIGHT_FLOOR); // 06:00 — the ramp starts AT the floor
-        expect(daylightAt(-210)).toBe(0.5185185185185185); // 06:30 — t 1/3
-        expect(daylightAt(-195)).toBe(0.675); // 06:45 — t 1/2
-        expect(daylightAt(-151)).toBe(0.9997610425240055); // 07:29 — t 89/90
+        expect(daylightAt(-210)).toBe(0.8518518518518519); // 06:30 — t 1/3
+        expect(daylightAt(-195)).toBe(0.9); // 06:45 — t 1/2
+        expect(daylightAt(-151)).toBe(0.999926474622771); // 07:29 — t 89/90
         expect(daylightAt(-150)).toBe(1); // 07:30 — full daylight again
     });
 

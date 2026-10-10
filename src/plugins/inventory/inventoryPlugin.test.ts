@@ -63,9 +63,9 @@ const actor = (id: string, name: string, x: number, y: number): Actor => ({
 //   (−4,−7)   beach   stock {dirt:1, sand:1, coconut:2} (shell draw missed)
 //   (−5,−7)   beach   stock {dirt:1, sand:1, coconut:2} (shell draw missed)
 //   (−12,−8)  shallows stock {fish:2}                     (seaweed draw missed; R5 shoal)
-//   (0,0)     highland stock {stone:3, dirt:1, flint:1}   (finite rock stock + 30% flint draw hit)
-//   (−1,−1)   highland stock {stone:3, iron:1, dirt:1}    (the R5 iron lode + its rock stock)
-//   (0,−1)    highland stock {stone:3, dirt:1}            (flint draw missed)
+//   (0,0)     highland stock {stone:3, dirt:1, water:1}   (finite rock stock; R4 — the river's shore ring stocks it fresh, the flint draw moved with the shifted stream)
+//   (−1,−1)   river    stock {water:1}                    (R4 — the forded peak: the channel itself stocks the inexhaustible fresh water)
+//   (0,−1)    highland stock {stone:3, iron:1, dirt:1, water:1, flint:1} (the R5 iron lode moved here — the first SURVIVING highland — with its rock stock, the flint draw and the river's shore water)
 // The default island keeps every vein sample under IRON_LODE_THRESHOLD —
 // no iron lodes on 25×17; the lode test below pins the 37×25 reference
 // board (the pre-shrink default) where 3 of the 9 highlands lode.
@@ -136,47 +136,54 @@ describe('inventoryPlugin', () => {
     it('seeds stone (every dry column), iron lodes (and sometimes flint) on highlands', () => {
         const island = inventoryPlugin();
         createWorld({ seed: 7, plugins: [islandTerrainPlugin(), island] });
-        // Reference highlands on the default island: (0,0) hid a flint
-        // (30% draw hit); (−1,−1) holds the R5 iron lode (the 0.8 board
-        // guarantees a single lode where the vein noise missed); (0,−1)
-        // missed the flint. R4: every highland rock site carries the
-        // finite 3-unit stone stock with them
-        expect(island.cellStock(0, 0)).toEqual({ stone: 3, dirt: 1, flint: 1 });
-        expect(island.cellStock(-1, -1)).toEqual({ stone: 3, iron: 1, dirt: 1 });
-        expect(island.cellStock(0, -1)).toEqual({ stone: 3, dirt: 1 });
-        // THE GROUND SUPPLY IS EVERYWHERE its voxels are: all 269 dry land
-        // cells carry dirt (the ground layer under every surface; R4's 13
-        // drowned basins left the land census); grass covers meadows AND
-        // woods; STONE is FINITE - it stands only on the 9 highland rock
-        // sites (the exact list the islandTerrain census pins)
-        expect(island.cellsWithItem('stone').length).toBe(9);
+        // Reference highlands on the default island: (0,0) is a river-shore
+        // rock site (the R4 shore ring stocks its water; the flint draw
+        // moved with the stream shift the river-carved map causes); (−1,−1)
+        // is the FORDED peak — the channel itself carries the inexhaustible
+        // fresh water; (0,−1) is the first SURVIVING highland — the R5 iron
+        // lode stamp moved here, and this run its flint draw hit. R4: every
+        // highland rock site carries the finite 3-unit stone stock with them
+        expect(island.cellStock(0, 0)).toEqual({ stone: 3, dirt: 1, water: 1 });
+        expect(island.cellStock(-1, -1)).toEqual({ water: 1 });
+        expect(island.cellStock(0, -1)).toEqual({ stone: 3, iron: 1, dirt: 1, water: 1, flint: 1 });
+        // THE GROUND SUPPLY IS EVERYWHERE its voxels are: all 257 dry land
+        // cells carry dirt (R4's river fords cut 12 of the 269 — the channel
+        // supplies nothing); grass covers meadows AND woods; STONE is
+        // FINITE - it stands only on the 8 surviving highland rock sites
+        // (the exact list the islandTerrain census pins)
+        expect(island.cellsWithItem('stone').length).toBe(8);
         expect(island.cellsWithItem('stone').map((cell) => `${cell.x},${cell.y}`).sort()).toEqual([
-            '-1,-1', '-1,0', '-1,1', '-2,0', '0,-1', '0,0', '0,1', '1,0', '1,1',
+            '-1,0', '-1,1', '-2,0', '0,-1', '0,0', '0,1', '1,0', '1,1',
         ]);
-        expect(island.cellsWithItem('dirt').length).toBe(269);
-        expect(island.cellsWithItem('grass').length).toBe(122);
+        expect(island.cellsWithItem('dirt').length).toBe(257);
+        expect(island.cellsWithItem('grass').length).toBe(117);
         // The unlimited sand stays beach-only (the R3 2-tile coastal band
-        // shrank the sands from 160 to 138)
-        expect(island.cellsWithItem('sand').length).toBe(138);
-        // THE R5 GATE: the 0.8 board holds exactly ONE iron lode (at
-        // (−1,−1)) — the finite mineable deposit the early tools need
-        expect(island.cellsWithItem('iron').map((cell) => `${cell.x},${cell.y}`)).toEqual(['-1,-1']);
+        // shrank the sands; R4's river forded 6 of them)
+        expect(island.cellsWithItem('sand').length).toBe(132);
+        // THE R5 GATE: the 0.8 board holds exactly ONE iron lode (at the
+        // surviving (0,−1) — the river forded the old (−1,−1) host) — the
+        // finite mineable deposit the early tools need
+        expect(island.cellsWithItem('iron').map((cell) => `${cell.x},${cell.y}`)).toEqual(['0,-1']);
         // The 37×25 reference board lodes 3 highlands — the lodes carry the
         // finite rock stock too (deposits seed in TILE_RESOURCES order:
-        // stone before iron); (−5,2) hid a flint this run (30% draw hit)
+        // stone before iron); R4's river forded the (−7,0) plain site (its
+        // stock washed into the channel — only the shore water stands) and
+        // the shifted chance stream spread flints to (−6,1)/(−5,1)/(−5,3)
         const big = inventoryPlugin();
         createWorld({ seed: 7, plugins: [islandTerrainPlugin({ width: 37, height: 25 }), big] });
-        expect(big.cellStock(-7, 0)).toEqual({ stone: 3, dirt: 1 });
-        expect(big.cellStock(-5, 3)).toEqual({ stone: 3, dirt: 1, iron: 1 });
-        // The other two lodes: (−7,1) and (−5,2) — the lodes carry the
-        // rock stock too
-        expect(big.cellStock(-7, 1)).toEqual({ stone: 3, dirt: 1, iron: 1 });
+        expect(big.cellStock(-7, 0)).toEqual({ water: 1 });
+        expect(big.cellStock(-5, 3)).toEqual({ stone: 3, dirt: 1, iron: 1, flint: 1 });
+        // The other two lodes: (−7,1) (on the river's shore ring — water)
+        // and (−5,2) (flint this run) — the lodes carry the rock stock too
+        expect(big.cellStock(-7, 1)).toEqual({ stone: 3, dirt: 1, iron: 1, water: 1 });
         expect(big.cellStock(-5, 2)).toEqual({ stone: 3, dirt: 1, iron: 1, flint: 1 });
         // The iron list is exactly the vein noise's picks
         expect(big.cellsWithItem('iron').map((cell) => `${cell.x},${cell.y}`)).toEqual([
             '-7,1', '-5,2', '-5,3',
         ]);
-        expect(big.cellsWithItem('flint').map((cell) => `${cell.x},${cell.y}`)).toEqual(['-5,2']);
+        expect(big.cellsWithItem('flint').map((cell) => `${cell.x},${cell.y}`)).toEqual([
+            '-6,1', '-5,1', '-5,2', '-5,3',
+        ]);
     });
 
     it('gather moves the first available FOOD from the cell to the actor bag', () => {
@@ -383,10 +390,12 @@ describe('inventoryPlugin', () => {
     it('cellsWithItem lists cells holding an item', () => {
         const { island } = buildWorld();
         // Only water cells hold fish initially — the sea AND the impassable
-        // fresh basins (156 water cells on the default island since R4
-        // drowned the 13 basins; every one of them stocks a fish shoal)
+        // fresh basins (155 water cells on the default island since R4
+        // drowned the basins and R4's river drained one into its passable
+        // ford — the ford itself carries no fish shoal); every one of them
+        // stocks a fish shoal
         const fishCells = island.cellsWithItem('fish');
-        expect(fishCells.length).toBe(156);
+        expect(fishCells.length).toBe(155);
         expect(fishCells.every((cell) => !cell.passable)).toBe(true);
         // The richer map's foods: every forest cell stocks a mushroom (the
         // 59 woods at the 0.8 wetland cutoff — R7 raises the mushroom SEED
@@ -394,7 +403,7 @@ describe('inventoryPlugin', () => {
         // 59); the sea's seaweed covers the deep ocean plus half the
         // shallows — 94 cells
         expect(island.cellsWithItem('mushroom').length).toBe(59);
-        expect(island.cellsWithItem('seaweed').length).toBe(94);
+        expect(island.cellsWithItem('seaweed').length).toBe(101);
         // R7 — the vine census GREW with the 0.35 → 0.6 chance raise. The
         // stream order is unchanged (one draw per forest cell, row major),
         // so every cell drawn under the old 0.35 stays drawn: the new map
@@ -403,15 +412,17 @@ describe('inventoryPlugin', () => {
         // sibling modules are in flux); the bound below is the invariant.
         expect(island.cellsWithItem('vine').length).toBeGreaterThanOrEqual(21);
         // The tree mirror stands on the 59 woods AND the ingressed meadows
-        // (93 treed tiles since R4 washed the 13 drowned basins clean — the
-        // neighborhood model's counts move per tile)
-        expect(island.cellsWithItem('tree').length).toBe(93);
-        // R4: the finite stone stands only on the 9 highland rock sites;
-        // the unlimited dirt blankets the dry land (see the census pins)
-        expect(island.cellsWithItem('stone').length).toBe(9);
-        expect(island.cellsWithItem('dirt').length).toBe(269);
-        expect(island.cellsWithItem('grass').length).toBe(122);
-        expect(island.cellsWithItem('sand').length).toBe(138);
+        // (91 treed tiles since R4 washed the basins clean and R4's river
+        // fords cut 2 more treed meadow cells — the neighborhood model's
+        // counts move per tile)
+        expect(island.cellsWithItem('tree').length).toBe(91);
+        // R4: the finite stone stands only on the 8 surviving highland rock
+        // sites (the river forded the ninth); the unlimited dirt blankets the
+        // dry land (see the census pins)
+        expect(island.cellsWithItem('stone').length).toBe(8);
+        expect(island.cellsWithItem('dirt').length).toBe(257);
+        expect(island.cellsWithItem('grass').length).toBe(117);
+        expect(island.cellsWithItem('sand').length).toBe(132);
     });
 
     it('the standing tree is never bagged — trees are living things', () => {
@@ -464,9 +475,11 @@ describe('inventoryPlugin', () => {
         // ring that stands beside a basin — a land cast collects from either)
         expect(island.cellStock(1, -5).water).toBe(1);
         expect(island.cellStock(-4, -3).water).toBe(1);
-        // THE 13 BASINS + THEIR DRY SHORE RING = 64 FRESH-WATER CELLS (the
-        // thirst ladder's collect can reach all of them)
-        expect(island.cellsWithItem('water').length).toBe(64);
+        // THE 12 BASINS + THE 13 RIVER CELLS + THEIR DRY SHORE RING = 101
+        // FRESH-WATER CELLS (the thirst ladder's collect can reach all of
+        // them — R4's rivers joined the fresh-water map: the channel itself
+        // and every dry tile beside it, the woods included)
+        expect(island.cellsWithItem('water').length).toBe(101);
         // THE REPLENISHMENT: drain the lake's pool to dry and the
         // FRESH_WATER_RHYTHM (every 30 minutes at offset 15) tops it back up
         // toward the cap of 2 — the basin's standing fresh water, refilled
@@ -478,6 +491,46 @@ describe('inventoryPlugin', () => {
         expect(island.cellStock(1, -5).water).toBe(2);
         for (let index = 0; index < 30; index++) { world.step(); } // minute 75 → clamped at the cap
         expect(island.cellStock(1, -5).water).toBe(2);
+    });
+
+    it('R4 — the river is INEXHAUSTIBLE: the channel drinks forever (the bag still gates)', () => {
+        // THE RIVER WATER CONTRACT: a flowing course hands its fresh water
+        // out forever — the takeFromCell 'water' branch on a river cell
+        // treats the stock key as the DISCOVERY signal only and NEVER
+        // decrements it (unlike the basins' finite rhythm-refilled pools).
+        // Only the carrier's weight budget gates the take.
+        const profiles = entityPlugin();
+        const island = inventoryPlugin({ profiles });
+        const world = createWorld({ seed: 7, plugins: [islandTerrainPlugin(), island, profiles] });
+        // (−1,−1) is the forded peak — a river cell. Water weighs 15 and a
+        // human shoulders 200: thirteen drinks (195) fit, the fourteenth
+        // (210) overflows — and every one of the thirteen succeeds because
+        // the source never empties
+        const ael = world.spawn(actor('a', 'Ael', -1, -1));
+        for (let index = 0; index < 13; index++) {
+            expect(island.takeFromCell(ael, 'water')).toBe(true);
+        }
+        expect(inventoryWeight(island.of('a'))).toBe(195);
+        // The channel's standing mark survives every draw (never decremented)
+        expect(island.cellStock(-1, -1).water).toBe(1);
+        // The CAPACITY GATE still refuses — inexhaustible water is bound by
+        // the bag, not by the source (and the take stays atomic: the bag
+        // keeps exactly the thirteen)
+        expect(island.takeFromCell(ael, 'water')).toBe(false);
+        expect(inventoryWeight(island.of('a'))).toBe(195);
+        // Step past the basins' refill rhythm — the river needed no rhythm
+        // to keep drinking water (the shared sweep only tops the standing
+        // mark toward the cap, it never drains)
+        for (let index = 0; index < 40; index++) {
+            world.step();
+        }
+        expect(island.cellStock(-1, -1).water).toBe(2);
+        // THE TREK PATH: every river cell stocks water on the survey and is
+        // PASSABLE — the behavior thirst trek (cellsWithItem('water')
+        // filtered to passable cells) reaches the fords directly
+        const riverCells = island.cellsWithItem('water').filter((cell) => cell.biome === 'river');
+        expect(riverCells.length).toBe(13);
+        expect(riverCells.every((cell) => cell.passable)).toBe(true);
     });
 
     it('the tree mirror never regrows on a stock rhythm — the ecology owns the trees', () => {
@@ -516,15 +569,15 @@ describe('inventoryPlugin', () => {
         plugin.resize(21, 13);
         island.resurvey();
         // Reference cells on the 21×13 island (row-major survey order):
-        // first beach (−3,−5) hit the shell draw this run; first forest
+        // R4's river fords the old first-beach cell (−3,−5) — the channel
+        // carries only its inexhaustible fresh water; the first forest
         // (−1,−3) mirrors its neighborhood-counted 246-tree stand (T2's
-        // densified counts; the R3 coastal band shifted the first wood one
-        // row east)
-        expect(island.cellStock(-3, -5)).toEqual({ dirt: 1, sand: 1, coconut: 2, shell: 1 });
+        // densified counts) and stands on the river's shore ring (water)
+        expect(island.cellStock(-3, -5)).toEqual({ water: 1 });
         // R7: the re-surveyed wood seeds berry 4 + mushroom 3 (no bush here
         // — the fold 0.852 clears even the raised 0.6 forest chance; the
         // vine draw is normalized — see stockWithoutVine)
-        expect(stockWithoutVine(island, -1, -3)).toEqual({ dirt: 1, grass: 1, tree: 246, berry: 4, mushroom: 3 });
+        expect(stockWithoutVine(island, -1, -3)).toEqual({ dirt: 1, grass: 1, tree: 246, berry: 4, mushroom: 3, water: 1 });
         // Stocks from the OLD canvas are gone: a cell that only existed on
         // the 25×17 island (0,−7) now has no stock (out of bounds)
         expect(island.cellStock(0, -7)).toEqual({});
@@ -546,10 +599,10 @@ describe('inventoryPlugin', () => {
             world.step(); // 600 one-minute steps — the same 600 world-minutes
         }
         unsubscribe();
-        // The weather roll stream is UNTOUCHED by removing the pool sweep —
-        // the old per-cell pool rolls rode their OWN keyed stream, so the
-        // rain minutes are identical to the pre-R4 reference run
-        expect(rains).toEqual([8, 38, 331, 361, 369, 546, 567]);
+        // The weather roll stream rides the survey's per-seed draw order —
+        // R4's river-carved map changed which cells consume chance draws,
+        // so the rain minutes shifted with it (captured reference run)
+        expect(rains).toEqual([15, 45, 338, 368, 376, 553, 574]);
         // R4 — rain scatters NO water: an ordinary beach tile that is not a
         // basin holds no water stock (the old run pooled water:2 here)
         expect(island.cellStock(-5, -7).water ?? 0).toBe(0);
@@ -781,13 +834,15 @@ describe('R2 — the berry bush', () => {
         const { island } = buildWorld();
         // The survey's first berry bush (the row-major scan hits (−1,−5) — a
         // meadow cell): its three loose berries (the abundance tuning), the
-        // standing bush, and the column's unlimited ground supply (R4: no
-        // stone — the meadow is no stone-bearing site)
+        // standing bush, the column's unlimited ground supply (R4: no stone
+        // — the meadow is no stone-bearing site) and R4's river-shore fresh
+        // water (the bush meadow stands beside the northern course)
         expect(island.cellStock(-1, -5)).toEqual({
             berry: 3,
             bush: 1,
             dirt: 1,
             grass: 1,
+            water: 1,
         });
         // A ground-item (not a tile deposit) — the ground listing carries it
         // AND the canvas type palette resolves its glyph, so the bush stands
@@ -872,24 +927,26 @@ describe('inventoryPlugin — renewable abundance + regrowth eligibility', () =>
         expect(island.cellStock(vineCell.x, vineCell.y).vine).toBe(3);
         // THE DETERMINISTIC MAP HOLDS — regrowth refills the SEEDED cells,
         // it never SPREADS: the census is exactly the survey's (59 woods
-        // mushroom, 94 seaweed, 156 fish cells); the vine census is the
+        // mushroom, 101 seaweed, 155 fish cells); the vine census is the
         // survey's R7 map — a provable superset of the old 21-cell draw
         // (same stream, same order, higher threshold; exact count needs one
         // reference re-capture, see the census note above)
         expect(island.cellsWithItem('mushroom').length).toBe(59);
         expect(island.cellsWithItem('vine').length).toBeGreaterThanOrEqual(21);
-        expect(island.cellsWithItem('seaweed').length).toBe(94);
-        expect(island.cellsWithItem('fish').length).toBe(156);
+        expect(island.cellsWithItem('seaweed').length).toBe(101);
+        expect(island.cellsWithItem('fish').length).toBe(155);
     });
 
     it('nothing regrows on ineligible cells and finite resources stay finite', () => {
         const { world, island } = buildWorld();
-        // Highland (0,0): a rock site — the survey seeded NO renewable on
-        // it (only the finite flint + stone and the unlimited dirt). Inject
-        // every renewable, harvest it all, and NOTHING may come back: no
-        // mushrooms on rock, no fish on land, no vines on bare stone
-        const miner = world.spawn(actor('m', 'Mira', 0, 0));
-        const stock = island.cellStock(0, 0);
+        // Highland (1,0): a rock site — the survey seeded NO renewable on it
+        // (only the finite flint + stone and the unlimited dirt; R4 — the
+        // pin moved off the river-shore (0,0), whose shore water is a seeded
+        // renewable, to this clean dry rock). Inject every renewable,
+        // harvest it all, and NOTHING may come back: no mushrooms on rock,
+        // no fish on land, no vines on bare stone
+        const miner = world.spawn(actor('m', 'Mira', 1, 0));
+        const stock = island.cellStock(1, 0);
         ['berry', 'mushroom', 'coconut', 'fish', 'seaweed', 'vine'].forEach((item) => {
             stock[item] = 1;
         });
@@ -913,7 +970,7 @@ describe('inventoryPlugin — renewable abundance + regrowth eligibility', () =>
         // flint and the finite stone stayed exhausted (neither has a
         // regrowth entry), and none of the injected renewables regrew on
         // rock (the eligibility registry never listed this cell)
-        expect(island.cellStock(0, 0)).toEqual({ dirt: 1 });
+        expect(island.cellStock(1, 0)).toEqual({ dirt: 1 });
         // The beach keeps its OWN seeded renewable (coconut, regrown to the
         // cap of 3) but never regrew the mushroom that was never its own
         expect(island.cellStock(-4, -7).mushroom ?? 0).toBe(0);

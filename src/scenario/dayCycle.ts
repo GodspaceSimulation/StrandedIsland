@@ -61,11 +61,13 @@ const NIGHT_START_MINUTE = 1080;
 
 /**
  * The night light floor — the ambient the world keeps at night. Chosen so
- * the god-view's night veil (1 − ambient ≈ 0.65 alpha at full night) dims
- * the board hard while every tile stays readable (the R6 "nonblocking
- * readable night floor" rule).
+ * the god-view's night veil (1 − ambient = 0.2 alpha at full night) is a
+ * SLIGHT moonlit shade, not a blackout: the night phase still reads, but
+ * every tile stays plainly visible (the R6 "nonblocking readable night
+ * floor" rule, retuned per user feedback that the old 0.35 floor — a 0.65
+ * veil — was too dark to play by).
  */
-export const NIGHT_LIGHT_FLOOR = 0.35;
+export const NIGHT_LIGHT_FLOOR = 0.8;
 
 /** The twilight ramp length in minutes — dusk 16:30→18:00, dawn 06:00→07:30. */
 const TWILIGHT_MINUTES = 90;

@@ -82,6 +82,9 @@ import {
 import { tileSurfaceKey, type SurfaceKeyCount } from '../plugins/terrain/islandTerrain';
 import type { SiteCell, SiteState } from '@godspace/blueprint';
 import type { SectionView } from '../plugins/construction/constructionPlugin';
+// R5 — the farm plot card (type-only: the farming plugin's public view
+// shape; the scenario handle carries the plugin instance)
+import type { FarmPlotView } from '../plugins/farming/farmingPlugin';
 
 // ── Voxel stack ──────────────────────────────────────────────────────────────
 
@@ -701,6 +704,14 @@ export type TileSummary = {
      * build work — the progress bars' data (see tileProgress above).
      */
     work: TileProgress[];
+    /**
+     * R5 — the cultivated berry plot on this tile (plugins/farming): the
+     * clock-derived stage, the fruiting minute, the harvest history and the
+     * next yield. Plots are keyed to ROOT tile addresses, so the read rides
+     * the path's first step — every zoom level of the same ground shows the
+     * same plot. Undefined when no plot stands here (or farming unmounted).
+     */
+    farm?: FarmPlotView;
 };
 
 /**
@@ -742,7 +753,28 @@ export const tileSummary = (island: IslandHandle, path: TilePath): TileSummary |
         // the same read the structures section above makes, so the Work
         // section and the Structures section agree on every zoom level)
         work: tileProgress(island, path),
+        // R5 — the standing berry plot (the farming plugin's clock-derived
+        // card): plots are keyed to ROOT tile addresses, so the read rides
+        // path[0] — every zoom level of the same ground agrees with the
+        // board's farm decoration (the scenario's decorationOfCell reads
+        // the very same plotAt)
+        farm: island.farming.plotAt(path[0].x, path[0].y),
     };
+};
+
+/**
+ * R5 — the farm plot's inspector line: the stage, the fruiting clock and
+ * the harvest history. `now` is the elapsed world minute the read runs at
+ * (the panel passes the live ticker), so the line never goes stale between
+ * renders. Immature plots count the minutes off the fruiting line; a ripe
+ * plot invites the pick and names the regrowth the next harvest starts.
+ */
+export const farmLine = (farm: FarmPlotView, now: number): string => {
+    const stage =
+        farm.stage === 'ripe'
+            ? `ripe · pick now (+${farm.yieldPerHarvest} berries)`
+            : `immature · fruits in ${Math.max(0, farm.matureAt - now)} min`;
+    return `berry plot · ${stage} · ${farm.cycles} harvest${farm.cycles === 1 ? '' : 's'}`;
 };
 
 // ── The scale view slice ─────────────────────────────────────────────────────

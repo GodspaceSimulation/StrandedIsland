@@ -41,14 +41,43 @@
 // THE RESTORE — energy recovers ONLY while the sleep task actually runs,
 // one world-minute at a time, and ALWAYS through the needs plugin's
 // recovery service (needs.recovery — the R4 resource-backed route: the
-// restore charges the body's hunger/thirst equally, capped by the energy
-// headroom, blocked by an empty resource). One restore per PROGRESSED
-// minute, applied in this plugin's tick — one tick hook call covers
-// exactly ONE world-minute (engine/world.ts sub-stepping). The plan minute
-// restores NOTHING (the queued task has not consumed a world minute yet —
-// the taskLedger's rhythm: planned at minute M, the first decrement is
-// minute M+1), and the COMPLETING minute restores through the ledger's
-// completion event — restore count == task minutes elapsed, exactly.
+// restore charges the body's hunger/thirst equally at the service's
+// metabolic ratio, capped by the energy headroom, blocked by an empty
+// resource). One restore per PROGRESSED minute, applied in this plugin's
+// tick — one tick hook call covers exactly ONE world-minute (engine/world.ts
+// sub-stepping). The plan minute restores NOTHING (the queued task has not
+// consumed a world minute yet — the taskLedger's rhythm: planned at minute
+// M, the first decrement is minute M+1), and the COMPLETING minute restores
+// through the ledger's completion event — restore count == task minutes
+// elapsed, exactly.
+//
+// THE SHELTER TREK (R3) — when the construction plugin exposes usable
+// shelter gates (the `shelters` provider option — built roofed structures'
+// walkable doorways), a body that OWES sleep (night quota or debt) TREKS to
+// the nearest gate before lying down: it walks one fine step per minute
+// toward the exact gate cell (fineTargetStep — the construction workers'
+// own approach), and only once standing ON the gate does the slumber task
+// plan. The trek minutes are awake minutes (they eat the window honestly —
+// the shortfall rolls into debt like any interrupted minute); the sheltered
+// sleep itself is governed by the construction plugin's shelter sweep
+// (faster recovery + healing on the gate — the sheltered night is the safe
+// night). An EMERGENCY exhaustion nap (energy at the trigger, nothing
+// owed) only treks when a gate is within `shelterNapRange` tiles — a spent
+// body crawls a short way to cover, then sleeps where it stands. With no
+// provider mounted (a run without construction, or before the first
+// shelter stands) every body sleeps exactly where it falls — the location-
+// agnostic behavior, kept as the safe fallback.
+//
+// THE SHELTERED RECOVERY (R1 — the injured seek shelter) — a second
+// behaviour module (priority 26, between the slumber 30 and the rest
+// fallback 25): a SENTIENT body whose health has fallen to `injuredHealth`
+// or below, while a usable shelter gate exists, heads for the nearest gate
+// and lies down in a recovery REST on it. The rest rides the construction
+// plugin's sheltered-sleep sweep (healing on the gate); the survival rungs
+// (thirst 50, hunger 40) and the flee (60) still outrank it, and the
+// slumber (30) outranks it at night — where the shelter trek already
+// carries the sleeper to the same gate. Creatures are exempt (the roost
+// rung owns the birds' safe sleep; beasts do not sleep in people's shelters).
 //
 // The resting minute's METABOLISM is the needs sweep's business (the
 // resting-metabolism read keyed on the head task kind, needsPlugin): the
@@ -61,10 +90,14 @@
 // story between entities.
 
 import { arrayEach } from '@presource/core';
-import type { PluginContext, WorldPlugin } from '@godspace/core';
+import { position3, type PluginContext, type WorldPlugin } from '@godspace/core';
 import type { World } from '../../engine/world';
 import type { NeedsPlugin } from '../needs/needsPlugin';
 import type { TasksPlugin } from '../tasks/tasksPlugin';
+// R3 — the fine approach to an EXACT gate cell (the construction workers'
+// own walker) + the tile metric the nap-range read uses. Shared machinery,
+// never reinvented here (plugins/movement/fineMovement.ts).
+import { chebyshev, fineTargetStep } from '../movement/fineMovement';
 // THE SHARED CLOCK CONTRACT (terrain worker owns the file — never edited
 // here): DAY_MINUTES 1440, SLEEP_START_MINUTE 1320 (22:00), WAKE_MINUTE
 // 360 (06:00), minuteOfDay(elapsed) with the 10:00 (minute 600) epoch.
@@ -74,6 +107,14 @@ import {
     WAKE_MINUTE,
     minuteOfDay,
 } from '../../scenario/dayCycle';
+
+/**
+ * R3 — one usable SHELTER GATE: the walkable doorway cell of a built roofed
+ * structure, as the construction plugin's shelter service reports it
+ * (ConstructionPlugin.shelters() returns this exact shape — the provider is
+ * structural so the sleep plugin never imports construction).
+ */
+export type ShelterGate = { tileX: number; tileY: number; x: number; y: number };
 
 export type SleepPluginOptions = {
     needs: NeedsPlugin;
@@ -88,6 +129,24 @@ export type SleepPluginOptions = {
     quotaMinutes?: number;
     /** One daytime catch-up task's cap in world minutes (debt is paid in chunks so the day continues between them). Default 90. */
     catchUpChunkMinutes?: number;
+    /**
+     * R3 — the deferred SHELTER SERVICE: a getter for the usable shelter
+     * gates (built roofed structures' walkable doorways). The scenario
+     * mounts sleep BEFORE construction, so the provider is a function the
+     * assembly wires to `() => construction.shelters()` — it resolves at
+     * plan time, after every plugin stands. Absent (or empty until the
+     * first roof stands): the location-agnostic sleep — every body sleeps
+     * where it falls.
+     */
+    shelters?: () => ShelterGate[] | undefined;
+    /** World minutes to move ONE SCALE-0 tile (the shelter trek's stride). Default 1 (the distribution's distance rule). */
+    travelMinutesPerTile?: number;
+    /** R3 — how far (tiles, Chebyshev) an EMERGENCY exhaustion nap will crawl to a shelter gate before napping in place. Default 3. */
+    shelterNapRange?: number;
+    /** R1 — health at or below which a sentient body seeks a shelter gate to recover (the 'weak' condition line). Default 50. */
+    injuredHealth?: number;
+    /** R1 — one sheltered recovery rest's length in world minutes. Default 60. */
+    recoveryRestMinutes?: number;
 };
 
 /** One body's sleep accounting (per sleep day + the carried debt). */
@@ -116,6 +175,13 @@ export const sleepPlugin = (options: SleepPluginOptions): SleepPlugin => {
     const durationMinutes = options.durationMinutes ?? 45;
     const quota = options.quotaMinutes ?? 360;
     const catchUpChunk = options.catchUpChunkMinutes ?? 90;
+    // R3 — the deferred shelter service (see the option doc). Null: the
+    // location-agnostic sleep (the pre-shelter behavior, the safe fallback).
+    const shelters = options.shelters ?? null;
+    const travel = options.travelMinutesPerTile ?? 1;
+    const shelterNapRange = options.shelterNapRange ?? 3;
+    const injuredHealth = options.injuredHealth ?? 50;
+    const recoveryRestMinutes = options.recoveryRestMinutes ?? 60;
 
     // The world reference arrives with setup — the tick reads the cast's
     // live tasks, the clock and the accounting through it
@@ -214,6 +280,89 @@ export const sleepPlugin = (options: SleepPluginOptions): SleepPlugin => {
         return { quotaRemaining: Math.max(0, quota - entry.slept), debt: entry.debt };
     };
 
+    // ── R3 — the shelter reads ─────────────────────────────────────────────
+    // The usable gates RIGHT NOW (the deferred provider — empty before the
+    // first roof stands, absent without the construction wiring). The
+    // provider may throw during a half-mounted teardown; a failed read is
+    // simply "no shelter" — the safe location-agnostic fallback.
+    const gatesNow = (): ShelterGate[] => {
+        try {
+            return shelters?.() ?? [];
+        } catch {
+            return [];
+        }
+    };
+
+    /** Whether the body stands exactly ON one of the usable gates. */
+    const onGate = (active: World, actor: { id: string; position: { x: number; y: number } }, gates: ShelterGate[]): boolean => {
+        const sub = active.subOf(actor.id);
+        if (!sub) {
+            return false;
+        }
+        return gates.some(
+            (gate) =>
+                gate.tileX === actor.position.x &&
+                gate.tileY === actor.position.y &&
+                gate.x === sub.x &&
+                gate.y === sub.y,
+        );
+    };
+
+    /** The nearest usable gate by tile Chebyshev (ties: provider order — deterministic). */
+    const nearestGate = (
+        // Position3D — the registry actor's real position shape (engine/types.ts
+        // line 256); chebyshev reads the plane, the z is carried but ignored
+        actor: { position: { x: number; y: number; z: number } },
+        gates: ShelterGate[],
+    ): ShelterGate | undefined => {
+        let best: ShelterGate | undefined;
+        let bestDistance = Infinity;
+        gates.forEach((gate) => {
+            const distance = chebyshev(actor.position, position3(gate.tileX, gate.tileY));
+            if (distance < bestDistance) {
+                best = gate;
+                bestDistance = distance;
+            }
+        });
+        return best;
+    };
+
+    /**
+     * THE SHELTER TREK — one fine step toward the nearest usable gate, or
+     * undefined when the body should simply sleep where it stands: no
+     * gates, already on one, an emergency nap beyond the crawl range
+     * (`allowLongTrek` false — only quota/debt sleeps trek any distance),
+     * or no step currently possible (blocked — the caller falls back to
+     * sleeping in place rather than standing idle forever).
+     */
+    const shelterTrek = (
+        active: World,
+        actor: { id: string; position: { x: number; y: number; z: number } },
+        allowLongTrek: boolean,
+    ): { kind: string; label: string; minutes: number; payload: { dx: number; dy: number } } | undefined => {
+        const gates = gatesNow();
+        if (gates.length === 0 || onGate(active, actor, gates)) {
+            return undefined;
+        }
+        const gate = nearestGate(actor, gates);
+        if (!gate) {
+            return undefined;
+        }
+        if (!allowLongTrek && chebyshev(actor.position, position3(gate.tileX, gate.tileY)) > shelterNapRange) {
+            return undefined;
+        }
+        const step = fineTargetStep(active, actor, { x: gate.tileX, y: gate.tileY }, { x: gate.x, y: gate.y });
+        if (!step) {
+            return undefined;
+        }
+        return {
+            kind: 'move',
+            label: 'heads for the shelter',
+            minutes: travel,
+            payload: { dx: step[0], dy: step[1] },
+        };
+    };
+
     return {
         id: 'sleep',
         label: 'Sleep',
@@ -264,6 +413,18 @@ export const sleepPlugin = (options: SleepPluginOptions): SleepPlugin => {
                     const { quotaRemaining, debt } = scheduleOf(id, now);
                     const need = quotaRemaining + debt;
                     const minute = minuteOfDay(now);
+                    // R3 — THE SHELTER TREK: a body that OWES sleep RIGHT
+                    // NOW (the night window with quota unmet, or a debt to
+                    // catch) walks to the nearest usable gate FIRST — any
+                    // distance, the window bounds it honestly; a bare
+                    // emergency exhaustion nap (nothing owed yet) only
+                    // crawls the short range. On the gate (or with no
+                    // shelter to seek) the slumber plans exactly as before.
+                    const owesNow = (quotaRemaining > 0 && inPreferredWindow(minute)) || debt > 0;
+                    const trek = shelterTrek(active, subject.actor, owesNow);
+                    if (trek) {
+                        return trek;
+                    }
                     if (need > 0 && inPreferredWindow(minute)) {
                         // THE NIGHT SLUMBER — sleep until the need is
                         // filled or 06:00 ends the window (interrupted
@@ -293,6 +454,55 @@ export const sleepPlugin = (options: SleepPluginOptions): SleepPlugin => {
                 },
             });
 
+            // R1 — THE SHELTERED RECOVERY (priority 26): an INJURED sentient
+            // body (health at or under the 'weak' line) with a usable shelter
+            // gate nearby seeks the gate and lies down in a recovery rest ON
+            // it — the construction shelter sweep heals sleepers and resters
+            // on the gate (the sheltered night is the safe night; the
+            // sheltered day mends the wounded). Sits BELOW the slumber (30)
+            // so a nightfall's sleep trek serves the same gate, and ABOVE
+            // the plain rest fallback (25); the survival rungs (thirst 50,
+            // hunger 40) and the flee (60) still interrupt it — recovery
+            // never sleeps through a threat or an empty belly. Creatures
+            // are exempt (the roost rung owns the birds' safe sleep).
+            tasks.behaviour({
+                id: 'shelter',
+                label: 'Shelter',
+                priority: 26,
+                appliesTo: (subject) => {
+                    if (subject.actor.kind === 'creature') {
+                        return false;
+                    }
+                    if (needs.of(subject.actor.id).health > injuredHealth) {
+                        return false;
+                    }
+                    return gatesNow().length > 0;
+                },
+                plan: (subject) => {
+                    const active = world;
+                    if (!active) {
+                        return undefined;
+                    }
+                    const gates = gatesNow();
+                    // ON a gate already — the recovery rest (the sheltered
+                    // sweep does the healing while the task runs; the rest
+                    // completion's one-shot energy rides the behavior
+                    // plugin's rest effect as always)
+                    if (onGate(active, subject.actor, gates)) {
+                        return {
+                            kind: 'rest',
+                            label: 'recovers in the shelter',
+                            minutes: recoveryRestMinutes,
+                        };
+                    }
+                    // Not there yet — trek to the nearest gate (any distance:
+                    // the wounded walk slowly, one fine step a minute, and
+                    // the needs rungs outrank the whole rung anyway). No
+                    // step possible — idle this minute, re-plan the next.
+                    return shelterTrek(active, subject.actor, true);
+                },
+            });
+
             // THE COMPLETING MINUTE — the task's final remaining minute
             // pops inside the ledger's tick and its head is gone before
             // this plugin's sweep runs, so the last restore + count ride
@@ -315,6 +525,10 @@ export const sleepPlugin = (options: SleepPluginOptions): SleepPlugin => {
             // environment (a swapped-out sleep plugin must not restore into
             // its replacement), then the plugin's own state.
             tasks.dropBehaviour('sleep');
+            // R1 — the sheltered-recovery rung goes with the slumber (its
+            // queued treks and rests cancel under the ledger's
+            // update-on-remove rule)
+            tasks.dropBehaviour('shelter');
             unsubscribeComplete?.();
             unsubscribeComplete = null;
             accounts.clear();

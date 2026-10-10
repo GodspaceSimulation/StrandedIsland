@@ -55,7 +55,14 @@ src/
 │   │                 grounded dry-land creature too: a hungry bird forages,
 │   │                 a tired bird roosts, a boar wanders its tile
 │   ├── sleep/        The timed sleep behaviour (priority 30, shadows the
-│   │                 fallback instant-rest rung)
+│   │                 fallback instant-rest rung); the scenario wires its
+│   │                 shelter read to the construction registry and its
+│   │                 trek to the island's travel economics
+│   ├── farming/      The husbandry rung (plant 12 / harvest 41): berry
+│   │                 plots tilled on the tile, growth on a day-scale
+│   │                 rhythm, ripe plots harvested into the bag; the
+│   │                 unicode/SVG boards paint 🌱/🍇 decorations and the
+│   │                 Tile Inspector reads the plot stage
 │   ├── birds/        Seabirds — the Z-axis travelers: altitude fade bands,
 │   │                 the vanished higher scale (z ≥ 10 leaves the world's
 │   │                 reachable scales), the world edge, and arrivals;
@@ -89,7 +96,12 @@ and ticker state.
 The fourth survival stat (`plugins/needs/needsPlugin.ts`): health is a
 WELLBEING reservoir, 100 = healthy, 0 = dead, and it is THE killer — an
 entity whose health reaches 0 dies (despawned + the log's "has died."
-ending), castaway or creature alike. Health only moves when something
+ending), castaway or creature alike. The human drains run on DAY-SCALE
+horizons (R1 recalibration, `HUMAN_HUNGER_PER_MINUTE` = 100/2880 — two
+days from full to empty; `HUMAN_THIRST_PER_MINUTE` = 100/1440 — one day),
+so the need rungs fire roughly one drink and one meal a day instead of
+every few hours; every species profile derives its own rates the same way
+(`plugins/entity/entityPlugin.ts`). Health only moves when something
 hurts the body:
 
 - **starvation** — hunger or thirst sitting at the 100 line drains health
@@ -155,6 +167,17 @@ The wetland cutoff drowns the fresh basins (R4): lake and pond tiles are
 IMPASSABLE water columns — ground a step under the sea line, every deposit
 cleared — so the land set the spawn, build and trek scans walk curves
 around them, and only the salt carries vessels.
+
+**Rivers (R4)** — the survey carves one or more RIVER paths from the high-
+ground down to the sea: cardinal-connected chains of passable `river` cells
+(the ford — the land set walks THROUGH them). A river column carries the
+water voxel at the sea line and an UNLIMITED `water` supply (`takeFromCell`
+never draws it down — the same rule as the ground supply): a thirsty body
+standing in or beside a river drinks forever. Rivers paint their own blue
+(`RIVER_TILE_COLOR` in the terrain palette, mirrored by the scenario's
+`GRASS_TILE_PALETTE.river`) on every board, join the unicode/SVG legends,
+and suppress the lake/pond decorations on their cells. Trees never spread
+onto a river cell — water substrate.
 
 **The fine shoreline (R1)** — a beach tile's scale-0 interior is no longer
 a solid sand block: a deterministic WATERLINE hugs every edge that faces a
@@ -359,12 +382,28 @@ reset would age recruited trees backwards.
   source.
 - **Lighting** — the god-view's night veil reads `daylightAt(elapsed)`, a
   pure function of the world clock: night 18:00–06:00 holds the readable
-  floor (`NIGHT_LIGHT_FLOOR` 0.35 — the veil dims hard, every tile stays
-  legible), full daylight 07:30–16:30, and 90-minute smoothstep ramps run
+  floor (`NIGHT_LIGHT_FLOOR` 0.8 — a slight 0.2-alpha moonlit shade, the
+  board stays plainly visible), full daylight 07:30–16:30, and 90-minute
+  smoothstep ramps run
   dusk 16:30→18:00 and dawn 06:00→07:30 so the light never jumps. The one
   documented seam: at 06:00 exactly the dawn ramp still sits at the floor
   (continuity with 05:59) while `isNight()` already reads day — the
   half-open window's single boundary minute.
+
+## Farming — the husbandry rung (plugins/farming)
+
+The farming plugin (mounted after construction, toggle
+`plugins.farming`) lets the cast TILL A LIVING CROP instead of only
+gathering wild stocks. A human standing on a tilled plot with a berry in
+the bag plants it (rung 12, one minute); the plot grows on a day-scale
+rhythm (sprout → ripe) and the harvest rung (41, just above hunger) picks
+the ripe plot into the bag. Plots are keyed to the tile's ROOT fine cell
+(the plot identity survives the board's folds) and render as 🌱/🍇
+decorations on the unicode and SVG boards plus a Farm row in the Tile
+Inspector. The handle exposes `island.farming` (`plots()`, `plotAt(x,y)`).
+Regeneration is a NEW world (the reroll builds a fresh island), so plots
+never outlive their world. Limitations: berries only, one plot per tile,
+no watering/skill economy — the husbandry is a rhythm, not a sim.
 
 ## Plugins
 
@@ -411,6 +450,7 @@ owe (the tool rung, priority 23) keeps the crew equipped.
 |---|---|---|
 | flee | 60 | the survival plugin (unchanged) |
 | thirst / hunger / roost / sleep / rest | 50…25 | the survival needs (unchanged) |
+| farm-harvest | 41 | R5 — a ripe plot under the body → pick it into the bag (just above hunger: a standing crop beats foraging) |
 | deliver | 24 | the bag holds a material the site lacks → haul it to the footprint and stage it |
 | craft / tool | 23 | the bag holds a recipe's inputs → the atomic craft (per recipe); the tool rung re-arms the crew's axe/hammer when they wear out |
 | fetch-* / materials | 22 | a fetch the site still lacks AND no single bag can already use → take it underfoot, fell a tree for wood, or travel to the nearest stocked cell |
@@ -418,6 +458,7 @@ owe (the tool rung, priority 23) keeps the crew equipped.
 | social | 20 | unchanged — construction outranks it |
 | maintain | 15 | the R4 upkeep rungs: stage an open repair/upgrade order's material onto the built structure's footprint, then work its minutes |
 | mend | 14 | the R3 tool upkeep: a held tool worn past half sound mends for one wood + 2 minutes — below the structure upkeep (15), above the lumber chop (10): the crew mends its tools in the idle gaps, before break |
+| farm | 12 | R5 — a tilled empty plot beside berries → plant a berry plot (one minute, one berry from the bag) |
 | lumber / wander | 10 / 0 | unchanged — construction outranks them |
 
 **Demand direction** — the fetch gate measures the CREW's strongest single
@@ -510,6 +551,15 @@ construction tick sweep). Both gains ride the recovery service
 the charged resources' room, and the minute's hunger/thirst cost is the
 service's EQUAL charge — the sheltered night is the safe night, and an
 honest one: nothing converts from a full belly line or an empty source.
+
+**The shelter's protection (R3)** — `construction.isSheltered(entityId)`
+is the public read (the same roofed-gate check the rest bonus uses). The
+scenario wires it into both survival halves: a sheltered body's predator
+BITE is blocked (the roll is still consumed — the beast attacks, the roof
+absorbs it), and the survival flee rung ignores LAND threats while
+sheltered (a boar at the door no longer drags the sleeper out; sharks
+still drive a flee — water has no roof). The flee rung stays mounted for
+every other minute.
 
 **The vessels** — a built raft or boat is a concrete output:
 `construction.launch(siteId)` requires a SEA-water neighbour beside the

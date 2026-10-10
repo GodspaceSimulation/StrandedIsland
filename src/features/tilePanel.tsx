@@ -36,11 +36,15 @@ import {
     progressLine,
     forestStandLine,
     forestTreeLine,
+    farmLine,
     type TileOccupant,
     type TileStructure,
     type TileProgress,
 } from './tileDetails';
 import { itemLabel } from '../plugins/inventory/items';
+// R5 — the plot stage glyph (the same FARM_STAGE_GLYPHS the boards and the
+// legend draw — the inspector row agrees with the tile's decoration)
+import { FARM_STAGE_GLYPHS } from '../plugins/farming/farmingPlugin';
 
 /** Two-column detail row — the label is dim, the value plain. */
 const Row = styled('div', {
@@ -262,6 +266,21 @@ export const TilePanel = () => {
                             <VoxelStack data-testid="tile-forest">
                                 {forestStandLine(summary.forest)}
                                 <span data-testid="tile-forest-tree">{forestTreeLine(summary.forest)}</span>
+                            </VoxelStack>
+                        </Row>
+                    ) : null}
+                    {/* R5 — THE FARM: the standing berry plot on this tile
+                        (plugins/farming) — the clock-derived stage, the
+                        minutes to fruit and the harvest history. The glyph
+                        is the board's own stage icon (FARM_STAGE_GLYPHS),
+                        so the inspector row and the tile decoration always
+                        read the same stage */}
+                    {summary.farm ? (
+                        <Row>
+                            <RowName>Farm</RowName>
+                            <VoxelStack data-testid="tile-farm">
+                                {FARM_STAGE_GLYPHS[summary.farm.stage]}{' '}
+                                {farmLine(summary.farm, island.world.ticker.elapsed())}
                             </VoxelStack>
                         </Row>
                     ) : null}

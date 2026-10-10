@@ -7,7 +7,7 @@
 //              world.step() ticks move the badge minute by minute (the
 //              bridge's revision pulse re-renders the grid per tick)
 //   full day — daylight paints no veil (alpha 0); night paints the exact
-//              0.65 floor; dusk/dawn land the exact rounded ramp values
+//              0.2 slight-shade floor; dusk/dawn land the exact rounded ramp values
 //   phase    — the PhaseBadge flips exactly at 18:00 and 06:00, reads the
 //              same clock face the World Ticker's calendar does, and its
 //              title carries the exact ambient percentage
@@ -111,24 +111,24 @@ describe('the canvas day/night lighting (R5)', () => {
         const island = seedIsland();
         renderBoard(island);
         // 17:15 — the dusk midpoint (minuteOfDay 1035, smoothstep t 0.5):
-        // ambient 0.675 → veil alpha 0.325, the phase still reads Day
+        // ambient 0.9 → veil alpha 0.1, the phase still reads Day
         advance(island, 435);
         expect(screen.getByTestId('daycycle-badge').textContent).toBe('Day · 17:15');
         expect(screen.getByTestId('daycycle-badge').getAttribute('title')).toBe(
-            'Ambient light 68%',
+            'Ambient light 90%',
         );
         expect(ruleFor(screen.getByTestId('night-veil').className)).toContain(
-            'background:rgba(8,12,30,0.325)',
+            'background:rgba(8,12,30,0.1)',
         );
-        // 18:00 — the night boundary: ambient === NIGHT_LIGHT_FLOOR (0.35)
-        // → veil alpha 0.65, and the badge flips to Night
+        // 18:00 — the night boundary: ambient === NIGHT_LIGHT_FLOOR (0.8)
+        // → veil alpha 0.2, and the badge flips to Night
         advance(island, 45);
         expect(screen.getByTestId('daycycle-badge').textContent).toBe('Night · 18:00');
         expect(screen.getByTestId('daycycle-badge').getAttribute('title')).toBe(
-            'Ambient light 35%',
+            'Ambient light 80%',
         );
         expect(ruleFor(screen.getByTestId('night-veil').className)).toContain(
-            'background:rgba(8,12,30,0.65)',
+            'background:rgba(8,12,30,0.2)',
         );
     });
 
@@ -138,20 +138,20 @@ describe('the canvas day/night lighting (R5)', () => {
         advance(island, 1199); // 05:59 — the night's last minute
         expect(screen.getByTestId('daycycle-badge').textContent).toBe('Night · 05:59');
         expect(ruleFor(screen.getByTestId('night-veil').className)).toContain(
-            'background:rgba(8,12,30,0.65)',
+            'background:rgba(8,12,30,0.2)',
         );
         // 06:00 — the badge flips to Day while the veil still sits at the
         // floor (the dawn ramp's first minute has not moved yet)
         advance(island, 1);
         expect(screen.getByTestId('daycycle-badge').textContent).toBe('Day · 06:00');
         expect(ruleFor(screen.getByTestId('night-veil').className)).toContain(
-            'background:rgba(8,12,30,0.65)',
+            'background:rgba(8,12,30,0.2)',
         );
-        // 06:45 — the dawn midpoint (t 0.5): ambient 0.675 → alpha 0.325
+        // 06:45 — the dawn midpoint (t 0.5): ambient 0.9 → alpha 0.1
         advance(island, 45);
         expect(screen.getByTestId('daycycle-badge').textContent).toBe('Day · 06:45');
         expect(ruleFor(screen.getByTestId('night-veil').className)).toContain(
-            'background:rgba(8,12,30,0.325)',
+            'background:rgba(8,12,30,0.1)',
         );
         // 07:30 — full daylight again, the veil gone
         advance(island, 45);
@@ -184,13 +184,13 @@ describe('the canvas day/night lighting (R5)', () => {
         // The interior veil paints the SAME alpha from the SAME clock read
         expect(screen.getByTestId('daycycle-badge').textContent).toBe('Night · 18:00');
         expect(ruleFor(screen.getByTestId('night-veil').className)).toContain(
-            'background:rgba(8,12,30,0.65)',
+            'background:rgba(8,12,30,0.2)',
         );
         // Back out to the island — unchanged
         fireEvent.click(screen.getByTestId('zoom-toggle'));
         expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 1');
         expect(ruleFor(screen.getByTestId('night-veil').className)).toContain(
-            'background:rgba(8,12,30,0.65)',
+            'background:rgba(8,12,30,0.2)',
         );
     });
 
@@ -202,7 +202,7 @@ describe('the canvas day/night lighting (R5)', () => {
         // string the DOM veil computes, decorative and nonblocking
         fireEvent.click(screen.getByTestId('canvas-tab-svg'));
         const svgVeil = screen.getByTestId('night-veil-svg');
-        expect(svgVeil.getAttribute('fill')).toBe('rgba(8,12,30,0.65)');
+        expect(svgVeil.getAttribute('fill')).toBe('rgba(8,12,30,0.2)');
         expect(svgVeil.getAttribute('aria-hidden')).toBe('true');
         // T5 fix — an SVG element's `className` property is an
         // SVGAnimatedString object (never a string), so the class-list read
@@ -212,7 +212,7 @@ describe('the canvas day/night lighting (R5)', () => {
         // The ASCII board: the same DOM wash with the same class rule
         fireEvent.click(screen.getByTestId('canvas-tab-ascii'));
         expect(ruleFor(screen.getByTestId('night-veil').className)).toContain(
-            'background:rgba(8,12,30,0.65)',
+            'background:rgba(8,12,30,0.2)',
         );
         // Back to daylight on the SVG board — the fill drains to alpha 0
         // (the tab is remounted first: the veil element above was detached

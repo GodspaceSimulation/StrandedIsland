@@ -60,15 +60,38 @@ export type SurvivalPluginOptions = {
     /** World minutes to move ONE SCALE-0 tile. Default 1 (the
      * distribution's distance rule, scenario/island.ts). */
     travelMinutesPerTile?: number;
+    /**
+     * R3-INTEGRATION — THE SHELTER GATE: whether the body stands behind a
+     * built roofed structure's walls (the scenario wires this to the
+     * construction plugin's `isSheltered`). A sheltered body does NOT
+     * flee from a LAND threat (type 'boar') — the beast cannot reach it
+     * through the walls, and bolting out the door into its teeth is worse
+     * than staying under the roof. The exemption is deliberately narrow:
+     * it covers land beasts only (a shark at the waterline still sends a
+     * sheltered castaway running — the sea is not walled), it ends the
+     * minute the body steps off the gate, and the flee rung itself stays
+     * mounted and dominant for everything else (the emergency priority is
+     * never disabled — an unsheltered body, or any threat the walls do
+     * not keep out, still pre-empts the whole ladder). Absent: every
+     * meeting is open — the pre-shelter behavior.
+     */
+    sheltered?: (entityId: string) => boolean;
 };
 
 /**
  * The creature types a castaway flees — the predators plugin's boars (the
- * land threats) and the sharks (the sea ones off the shore). Open set:
+ * land beasts) and the sharks (the sea ones off the shore). Open set:
  * future beast plugins coin types into the coordinate space and extend
  * this list.
  */
 const THREAT_TYPES: readonly string[] = ['boar', 'shark'];
+
+/**
+ * R3-INTEGRATION — the threat types a built roof's walls keep out: the
+ * land beasts that must cross the footprint to reach the body. Sharks
+ * hunt the water and are never walled off a shore gate.
+ */
+const LAND_THREAT_TYPES: readonly string[] = ['boar'];
 
 export type SurvivalPlugin = WorldPlugin<World> & {};
 
@@ -76,6 +99,9 @@ export const survivalPlugin = (options: SurvivalPluginOptions): SurvivalPlugin =
     const { tasks } = options;
     const threatRange = options.threatRange ?? 1;
     const travel = options.travelMinutesPerTile ?? 1;
+    // R3-INTEGRATION — the shelter exposure read (construction's isSheltered
+    // via the scenario). Null: no walls, every meeting open (pre-shelter)
+    const shelteredDep = options.sheltered ?? null;
 
     // The world + the plugin's own persistent random stream arrive with
     // setup (the engine registry caches one context per plugin id) — the
@@ -96,8 +122,17 @@ export const survivalPlugin = (options: SurvivalPluginOptions): SurvivalPlugin =
         }
         let found: { id: string; x: number; y: number } | undefined;
         let best = Infinity;
+        // R3-INTEGRATION — the walls hold: a body standing on a built roofed
+        // gate is behind the footprint's walls, and the land beasts that
+        // must cross them to reach it never register as a meeting that can
+        // hurt (the scan itself exempts them — a shark at the same distance
+        // still counts, the sea is not walled; see the option doc)
+        const sheltered = shelteredDep?.(entity.id) === true;
         arrayEach(active.coordinates.all(), ({ value: entry }) => {
             if (entry.kind !== 'creature' || !THREAT_TYPES.includes(entry.type ?? '')) {
+                return;
+            }
+            if (sheltered && LAND_THREAT_TYPES.includes(entry.type ?? '')) {
                 return;
             }
             const distance = chebyshev(entity.position, entry.position);

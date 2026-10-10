@@ -3,6 +3,7 @@
 // status bars. Kept as plain constants (no CSS-in-JS theme machinery needed).
 
 import type { Biome } from '../engine/types';
+import { RIVER_TILE_COLOR } from '../plugins/terrain/islandTerrain';
 
 /** Cell fill per biome — the voxel surface the god sees from above. */
 export const BIOME_COLORS: Record<Biome, string> = {
@@ -16,6 +17,9 @@ export const BIOME_COLORS: Record<Biome, string> = {
     // the ocean/shallows sea)
     lake: '#2f6f9f',
     pond: '#4a90c2',
+    // R4 — the meandering fresh-water courses (the terrain plugin's own
+    // river tile color — single source of truth, scenario palette joins it)
+    river: RIVER_TILE_COLOR,
 };
 
 /** Actor condition dot / badge colors. */

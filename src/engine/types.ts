@@ -54,8 +54,29 @@ export type VoxelKind = 'air' | 'water' | 'sand' | 'dirt' | 'grass' | 'forest' |
  *                  fishing shore), never by crossing the water. The sea
  *                  stays the only SALT water (the vessels' element — see
  *                  isSeaWater).
+ * river          — PASSABLE SHALLOW FRESH-WATER COURSES (R4): the generator
+ *                  carves meandering, cardinally connected waterways from
+ *                  the interior highlands down to the sea. A river cell is
+ *                  a FORD — one water voxel over a lowered sand bed, but
+ *                  walkable (passable true): land actors cross it and drink
+ *                  from it directly, and its water is INEXHAUSTIBLE (the
+ *                  flowing spring — plugins/inventory never draws a river
+ *                  cell's stock down). Fresh, never salt: isSeaWater is
+ *                  false and isFreshBasin is true for it, so the vessels
+ *                  keep the sea alone and the thirst ladder reads the river
+ *                  as a water source. The sea's sharks never swim it (they
+ *                  move only through impassable columns).
  */
-export type Biome = 'ocean' | 'shallows' | 'beach' | 'meadow' | 'forest' | 'highland' | 'lake' | 'pond';
+export type Biome =
+    | 'ocean'
+    | 'shallows'
+    | 'beach'
+    | 'meadow'
+    | 'forest'
+    | 'highland'
+    | 'lake'
+    | 'pond'
+    | 'river';
 // (biome vocabulary note: 'highland' now derives from the 'gravel' surface
 //  — formerly 'stone'; see the VoxelKind note above)
 
@@ -70,11 +91,16 @@ export const isSeaWater = (biome: string | undefined): boolean =>
     biome === 'ocean' || biome === 'shallows';
 
 /**
- * Whether a biome is an interior fresh-water basin (the lake/pond family).
- * Widened to string like isSeaWater.
+ * Whether a biome is fresh inland water — the lake/pond basins AND the
+ * river courses (R4). Widened to string like isSeaWater. The rivers join
+ * the family because their water is fresh and drinkable (the thirst
+ * ladder + the inventory's fresh-water seeding read this); they stay
+ * distinct from the basins by PASSABILITY — a basin drowns (impassable),
+ * a river fords (passable). isSeaWater deliberately stays false for the
+ * river: the vessels keep the sea alone.
  */
 export const isFreshBasin = (biome: string | undefined): boolean =>
-    biome === 'lake' || biome === 'pond';
+    biome === 'lake' || biome === 'pond' || biome === 'river';
 
 // ── Tile resources ───────────────────────────────────────────────────────────
 // Every tile carries RESOURCE DEPOSITS — the natural features standing on it

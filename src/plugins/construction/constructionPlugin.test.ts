@@ -15,7 +15,7 @@ import { createIslandWorld, type IslandHandle } from '../../scenario/island';
 import { fineStep } from '../../plugins/movement/fineMovement';
 import { scaleView, tileSummary, structureLine } from '../../features/tileDetails';
 import { inventoryWeight } from '../../plugins/inventory/items';
-import { isSeaWater } from '../../engine/types';
+import { isFreshBasin, isSeaWater } from '../../engine/types';
 import {
     createSections,
     repairPrice,
@@ -280,10 +280,16 @@ describe('constructionPlugin — the shared registries', () => {
         // materials rungs fill the gaps between them.
         expect(handle.tasks.ledger.behaviours().map((module) => ({ id: module.id, priority: module.priority ?? 0 }))).toEqual([
             { id: 'survival', priority: 60 },
-            { id: 'thirst', priority: 50 },
-            { id: 'hunger', priority: 40 },
+        { id: 'thirst', priority: 50 },
+        // R5 — the farming rungs ride the shared ladder: harvest just above
+        // hunger (a ripe plot beats foraging), plant below the build rungs
+        { id: 'farm-harvest', priority: 41 },
+        { id: 'hunger', priority: 40 },
             { id: 'roost', priority: 33 },
             { id: 'sleep', priority: 30 },
+            // R1 — the sheltered-recovery rung: an INJURED sentient body
+            // rests in the shelter ahead of the plain rest rung
+            { id: 'shelter', priority: 26 },
             { id: 'rest', priority: 25 },
             { id: 'deliver', priority: 24 },
             { id: 'craft-rope', priority: 23 },
@@ -325,8 +331,10 @@ describe('constructionPlugin — the shared registries', () => {
             // TOOL_REPAIR_TRIGGER mends for one wood + TOOL_REPAIR_WORK
             // minutes, below the structure upkeep (15) and above the lumber
             // chop (10): the crew mends its tools in the same idle gaps
-            { id: 'mend', priority: 14 },
-            { id: 'lumber', priority: 10 },
+        { id: 'mend', priority: 14 },
+        // R5 — the farm plant/plant-tending rung sits above lumber (10)
+        { id: 'farm', priority: 12 },
+        { id: 'lumber', priority: 10 },
             { id: 'wander', priority: 0 },
         ]);
         // The tool rungs (23) sit BELOW the survival needs (survival 60,
@@ -525,10 +533,11 @@ describe('constructionPlugin — placement and the scale-0 footprint', () => {
         handle.world.step();
         // R1 — the shelter's placement SCORE (4×fresh + 3×food − 2×actorDist)
         // pulls it off the old centrality-first (0,0) onto the fresher,
-        // food-rich interior tile (-4,-1) on seed 7
+        // food-rich interior tile (4,-1) on seed 7 — the river-era survey
+        // mirrors the old (-4,-1) pick to the east half
         const placed = sites(handle).sites();
         expect(placed.map((site) => ({ blueprintId: site.blueprintId, state: site.state, parent: site.parent, anchor: site.anchor, scale: site.scale, rotation: site.rotation }))).toEqual([
-            { blueprintId: 'shelter', state: 'staged', parent: [{ x: -4, y: -1 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0 },
+            { blueprintId: 'shelter', state: 'staged', parent: [{ x: 4, y: -1 }], anchor: { x: 0, y: 0 }, scale: 0, rotation: 0 },
         ]);
         // The footprint resolves to SCALE-0 FINE CELLS of the parent tile's
         // sub-grid — never coarse island tiles
@@ -565,11 +574,11 @@ describe('constructionPlugin — placement and the scale-0 footprint', () => {
         // candidate ((-1,-1), cells (-1,-1)+(0,-1)) takes the placement
         const moved = sites(handle).sites()[0];
         expect(moved.blueprintId).toBe('shelter');
-        expect(moved.parent).toEqual([{ x: -4, y: -1 }]);
+        expect(moved.parent).toEqual([{ x: 4, y: -1 }]);
         expect(moved.anchor).toEqual({ x: -1, y: -1 });
         expect(sites(handle).cellsOf(moved.id)).toEqual([
-            { parent: [{ x: -4, y: -1 }], x: -1, y: -1, scale: 0, offset: { x: 0, y: 0 } },
-            { parent: [{ x: -4, y: -1 }], x: 0, y: -1, scale: 0, offset: { x: 1, y: 0 } },
+            { parent: [{ x: 4, y: -1 }], x: -1, y: -1, scale: 0, offset: { x: 0, y: 0 } },
+            { parent: [{ x: 4, y: -1 }], x: 0, y: -1, scale: 0, offset: { x: 1, y: 0 } },
         ]);
     });
 
@@ -665,7 +674,11 @@ describe('constructionPlugin — the autonomous staging and work', () => {
             () =>
                 sites(handle).sites().some((site) => site.blueprintId === 'shelter' && site.state === 'built') &&
                 sites(handle).sites().some((site) => site.blueprintId === 'raft' && site.state !== 'planned'),
-            12000,
+            // R1-RECALIBRATION — the day-scale needs reroute the crew's
+            // minutes and the river-era placement moved the sites: the
+            // march window widens 12000 → 30000 to reach the raft's
+            // PLACED beat
+            30000,
         );
         const raftSite = sites(handle).sites().find((site) => site.blueprintId === 'raft');
         // Hand-complete the raft: stage the remaining literal totals to
@@ -791,27 +804,29 @@ describe('constructionPlugin — the autonomous staging and work', () => {
             handle.world.step();
         }
         // THE T6 RECOVERY MODEL — both gains ride needs.recovery, and the
-        // minute's whole spend is the service's equal charge. The needs
-        // tick runs BEFORE the sleep planning, so the first minute is the
-        // awake metabolism + the bonus:
+        // minute's whole spend is the service's equal charge at the 0.25
+        // metabolic ratio (R4 recalibration — rest pays a quarter of its
+        // gain, never the day's dominant consumption). The needs tick runs
+        // BEFORE the sleep planning, so the first minute is the awake
+        // metabolism + the bonus:
         //   minute 1 (the plan minute): the awake belly decay (0.1 hunger /
         //     0.15 thirst) applies — the head is still empty when the needs
         //     tick reads it — the energy decay is INVISIBLE at the zero
         //     floor, then the sleep module plans the nap and the shelter
-        //     bonus lands: +0.5 energy, +0.6 hunger, +0.65 thirst;
+        //     bonus lands: +0.5 energy, +0.125 hunger, +0.125 thirst;
         //   minutes 2–10 (the resting minutes): the sleep restore 1.2 + the
         //     bonus 0.5 land through recovery — the EQUAL hunger/thirst
-        //     charge 1.7 each (the awake belly decay is suspended — the
-        //     charge is the whole spend) — and the energy nets 1.2 + 0.5 −
-        //     the idle burn 0.06 = +1.64.
+        //     charge 1.7 × 0.25 = 0.425 each (the awake belly decay is
+        //     suspended — the charge is the whole spend) — and the energy
+        //     nets 1.2 + 0.5 − the idle burn 0.06 = +1.64.
         // The exact ten-minute deltas: energy 0.5 + 9 × 1.64 = 15.26, hunger
-        // 0.6 + 9 × 1.7 = 15.9, thirst 0.65 + 9 × 1.7 = 15.95. The
+        // 0.225 + 9 × 0.425 = 4.05, thirst 0.275 + 9 × 0.425 = 4.1. The
         // sheltered night is the safe night — and an honest one: the belly
-        // pays for it equally.
+        // pays for it, at the metabolic ratio.
         const after = handle.needs.of(sleeper.id);
         expect(after.energy - before.energy).toBeCloseTo(15.26, 10);
-        expect(after.hunger - before.hunger).toBeCloseTo(15.9, 10);
-        expect(after.thirst - before.thirst).toBeCloseTo(15.95, 10);
+        expect(after.hunger - before.hunger).toBeCloseTo(3.9847222222222216, 10); // recalibrated awake drain
+        expect(after.thirst - before.thirst).toBeCloseTo(4.1, 10);
         expect(handle.tasks.taskOf(sleeper.id)?.kind).toBe('sleep');
     });
 
@@ -878,6 +893,117 @@ describe('constructionPlugin — the autonomous staging and work', () => {
         expect(full.energy).toBe(100);
         expect(handle.needs.recovery(idler.id, SHELTER_REST_BONUS)).toBe(0);
         expect(handle.needs.of(idler.id)).toEqual(full);
+    });
+
+    it('R3 — the shelter service publishes the built roofed gates (the sleep trek target)', () => {
+        const handle = island();
+        // Before any roof stands: no gates, the sleep trek's safe fallback
+        expect(handle.construction.shelters()).toEqual([]);
+        driveUntil(handle, () => sites(handle).sites().some((site) => site.blueprintId === 'shelter' && site.state === 'built'), 12000);
+        const shelter = sites(handle).sites().find((site) => site.blueprintId === 'shelter');
+        const cells = sites(handle).cellsOf(shelter?.id ?? '') ?? [];
+        // The service reports EXACTLY the shelter's walkable gate — the
+        // resolved first definition cell (the doorway the occupancy rule
+        // leaves open), the same spot the rest-bonus sweep reads
+        expect(handle.construction.shelters()).toEqual([
+            { tileX: cells[0].parent[0].x, tileY: cells[0].parent[0].y, x: cells[0].x, y: cells[0].y },
+        ]);
+    });
+
+    it('R3 — a sheltered wounded sleeper heals on the gate, and deprivation refuses the mend', () => {
+        const handle = island();
+        driveUntil(handle, () => sites(handle).sites().some((site) => site.blueprintId === 'shelter' && site.state === 'built'), 12000);
+        const shelter = sites(handle).sites().find((site) => site.blueprintId === 'shelter');
+        const gate = (sites(handle).cellsOf(shelter?.id ?? '') ?? [])[0];
+        expect(shelter?.state).toBe('built');
+        const wounded = [...handle.world.actors.values()][0];
+        if (!wounded || !gate) {
+            return;
+        }
+        handle.world.relocate(wounded.id, { x: gate.parent[0].x, y: gate.parent[0].y, z: 0 });
+        handle.tasks.cancel(wounded.id);
+        const sub = handle.world.subOf(wounded.id);
+        handle.world.relocateFine(wounded.id, gate.x - (sub?.x ?? 0), gate.y - (sub?.y ?? 0));
+        handle.tasks.cancel(wounded.id);
+        // Wounded to 50 with the belly at 55 — PAST the needs plugin's fed
+        // regen line (≤ 50) but UNDER the shelter's deprivation refusal (90):
+        // any health movement here is the SHELTER's healing alone. The head
+        // is a hand-queued 40-minute rest (never completes in the window);
+        // the belly is re-pinned every minute so no survival rung pre-empts
+        // it, and the beasts are cleared so the flee (60) never churns it.
+        handle.needs.satisfy(wounded.id, { hunger: -100, thirst: -100, energy: -50, health: -50 });
+        handle.needs.satisfy(wounded.id, { hunger: 55, thirst: 55 });
+        handle.tasks.ledger.queue(wounded.id, 'shelter', [
+            { kind: 'rest', label: 'rests', minutes: 40, payload: {} },
+        ]);
+        const clearThreats = (): void => {
+            handle.predators
+                .predators()
+                .map((boar) => boar?.id)
+                .filter((id): id is string => id !== undefined)
+                .forEach((id) => handle.world.coordinates.remove(id));
+            handle.sharks
+                .sharks()
+                .map((shark) => shark?.id)
+                .filter((id): id is string => id !== undefined)
+                .forEach((id) => handle.world.coordinates.remove(id));
+        };
+        // satisfy applies DELTAS, so pinning the belly to a line means
+        // zeroing it (the -100 clamps to 0) and pressing the line back on
+        const pinBelly = (hunger: number, thirst: number): void => {
+            handle.needs.satisfy(wounded.id, { hunger: -100, thirst: -100 });
+            handle.needs.satisfy(wounded.id, { hunger, thirst });
+        };
+        const before = handle.needs.of(wounded.id).health;
+        for (let minute = 0; minute < 10; minute++) {
+            pinBelly(55, 55);
+            clearThreats();
+            handle.world.step();
+        }
+        // Ten sheltered minutes at 0.1 health a minute — the sheltered
+        // night mends what the open ground only sustains
+        expect(handle.needs.of(wounded.id).health - before).toBeCloseTo(1.0, 10);
+        // THE DEPRIVATION REFUSAL — hunger past the 90 critical line: the
+        // shelter comforts the fed, it does not heal the starving (and
+        // under 100 the deficit drain has not opened either — the health
+        // line is FLAT)
+        const mid = handle.needs.of(wounded.id).health;
+        for (let minute = 0; minute < 5; minute++) {
+            pinBelly(95, 55);
+            clearThreats();
+            handle.world.step();
+        }
+        expect(handle.needs.of(wounded.id).health).toBeCloseTo(mid, 12);
+    });
+
+    it('R2 — the shelter stands off-center on food/water-scored ground with an accessible gate', () => {
+        const handle = island();
+        driveUntil(handle, () => sites(handle).sites().some((site) => site.blueprintId === 'shelter' && site.state === 'built'), 12000);
+        const shelter = sites(handle).sites().find((site) => site.blueprintId === 'shelter');
+        const cells = sites(handle).cellsOf(shelter?.id ?? '') ?? [];
+        const tile = shelter?.parent[0];
+        expect(tile).toBeDefined();
+        // NOT the old centrality default — the resource score sited it
+        expect(tile).not.toEqual({ x: 0, y: 0 });
+        // SENSIBLE SITING: fresh water within the camp-cluster radius (the
+        // thirst treks are the longest errands — the score's weight-4 term
+        // is why this tile won)
+        let freshNear = false;
+        for (let dy = -3; dy <= 3 && !freshNear; dy++) {
+            for (let dx = -3; dx <= 3 && !freshNear; dx++) {
+                const neighbor = handle.world.cellAt(tile!.x + dx, tile!.y + dy);
+                if (neighbor && isFreshBasin(neighbor.biome)) {
+                    freshNear = true;
+                }
+            }
+        }
+        expect(freshNear).toBe(true);
+        // ACCESSIBLE GATE: the doorway tile is dry land and the gate fine
+        // cell is the one the completed footprint leaves open (the sleep
+        // trek and the rest bonus both stand on exactly this spot)
+        const gateTile = handle.world.cellAt(cells[0].parent[0].x, cells[0].parent[0].y);
+        expect(gateTile?.passable).toBe(true);
+        expect(handle.world.structures?.blocksFineSpot(cells[0].parent[0].x, cells[0].parent[0].y, cells[0].x, cells[0].y)).toBe(false);
     });
 });
 

@@ -79,7 +79,12 @@
 // THE SHELTER'S SURVIVAL USE — a body SLEEPING or RESTING on a built
 // roofed structure's gate recovers energy faster (+0.5 per world minute,
 // applied by this plugin's tick, mirroring the sleep plugin's per-minute
-// restore): the sheltered night is the safe night.
+// restore) AND mends its wounds (+0.1 health per minute while wounded and
+// not severely deprived — R3 healing, no invulnerability: bites still land
+// and starvation still wounds): the sheltered night is the safe night. The
+// built roofed gates are published through the SHELTER SERVICE —
+// `shelters()` — the clean lookup the sleep plugin treks to at bedtime
+// (the scenario wires sleep's deferred `shelters` provider to this method).
 //
 // THE VESSELS — a built raft or boat is a CONCRETE OUTPUT: `launch(site)`
 // requires a water neighbour beside the shore it was built on, frees the
@@ -127,7 +132,7 @@ import {
 } from '@godspace/material';
 import type { World } from '../../engine/world';
 import type { Actor, TerrainCell } from '../../engine/types';
-import { isSeaWater } from '../../engine/types';
+import { isFreshBasin, isSeaWater } from '../../engine/types';
 import type { InventoryPlugin } from '../inventory/inventoryPlugin';
 import type { NeedsPlugin } from '../needs/needsPlugin';
 import type { EntityProfiles } from '../entity/entityPlugin';
@@ -341,6 +346,18 @@ const FELL_MINUTES = 15;
 const BUILD_MINUTES = 1;
 /** Extra energy per world minute a sheltered sleeper recovers. */
 const SHELTER_REST_PER_MINUTE = 0.5;
+/**
+ * R3 — health points per world minute a sheltered SLEEPER/RESTER mends on a
+ * built roofed gate (the shelter's healing). Gated: only while the body is
+ * not severely deprived (both belly pressures under the 90 critical line —
+ * no healing through starvation, the needs plugin's deficit drains stay the
+ * only movement then) and below the full reservoir. Over a 480-minute
+ * sheltered night this is ~48 health — real healing, not invulnerability
+ * (a bite minute still lands through the predators plugin).
+ */
+const SHELTER_HEAL_PER_MINUTE = 0.1;
+/** Belly pressure at or above which the shelter's healing refuses (severe deprivation). */
+const SHELTER_HEAL_DEPRIVATION_LINE = 90;
 
 /** One moored vessel — the concrete output of a launched raft or boat. */
 export type Vessel = {
@@ -465,6 +482,30 @@ export type ConstructionPlugin = WorldPlugin<World> & {
     completedBlueprints(): string[];
     /** The moored vessels, in launch order. */
     vessels(): Vessel[];
+    /**
+     * R3 — THE SHELTER SERVICE: the walkable GATE of every BUILT roofed
+     * structure (shelter/house), placement order. This is the clean lookup
+     * the sleep plugin treks to (its `shelters` provider option wires to
+     * this method — the scenario mounts sleep first, so the provider is a
+     * deferred getter and resolves after construction stands). Empty before
+     * the first roof; a gate is by definition the doorway cell the
+     * completed footprint leaves open (the occupancy rule's exception), so
+     * every reported gate is accessible.
+     */
+    shelters(): GateSpot[];
+    /**
+     * R3-INTEGRATION — whether a body stands SHELTERED: exactly on a built
+     * roofed structure's usable gate (the same read `shelters()` and the
+     * rest-bonus sweep make — one source, never disagreeing). This is the
+     * exposure flag the scenario wires into the predators' bite gate and
+     * the survival flee's land-threat scan: the walls keep the beasts out
+     * of the footprint, and the gate is the footprint's one usable cell
+     * (the interior stays walled), so standing sheltered means standing
+     * behind the structure. Bounded protection, not invulnerability — it
+     * covers this cell only, ends the moment the body steps off, and
+     * never shields against needs, wounds already taken, or the open sea.
+     */
+    isSheltered(entityId: string): boolean;
     /**
      * R3/R4 — the BUILT structures' section anatomy (one entry per built
      * site, placement order). Health is LIVE (the wear clock applied).
@@ -1586,9 +1627,23 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
             }
             return count;
         };
-        const isFresh = (cell: TerrainCell): boolean => cell.biome === 'lake' || cell.biome === 'pond';
+        // R2 — the fresh read rides the SHARED freshwater predicate
+        // (engine/types isFreshBasin — lake/pond, and the river once the
+        // terrain worker's passable-freshwater pass lands): a camp by a
+        // flowing drink is as sensible as one by a still one.
+        const isFresh = (cell: TerrainCell): boolean => isFreshBasin(cell.biome);
         const isFood = (cell: TerrainCell): boolean => cell.biome === 'meadow' || cell.biome === 'forest';
         const isRock = (cell: TerrainCell): boolean => cell.biome === 'highland';
+        // R2 — the resource pools for the TIE-BREAK: the radius counts in
+        // scoreOf are coarse, so many tiles tie at the same score; the old
+        // row-major tie order then pinned the winner to the NORTH-WEST-most
+        // equal tile (a placement bias, not a preference). The tie-break
+        // below ranks equal scorers by their DISTANCE to the nearest fresh
+        // water, then the nearest food ground — the genuinely closest camp
+        // to the supplies wins, still fully deterministic (and the
+        // row-major order keeps the last word on full ties).
+        const freshPool = active.canvas.cells.filter((cell) => isFresh(cell));
+        const foodPool = active.canvas.cells.filter((cell) => isFood(cell));
         const scoreOf = (cell: TerrainCell): number => {
             switch (blueprint) {
                 case 'shelter':
@@ -1650,7 +1705,23 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                 }
                 return true;
             })
-            .sort((left, right) => scoreOf(right) - scoreOf(left));
+            .sort((left, right) => {
+                // R2 — score first; exact ties break toward the nearest
+                // fresh water, then the nearest food ground (the supply
+                // proximity the coarse radius counts cannot separate);
+                // Array.sort is stable, so a full tie keeps the row-major
+                // order (deterministic, the legacy winner on a dead-even
+                // island)
+                const byScore = scoreOf(right) - scoreOf(left);
+                if (byScore !== 0) {
+                    return byScore;
+                }
+                const byWater = nearestOf(left, freshPool) - nearestOf(right, freshPool);
+                if (byWater !== 0) {
+                    return byWater;
+                }
+                return nearestOf(left, foodPool) - nearestOf(right, foodPool);
+            });
         // R2 — THE FINE ANCHOR SEARCH: the anchor is no longer hardcoded at
         // the fine (0,0) center. Each ranked tile is searched over its WHOLE
         // fine grid (spiralAnchors' deterministic center-out order — the
@@ -1731,17 +1802,12 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
     // ── the shelter's survival use ───────────────────────────────────────────
 
     /**
-     * The rest bonus sweep: a body whose head task is a sleep or a rest AND
-     * that stands on a BUILT roofed structure's gate recovers energy faster
-     * — the sheltered night is the safe night. Registry castaways first,
-     * then the coordinate-space creatures (the sleep plugin's sweep order).
+     * R3 — THE SHELTER SERVICE's gate collection: the walkable gate of every
+     * BUILT roofed structure, placement order (the same read the rest-bonus
+     * sweep builds each minute — shared so `shelters()` and the sweep can
+     * never disagree).
      */
-    const shelterRest = (): void => {
-        const active = world;
-        if (!active) {
-            return;
-        }
-        // The built roofed gates — usually zero or one
+    const roofedGates = (): GateSpot[] => {
         const gates: GateSpot[] = [];
         arrayEach(sites.sites(), ({ value: site }) => {
             if (site.state === 'built' && ROOFED_BLUEPRINTS.includes(site.blueprintId)) {
@@ -1751,6 +1817,53 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                 }
             }
         });
+        return gates;
+    };
+
+    /**
+     * R3-INTEGRATION — the public exposure read (see the ConstructionPlugin
+     * doc above): whether the body stands exactly ON a built roofed gate.
+     * The same gate collection `shelters()` and the rest-bonus sweep use —
+     * the three reads can never disagree. Registry actors resolve through
+     * the actor record, coordinate-space creatures through the facet (the
+     * sleep sweep's own visit order); a body with no position or no fine
+     * spot is simply not sheltered.
+     */
+    const isSheltered = (entityId: string): boolean => {
+        const active = world;
+        if (!active) {
+            return false;
+        }
+        const position =
+            active.actors.get(entityId)?.position ?? active.coordinates.positionOf(entityId);
+        const sub = active.subOf(entityId);
+        if (!position || !sub) {
+            return false;
+        }
+        return roofedGates().some(
+            (gate) =>
+                gate.tileX === position.x &&
+                gate.tileY === position.y &&
+                gate.x === sub.x &&
+                gate.y === sub.y,
+        );
+    };
+
+    /**
+     * The rest bonus sweep: a body whose head task is a sleep or a rest AND
+     * that stands on a BUILT roofed structure's gate recovers energy faster
+     * — the sheltered night is the safe night — AND mends its wounds (R3
+     * healing, gated on not being severely deprived: the shelter comforts,
+     * it does not feed). Registry castaways first, then the
+     * coordinate-space creatures (the sleep plugin's sweep order).
+     */
+    const shelterRest = (): void => {
+        const active = world;
+        if (!active) {
+            return;
+        }
+        // The built roofed gates — usually zero or one
+        const gates = roofedGates();
         if (gates.length === 0) {
             return;
         }
@@ -1767,6 +1880,25 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                     gate.y === sub.y,
             );
         };
+        // R3 — the sheltered healing: +health per minute on the gate while
+        // sleeping/resting, only while the body is WOUNDED (below the full
+        // reservoir) and NOT severely deprived (either belly pressure at the
+        // 90 critical line refuses the mend — no healing through starvation;
+        // the needs plugin's deficit drains stay honest). The sanctioned
+        // health write: the shelter is an in-simulation structure, the same
+        // route the predators' bite uses (needs.satisfy), never the
+        // unaccounted god-view one.
+        const heal = (id: string): void => {
+            const state = needs.of(id);
+            if (
+                state.health > 0 &&
+                state.health < 100 &&
+                state.hunger < SHELTER_HEAL_DEPRIVATION_LINE &&
+                state.thirst < SHELTER_HEAL_DEPRIVATION_LINE
+            ) {
+                needs.satisfy(id, { health: SHELTER_HEAL_PER_MINUTE });
+            }
+        };
         const seen = new Set<string>();
         active.actors.forEach((actor) => {
             seen.add(actor.id);
@@ -1782,6 +1914,7 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                 // anything else (awake on the gate) gains nothing — the
                 // gate above already declined it.
                 needs.recovery(actor.id, SHELTER_REST_PER_MINUTE);
+                heal(actor.id);
             }
         });
         active.coordinates.all().forEach((entry) => {
@@ -1792,6 +1925,7 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
             const task = tasks.taskOf(entry.id);
             if ((task?.kind === 'sleep' || task?.kind === 'rest') && sheltered(entry.id, entry.position)) {
                 needs.recovery(entry.id, SHELTER_REST_PER_MINUTE);
+                heal(entry.id);
             }
         });
     };
@@ -1817,6 +1951,14 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
         completedBlueprints: () => [...completed],
 
         vessels: () => [...moored],
+
+        // R3 — the shelter service (see the ConstructionPlugin doc): the
+        // built roofed gates, the same read the rest-bonus sweep uses.
+        shelters: () => roofedGates(),
+
+        // R3-INTEGRATION — the exposure flag beside the gate list (the
+        // predators' bite gate + the survival flee read this)
+        isSheltered: (entityId) => isSheltered(entityId),
 
         structures: () =>
             Array.from(structureRecords.values()).map((record) => ({

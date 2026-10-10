@@ -11,8 +11,11 @@
 // coconuts on beaches, iron lodes in the highlands, flints, vines, the
 // sea's fish and seaweed), grows the living stocks back over time, keeps the
 // rain as WEATHER (the event — R4: rain no longer scatters drinking-water
-// pools onto the land; the fresh water stands in the lake/pond basins and
-// their dry shore ring, refilled on their own rhythm), and exposes the
+// pools onto the land; the fresh water stands in the lake/pond basins, the
+// river courses and their dry shore rings — the basins refill on their own
+// rhythm, and a RIVER'S WATER IS INEXHAUSTIBLE: the flowing course hands
+// its drink out forever, never drawn down (the takeFromCell river branch)),
+// and exposes the
 // gathering + harvest + exchange actions that other plugins (behavior,
 // lumber) and the god-view drive.
 //
@@ -42,7 +45,7 @@
 import { arrayEach } from '@presource/core';
 import { type Position3D } from '@godspace/core';
 import type { Actor, TerrainCell, TileResource } from '../../engine/types';
-import { TILE_RESOURCES, UNLIMITED_TILE_RESOURCES } from '../../engine/types';
+import { TILE_RESOURCES, UNLIMITED_TILE_RESOURCES, isFreshBasin } from '../../engine/types';
 import type { PluginContext, WorldPlugin } from '@godspace/core';
 import type { World } from '../../engine/world';
 import { itemDef, itemLabel, itemWeight, inventoryWeight, MINED_ITEMS } from './items';
@@ -603,12 +606,16 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
         regrowCells.clear();
         const halfX = (canvas.width - 1) / 2;
         const halfY = (canvas.height - 1) / 2;
+        // R4 — the fresh-water family is isFreshBasin (engine/types): the
+        // lake/pond basins AND the river courses. The shore-ring read below
+        // and the cell's own seeding both follow it, so a river banks its
+        // water onto the adjacent dry tiles exactly like a basin does.
         const basinAt = (x: number, y: number): boolean => {
             if (y < -halfY || y > halfY || x < -halfX || x > halfX) {
                 return false;
             }
             const neighbor = canvas.cells[(y + halfY) * canvas.width + (x + halfX)];
-            return neighbor.biome === 'lake' || neighbor.biome === 'pond';
+            return isFreshBasin(neighbor.biome);
         };
         arrayEach(canvas.cells, ({ value: cell }) => {
             const stock = stockOf(cell.x, cell.y);
@@ -652,8 +659,12 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             // gathers the water from either the wetland or its shore — the
             // thirst ladder's collect reads the cell's water stock). The cell
             // is a fresh-water cell iff it is a basin OR any of its 8
-            // neighbors is.
-            const isBasin = cell.biome === 'lake' || cell.biome === 'pond';
+            // neighbors is. R4 — the river courses join the family: the cell
+            // itself fords (a thirsty actor drinks IN the river, standing in
+            // the shallows) and its banks stock the ring; the takeFromCell
+            // branch below makes the river's own supply inexhaustible while
+            // the basins and their shores keep the rhythm refill.
+            const isBasin = isFreshBasin(cell.biome);
             const nearBasin = isBasin ||
                 basinAt(cell.x - 1, cell.y) || basinAt(cell.x + 1, cell.y) ||
                 basinAt(cell.x, cell.y - 1) || basinAt(cell.x, cell.y + 1) ||
@@ -756,11 +767,20 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             const x = actor.position.x;
             const y = actor.position.y;
             const stock = stockOf(x, y);
+            // R4 — RIVER WATER IS INEXHAUSTIBLE: a flowing course hands its
+            // fresh water out forever, exactly like the unlimited ground
+            // supply below — the stock key is the DISCOVERY signal (the
+            // survey seeds it; cellsWithItem('water') and the thirst trek
+            // read it), never a pool to drain. The capacity gate above
+            // still applies (a full hand cannot take — the take stays
+            // atomic), and the lake/pond basins keep their FINITE rhythm-
+            // refilled pools (the FRESH_WATER_RHYTHM sweep is unchanged).
+            const riverWater = itemId === 'water' && world?.cellAt(x, y)?.biome === 'river';
             // UNLIMITED ground-supply deposits (grass, sand, dirt) cannot be
             // exhausted: the pile never decrements, so the tile hands them
             // out forever — only the bag's capacity gates (stone is FINITE:
             // it rides the stock branch and draws down with the pile)
-            if (isUnlimitedResource(itemId)) {
+            if (isUnlimitedResource(itemId) || riverWater) {
                 if ((stock[itemId] ?? 0) <= 0) {
                     return false;
                 }

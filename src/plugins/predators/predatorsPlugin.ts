@@ -88,6 +88,21 @@ export type PredatorsPluginOptions = {
     };
     /** The entity profiles — the pace derivation + the stat-driven roam. */
     profiles?: EntityProfiles;
+    /**
+     * R3-INTEGRATION — THE SHELTER GATE: whether a victim stands behind a
+     * built roofed structure's walls (the scenario wires this to the
+     * construction plugin's `isSheltered` — the built roofed gate read).
+     * A sheltered victim cannot be reached: the footprint's walls keep the
+     * beast out and the gate is the structure's one usable cell, so the
+     * maul BLOCKS while the body stands sheltered. The bite roll is still
+     * CONSUMED (the deterministic stream never shifts — the same honesty
+     * rule as the unwounded no-needs roll), and the protection is bounded:
+     * it covers the gate cell only, ends the minute the body steps off,
+     * and says nothing about wounds already taken or the needs clock.
+     * Absent (no construction mounted): every meeting stays open — the
+     * pre-shelter behavior.
+     */
+    sheltered?: (entityId: string) => boolean;
 };
 
 /** One boar's record — position is read live from the coordinate space. */
@@ -151,6 +166,11 @@ export const predatorsPlugin = (options: PredatorsPluginOptions = {}): Predators
     const biteDamage = options.biteDamage ?? 20;
     // The task ledger's busy gate — see the option docs
     const tasks = options.tasks ?? null;
+    // R3-INTEGRATION — the shelter exposure read (the construction plugin's
+    // isSheltered, wired by the scenario). Null: no walls anywhere, every
+    // meeting open (the pre-shelter behavior)
+    const shelteredDep = options.sheltered ?? null;
+    const isSheltered = (entityId: string): boolean => shelteredDep?.(entityId) === true;
 
     // The stat-driven roam economics — active only when BOTH the needs
     // plugin and the entity profiles are mounted (the same gating shape as
@@ -326,7 +346,12 @@ export const predatorsPlugin = (options: PredatorsPluginOptions = {}): Predators
                 // from it) and the mauling is a story between two entities
                 // — it stays in the log.
                 const victim = active.actorAt(position.x, position.y);
-                if (victim && stream() < biteChance && needs) {
+                // R3-INTEGRATION — THE SHELTER GATE: the roll runs either
+                // way (the stream never shifts), but a victim standing on
+                // a built roofed gate is behind the walls — the beast
+                // circles the footprint and the maul never lands while the
+                // body stays sheltered (see the option doc for the bounds)
+                if (victim && stream() < biteChance && needs && !isSheltered(victim.id)) {
                     // The maul: the drain AND the wound — the health
                     // reservoir is what a cornered castaway can bleed dry
                     needs.satisfy(victim.id, { energy: -biteDrain, health: -biteDamage });

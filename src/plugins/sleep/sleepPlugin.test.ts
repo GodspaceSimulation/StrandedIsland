@@ -29,7 +29,7 @@ import { relationshipPlugin } from '../relationship/relationshipPlugin';
 import { tasksPlugin } from '../tasks/tasksPlugin';
 import { behaviorPlugin } from '../behavior/behaviorPlugin';
 import { survivalPlugin } from '../survival/survivalPlugin';
-import { sleepPlugin } from './sleepPlugin';
+import { sleepPlugin, type ShelterGate } from './sleepPlugin';
 import type { EntityProfile, EntityProfiles } from '../entity/entityPlugin';
 import type { Actor } from '../../engine/types';
 
@@ -86,7 +86,7 @@ const movementFreeProfiles = (): EntityProfiles => {
     };
 };
 
-const buildStack = (options: { movementFree?: boolean } = {}) => {
+const buildStack = (options: { movementFree?: boolean; shelters?: () => ShelterGate[] } = {}) => {
     const inventory = inventoryPlugin({ rainChancePerMinute: 0 });
     const tasks = tasksPlugin();
     // The tasks handle rides the needs options — the resting-metabolism
@@ -100,7 +100,7 @@ const buildStack = (options: { movementFree?: boolean } = {}) => {
     });
     const relationship = relationshipPlugin();
     const behavior = behaviorPlugin({ inventory, needs, relationship, tasks });
-    const sleep = sleepPlugin({ needs, tasks });
+    const sleep = sleepPlugin({ needs, tasks, ...(options.shelters ? { shelters: options.shelters } : {}) });
     const world = createWorld({
         seed: 7,
         tickSize: 1,
@@ -138,6 +138,9 @@ describe('sleepPlugin', () => {
             { id: 'hunger', priority: 40 },
             { id: 'roost', priority: 33 },
             { id: 'sleep', priority: 30 },
+            // R1 — the sheltered-recovery rung sits between the slumber and
+            // the plain rest fallback (the sleep plugin registers both)
+            { id: 'shelter', priority: 26 },
             { id: 'rest', priority: 25 },
             { id: 'social', priority: 20 },
             { id: 'wander', priority: 0 },
@@ -399,44 +402,49 @@ describe('sleepPlugin — the resting metabolism and the equal recovery charge',
         needs.satisfy('a', { energy: -80 }); // 20 ≤ 22 → the emergency nap
         world.step(); // the plan minute: still an AWAKE minute (unequal baseline runs)
         const afterPlan = needs.of('a');
-        expect(afterPlan.hunger).toBeCloseTo(20.1, 10); // +0.1 awake hunger
-        expect(afterPlan.thirst).toBeCloseTo(20.15, 10); // +0.15 awake thirst
+        // The recalibrated awake baseline (100/2880 hunger, 100/1440 thirst)
+        expect(afterPlan.hunger).toBeCloseTo(20 + 100 / 2880, 10); // +1 awake hunger minute
+        expect(afterPlan.thirst).toBeCloseTo(20 + 100 / 1440, 10); // +1 awake thirst minute
         for (let index = 0; index < 4; index++) {
             world.step();
         }
         const slept = needs.of('a');
         // Four sleep minutes: the baseline did NOT run — the ONLY spend is
-        // the recovery charge (1.2 hunger + 1.2 thirst per restored point,
-        // 4 restores), EQUAL on both resources
-        expect(slept.hunger - afterPlan.hunger).toBeCloseTo(4.8, 10);
-        expect(slept.thirst - afterPlan.thirst).toBeCloseTo(4.8, 10);
+        // the recovery charge (1.2 restored × the 0.25 metabolic ratio =
+        // 0.3 hunger + 0.3 thirst per sleeped minute, 4 restores), EQUAL
+        // on both resources
+        expect(slept.hunger - afterPlan.hunger).toBeCloseTo(1.2, 10);
+        expect(slept.thirst - afterPlan.thirst).toBeCloseTo(1.2, 10);
         expect(sleep.accountOf('a').slept).toBe(4);
     });
 
     it('the recovery service charges equal hunger/thirst, caps at the energy headroom, and refuses an empty resource', () => {
         const { world, needs } = buildMetabolicStack();
         spawn(world, 'a', 'Ael', 8, 2);
-        // From energy 90: ten points restore and charge ten hunger + ten thirst
+        // R4 recalibration — the metabolic charge is 0.25 per restored
+        // point, EQUAL across both charged resources. From energy 90: ten
+        // points restore and charge 2.5 hunger + 2.5 thirst
         needs.satisfy('a', { energy: -10 }); // 90
         expect(needs.recovery('a', 10)).toBe(10);
-        expect(needs.of('a')).toEqual({ hunger: 30, thirst: 30, energy: 100, health: 100 });
+        expect(needs.of('a')).toEqual({ hunger: 22.5, thirst: 22.5, energy: 100, health: 100 });
         // THE CAP — at the energy headroom the request truncates and the
         // charge equals the ACTUAL restore only
         needs.satisfy('a', { energy: -5 }); // 95
         expect(needs.recovery('a', 10)).toBe(5);
-        expect(needs.of('a')).toEqual({ hunger: 35, thirst: 35, energy: 100, health: 100 });
+        expect(needs.of('a')).toEqual({ hunger: 23.75, thirst: 23.75, energy: 100, health: 100 });
         // THE EMPTY SOURCE — a resource at the 100 line yields no energy
         // and charges nothing (nothing converts from nothing)
-        needs.satisfy('a', { energy: -50, hunger: 50 }); // energy 50, hunger 85
-        expect(needs.recovery('a', 10)).toBe(10); // room: hunger 15, thirst 65
-        expect(needs.of('a').hunger).toBe(95);
-        expect(needs.recovery('a', 10)).toBe(5); // hunger headroom runs out mid-restore
-        // T5 fix — the energy arithmetic: 50 (before the two restores above)
-        // + 10 (line above's actual) + 5 (this call's actual) = 65. The
-        // pinned 55 forgot the first restore the test itself asserts.
-        expect(needs.of('a')).toEqual({ hunger: 100, thirst: 50, energy: 65, health: 100 });
+        needs.satisfy('a', { energy: -50, hunger: 76.25 }); // energy 50, hunger 100
+        expect(needs.recovery('a', 10)).toBe(0);
+        expect(needs.of('a')).toEqual({ hunger: 100, thirst: 23.75, energy: 50, health: 100 });
+        // THE RESOURCE LIMIT — the tighter charged resource's charge room
+        // truncates the restore: hunger 99 has 1 point of headroom = 4
+        // restoreable energy (1 / 0.25)
+        needs.satisfy('a', { hunger: -1 }); // 99
+        expect(needs.recovery('a', 10)).toBe(4);
+        expect(needs.of('a')).toEqual({ hunger: 100, thirst: 24.75, energy: 54, health: 100 });
         expect(needs.recovery('a', 10)).toBe(0); // hunger EMPTY — no gain, no charge
-        expect(needs.of('a')).toEqual({ hunger: 100, thirst: 50, energy: 65, health: 100 });
+        expect(needs.of('a')).toEqual({ hunger: 100, thirst: 24.75, energy: 54, health: 100 });
         // A non-positive request is a silent no-op
         expect(needs.recovery('a', 0)).toBe(0);
         expect(needs.recovery('a', -5)).toBe(0);
@@ -451,8 +459,8 @@ describe('sleepPlugin — the resting metabolism and the equal recovery charge',
         world.spawn(actor);
         needs.satisfy('s', { energy: -20 }); // 80
         expect(needs.recovery('s', 10)).toBe(10);
-        // Hunger charged 1:1; the rate-0 thirst untouched
-        expect(needs.of('s')).toEqual({ hunger: 30, thirst: 20, energy: 90, health: 100 });
+        // Hunger charged at the 0.25 metabolic ratio; the rate-0 thirst untouched
+        expect(needs.of('s')).toEqual({ hunger: 22.5, thirst: 20, energy: 90, health: 100 });
     });
 });
 
@@ -544,5 +552,108 @@ describe('sleepPlugin — the needs ladder outranks the slumber (R4: no sleeping
         }
         // Two progressed slumber minutes counted on the boar's own account
         expect(sleep.accountOf('boar-1')).toEqual({ day: 0, slept: 2, debt: 0 });
+    });
+});
+
+describe('sleepPlugin — R3 the shelter trek and R1 the sheltered recovery', () => {
+    /**
+     * The gate fixture: a usable shelter gate placed ONE fine step from the
+     * body's current spot (same tile — the step direction flips at the
+     * sub-grid edge so the gate is always inside the tile). The provider is
+     * a closure over a mutable gate, mirroring the scenario's deferred
+     * `() => construction.shelters()` wiring.
+     */
+    const gateBeside = (world: ReturnType<typeof createWorld>, id: string): ShelterGate => {
+        const sub = world.subOf(id)!;
+        const pos = world.actors.get(id)!.position;
+        const halfX = (world.canvas.width - 1) / 2;
+        const dx = sub.x < halfX ? 1 : -1;
+        return { tileX: pos.x, tileY: pos.y, x: sub.x + dx, y: sub.y };
+    };
+
+    it('the night quota treks a full-energy body to the shelter gate before the slumber', () => {
+        let gate: ShelterGate | undefined;
+        const { world, tasks, sleep } = buildStack({ movementFree: true, shelters: () => (gate ? [gate] : []) });
+        spawn(world, 'a', 'Ael', 8, 2);
+        // Walk the clock to 21:59 with NO shelter (the pre-roof march)
+        for (let index = 0; index < 719; index++) {
+            world.step();
+        }
+        // The roof stands the next minute — the gate appears beside the body
+        gate = gateBeside(world, 'a');
+        world.step(); // 22:00 — the window opens: the TREK takes the minute
+        expect(tasks.taskOf('a')).toMatchObject({
+            behaviour: 'sleep',
+            kind: 'move',
+            label: 'heads for the shelter',
+        });
+        // The trek minute is an AWAKE minute — nothing counted toward the
+        // quota while the body walks
+        expect(sleep.accountOf('a')).toEqual({ day: 0, slept: 0, debt: 0 });
+        // The trek walks the exact fine approach (one step a minute — the
+        // greedy walker takes its cardinal ladder, so the stride count is
+        // the Chebyshev fine distance); once ON the gate the slumber plans
+        // with the whole remaining quota (360 ≤ the window minutes left)
+        for (let index = 0; index < 8 && tasks.taskOf('a')?.kind !== 'sleep'; index++) {
+            world.step();
+        }
+        const sub = world.subOf('a')!;
+        expect({ x: sub.x, y: sub.y }).toEqual({ x: gate.x, y: gate.y });
+        expect(tasks.taskOf('a')).toMatchObject({ behaviour: 'sleep', kind: 'sleep', minutes: 360 });
+    });
+
+    it('an emergency nap far from any gate sleeps where the body stands', () => {
+        // The gate exists but sits 16 tiles away — beyond the crawl range:
+        // a spent body naps in place (the safe fallback, no futile trek)
+        const { world, needs, tasks } = buildStack({
+            shelters: () => [{ tileX: -8, tileY: -6, x: 0, y: 0 }],
+        });
+        spawn(world, 'a', 'Ael', 8, 2);
+        needs.satisfy('a', { energy: -80 }); // 20 ≤ 22 — emergency, nothing OWED yet
+        world.step();
+        expect(tasks.taskOf('a')).toMatchObject({ behaviour: 'sleep', kind: 'sleep', minutes: 45 });
+    });
+
+    it('an emergency nap beside a gate crawls to the shelter first', () => {
+        let gate: ShelterGate | undefined;
+        const { world, needs, tasks } = buildStack({ shelters: () => (gate ? [gate] : []) });
+        spawn(world, 'a', 'Ael', 8, 2);
+        needs.satisfy('a', { energy: -80 });
+        gate = gateBeside(world, 'a'); // the gate one fine step away — inside the crawl range
+        world.step();
+        expect(tasks.taskOf('a')).toMatchObject({
+            behaviour: 'sleep',
+            kind: 'move',
+            label: 'heads for the shelter',
+        });
+    });
+
+    it('an injured body seeks the gate and recovers with a sheltered rest (R1)', () => {
+        let gate: ShelterGate | undefined;
+        const { world, needs, tasks } = buildStack({ shelters: () => (gate ? [gate] : []) });
+        spawn(world, 'a', 'Ael', 8, 2);
+        needs.satisfy('a', { health: -60 }); // 40 ≤ 50 — injured, energy full, daytime
+        gate = gateBeside(world, 'a'); // FIXED gate — the wounded walk TO it, not after it
+        world.step(); // the trek takes the minute (the shelter rung, 26)
+        expect(tasks.taskOf('a')).toMatchObject({
+            behaviour: 'shelter',
+            kind: 'move',
+            label: 'heads for the shelter',
+        });
+        world.step(); // the stride lands the body on the gate — the rest plans
+        expect(tasks.taskOf('a')).toMatchObject({
+            behaviour: 'shelter',
+            kind: 'rest',
+            label: 'recovers in the shelter',
+            minutes: 60,
+        });
+    });
+
+    it('a healthy body ignores the shelter rung — the slumber ladder stands alone', () => {
+        const { world, tasks } = buildStack({ shelters: () => [{ tileX: 8, tileY: 2, x: 0, y: 0 }] });
+        spawn(world, 'a', 'Ael', 8, 2); // health 100 — not injured
+        world.step();
+        // No shelter task, no trek — the idle body wanders as before
+        expect(tasks.taskOf('a')?.behaviour).not.toBe('shelter');
     });
 });

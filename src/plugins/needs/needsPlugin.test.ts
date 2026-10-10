@@ -21,13 +21,14 @@ describe('needsPlugin', () => {
         for (let index = 0; index < 3; index++) {
             world.step();
         }
-        // 3 steps × 1 world-minute of per-minute decay (0.1/min hunger,
-        // 0.15/min thirst, −0.06/min energy) — floats pinned from reference.
+        // 3 steps × 1 world-minute of per-minute decay — the recalibrated
+        // defaults: hunger 100/2880 (a 2-day horizon), thirst 100/1440
+        // (a 1-day horizon), −0.06/min energy. Floats pinned from reference.
         // Health stays exactly 100: the reservoir only moves when something
         // hurts the entity, and an unharmed body never regenerates past full
         expect(needs.of('a')).toEqual({
-            hunger: 20.300000000000004,
-            thirst: 20.449999999999996,
+            hunger: 20.104166666666664,
+            thirst: 20.20833333333333,
             energy: 99.82,
             health: 100,
         });
@@ -38,10 +39,11 @@ describe('needsPlugin', () => {
         const world = createWorld({ seed: 7, tickSize: 60, plugins: [needs] });
         spawnActor(world);
         world.step();
-        // 60 world-minutes of the same per-minute rates
+        // 60 world-minutes of the same per-minute rates (the recalibrated
+        // 2-day hunger / 1-day thirst horizons)
         expect(needs.of('a')).toEqual({
-            hunger: 26.000000000000085,
-            thirst: 28.999999999999915,
+            hunger: 22.083333333333286,
+            thirst: 24.166666666666572,
             energy: 96.39999999999986,
             health: 100,
         });
@@ -62,8 +64,8 @@ describe('needsPlugin', () => {
         hourWorld.step();
         expect(stepped.of('m')).toEqual(hourly.of('h'));
         expect(stepped.of('m')).toEqual({
-            hunger: 26.000000000000085,
-            thirst: 28.999999999999915,
+            hunger: 22.083333333333286,
+            thirst: 24.166666666666572,
             energy: 96.39999999999986,
             health: 100,
         });
@@ -110,9 +112,14 @@ describe('needsPlugin', () => {
         const needs = needsPlugin();
         const world = createWorld({ seed: 1, tickSize: 10, plugins: [needs] });
         spawnActor(world);
-        needs.satisfy('a', { hunger: 48.5 }); // 68.5 — just below the 70 threshold
-        world.step(); // 69.49999999999994
-        world.step(); // 70.49999999999989 — the crossing happens
+        needs.satisfy('a', { hunger: 48.5 }); // 68.5 — below the 70 threshold
+        // Five 10-minute steps at the recalibrated 2-day hunger horizon
+        // (100/2880 per minute): 40 minutes lands at 69.89 — still under;
+        // the 50-minute mark crosses 70. The exact float ladder is the
+        // plugin's per-minute accumulation; only the crossing matters here
+        for (let index = 0; index < 5; index++) {
+            world.step();
+        }
         // No 'needs' event ever lands: a solo state change is simulation,
         // not a story between entities
         expect(world.events.log().filter((event) => event.kind === 'needs')).toEqual([]);
@@ -151,15 +158,17 @@ describe('needsPlugin', () => {
         expect(world.coordinates.entryOf('a')?.state).toBe('critical');
     });
 
-    it('starvation kills after the doom window and despawns the actor', () => {
-        const needs = needsPlugin({ hungerPerMinute: 2, thirstPerMinute: 0, energyPerMinute: 0, doomMinutes: 20 });
+    it('starvation kills after the pinned damage window and despawns the actor', () => {
+        // R6 — the deficit drains are per-deficit options; pinning the
+        // hunger drain to 5/min reproduces a 20-minute death window
+        const needs = needsPlugin({ hungerPerMinute: 2, thirstPerMinute: 0, energyPerMinute: 0, hungerDamagePerMinute: 5 });
         const world = createWorld({ seed: 1, tickSize: 10, plugins: [needs] });
         spawnActor(world);
         for (let index = 0; index < 8; index++) {
             world.step();
         }
         // Hunger hits 100 during step 4 (+2/min × 40 min), the 20-minute
-        // doom window runs out during step 6
+        // damage window (100 / 5 per minute) runs out during step 6
         expect(world.actors.size).toBe(0);
         const messages = world.events.log().map((event) => event.message);
         // Starvation's ENDING is the story: death stays in the log (the
@@ -176,7 +185,14 @@ describe('needsPlugin — every entity carries the survival stats', () => {
     /** The stack the per-type tests share: entity profiles mounted. */
     const buildStack = () => {
         const profiles = entityPlugin();
-        const needs = needsPlugin({ profiles });
+        // R6 — the DEFAULT deficit drains are now realistic-slow (3.5 / 10
+        // in-game days); the creature-death fixture below pins the old
+        // 30-minute doom pace explicitly so the short drive stays honest.
+        const needs = needsPlugin({
+            profiles,
+            hungerDamagePerMinute: 100 / 30,
+            thirstDamagePerMinute: 100 / 30,
+        });
         const world = createWorld({ seed: 7, tickSize: 1, plugins: [needs, profiles] });
         return { world, needs, profiles };
     };
@@ -196,9 +212,10 @@ describe('needsPlugin — every entity carries the survival stats', () => {
             state: 'flying-2',
         });
         world.step(); // one world-minute of decay
-        // Human: 0.1 / 0.15 / −0.06 per minute; bird: 0.02 / 0.03 / −0.05.
+        // Human: 100/2880 hunger / 100/1440 thirst / −0.06 energy per minute
+        // (the recalibrated horizons); bird: 0.02 / 0.03 / −0.05.
         // Health drains nowhere (every stock species carries a 0 drain)
-        expect(needs.of('a')).toEqual({ hunger: 20.1, thirst: 20.15, energy: 99.94, health: 100 });
+        expect(needs.of('a')).toEqual({ hunger: 20.03472222222222, thirst: 20.069444444444443, energy: 99.94, health: 100 });
         expect(needs.of('bird-1')).toEqual({ hunger: 10.02, thirst: 10.03, energy: 99.95, health: 100 });
     });
 
@@ -289,10 +306,12 @@ describe('needsPlugin — every entity carries the survival stats', () => {
         expect(deaths.map((event) => event.actorId)).toEqual(['bird-1']);
     });
 
-    it('starvation drains health at the doom-window pace while the belly stays empty', () => {
-        // Doom window 20 → the starvation damage is 100/20 = 5 health per
-        // starving minute — death exactly one window after the line
-        const needs = needsPlugin({ hungerPerMinute: 0, thirstPerMinute: 0, energyPerMinute: 0, doomMinutes: 20 });
+    it('starvation drains health at the pinned pace while the belly stays empty', () => {
+        // Pinned hunger drain 5/min → death 20 minutes after the line —
+        // the realistic DEFAULT (100/(10×1440)) is tested in the R6
+        // horizon suite below; the mechanism (drain-while-at-the-line,
+        // regen-while-fed) is what this fixture pins.
+        const needs = needsPlugin({ hungerPerMinute: 0, thirstPerMinute: 0, energyPerMinute: 0, hungerDamagePerMinute: 5 });
         const world = createWorld({ seed: 1, tickSize: 1, plugins: [needs] });
         spawnActor(world);
         needs.satisfy('a', { hunger: 80 }); // 100 — AT the line
@@ -400,37 +419,42 @@ describe('needsPlugin — every entity carries the survival stats', () => {
 
     it('recovery restores energy BACKED BY equal hunger/thirst — capped, resource-limited (R4)', () => {
         // DEFAULT rates (0.1 hunger / 0.15 thirst awake) — both resources
-        // are in the charge set; no steps run, so the decay never applies
+        // are in the charge set; no steps run, so the decay never applies.
+        // R4 recalibration — the metabolic charge is 0.25 per restored
+        // point (rest pays a quarter of its gain, never the day's
+        // dominant consumption); the charge stays EQUAL across resources
+        // and scales with the ACTUAL restore.
         const needs = needsPlugin();
         const world = createWorld({ seed: 7, plugins: [needs] });
         spawnActor(world);
-        // Ten requested points restore ten and charge ten hunger + ten thirst
+        // Ten requested points restore ten and charge 2.5 hunger + 2.5 thirst
         needs.satisfy('a', { energy: -10 }); // 90
         expect(needs.recovery('a', 10)).toBe(10);
-        expect(needs.of('a')).toEqual({ hunger: 30, thirst: 30, energy: 100, health: 100 });
+        expect(needs.of('a')).toEqual({ hunger: 22.5, thirst: 22.5, energy: 100, health: 100 });
         // THE ENERGY CAP — the request truncates at the headroom and the
         // charge equals the ACTUAL restore only (no phantom cost at the cap)
-        needs.satisfy('a', { energy: -5, hunger: -10, thirst: -10 }); // 95 / 20 / 20
+        needs.satisfy('a', { energy: -5, hunger: -10, thirst: -10 }); // 95 / 12.5 / 12.5
         expect(needs.recovery('a', 10)).toBe(5);
-        expect(needs.of('a')).toEqual({ hunger: 25, thirst: 25, energy: 100, health: 100 });
+        expect(needs.of('a')).toEqual({ hunger: 13.75, thirst: 13.75, energy: 100, health: 100 });
         // THE EMPTY SOURCE — a charged resource at the 100 line yields NO
         // energy and charges nothing (nothing converts from nothing)
-        needs.satisfy('a', { energy: -50, hunger: 75, thirst: -20 }); // 50 / 100 / 5
+        needs.satisfy('a', { energy: -50, hunger: 86.25, thirst: -20 }); // 50 / 100 / 0
         expect(needs.recovery('a', 10)).toBe(0);
-        expect(needs.of('a')).toEqual({ hunger: 100, thirst: 5, energy: 50, health: 100 });
+        expect(needs.of('a')).toEqual({ hunger: 100, thirst: 0, energy: 50, health: 100 });
         // THE RESOURCE LIMIT — the tighter charged resource truncates the
-        // restore. T5 fix — the charge rides UP (hunger/thirst press up:
-        // needsPlugin), so the truncating resource here is HUNGER at 95
-        // (5 headroom) — one unit handed back first (the empty-source state
-        // above can never restore: hunger 100 blocks it, as the assertion
-        // above itself pins). 5 restored, 5 charged on BOTH.
-        needs.satisfy('a', { hunger: -5 }); // 95 / 5
-        expect(needs.recovery('a', 10)).toBe(5);
-        expect(needs.of('a')).toEqual({ hunger: 100, thirst: 10, energy: 55, health: 100 });
+        // restore: hunger 95 has 5 charge room = 20 restoreable energy
+        // (5 / 0.25), so a 10-point request lands fully and charges 2.5.
+        needs.satisfy('a', { hunger: -5 }); // 95 / 0
+        expect(needs.recovery('a', 10)).toBe(10);
+        expect(needs.of('a')).toEqual({ hunger: 97.5, thirst: 2.5, energy: 60, health: 100 });
+        // …and the truncation itself: 30 requested against 2.5 charge room
+        // (hunger 97.5 → 2.5 headroom → 10 restoreable) caps at 10
+        expect(needs.recovery('a', 30)).toBe(10);
+        expect(needs.of('a')).toEqual({ hunger: 100, thirst: 5, energy: 70, health: 100 });
         // Non-positive requests are silent no-ops
         expect(needs.recovery('a', 0)).toBe(0);
         expect(needs.recovery('a', -3)).toBe(0);
-        expect(needs.of('a').energy).toBe(55);
+        expect(needs.of('a').energy).toBe(70);
     });
 
     it('recovery charges only the pressures the species consumes — a rate-0 resource is free', () => {
@@ -441,8 +465,8 @@ describe('needsPlugin — every entity carries the survival stats', () => {
         spawnActor(world);
         needs.satisfy('a', { energy: -10 });
         expect(needs.recovery('a', 10)).toBe(10);
-        // Hunger charged 1:1; the rate-0 thirst untouched
-        expect(needs.of('a')).toEqual({ hunger: 30, thirst: 20, energy: 100, health: 100 });
+        // Hunger charged at the 0.25 ratio; the rate-0 thirst untouched
+        expect(needs.of('a')).toEqual({ hunger: 22.5, thirst: 20, energy: 100, health: 100 });
     });
 
     it('the exported condition ladder reads the pressure thresholds', () => {
@@ -495,7 +519,7 @@ describe('needsPlugin — the resting metabolism read (R4, the tasks option)', (
             const world = createWorld({ seed: 7, tickSize: 1, plugins: [needs] });
             spawnActor(world);
             world.step();
-            expect(needs.of('a')).toEqual({ hunger: 20.1, thirst: 20.15, energy: 99.94, health: 100 });
+            expect(needs.of('a')).toEqual({ hunger: 20.03472222222222, thirst: 20.069444444444443, energy: 99.94, health: 100 });
         }
     });
 
@@ -503,7 +527,7 @@ describe('needsPlugin — the resting metabolism read (R4, the tasks option)', (
         // The stub pins the head as a rest task for the whole run — the
         // body never leaves its rest, and its hunger sits at the 100 line
         // (the source the recovery service converts from is EMPTY)
-        const needs = needsPlugin({ tasks: withTasks('rest'), doomMinutes: 20 });
+        const needs = needsPlugin({ tasks: withTasks('rest'), hungerDamagePerMinute: 5 });
         const world = createWorld({ seed: 7, tickSize: 1, plugins: [needs] });
         spawnActor(world);
         needs.satisfy('a', { energy: -80, hunger: 80 }); // energy 20, hunger 100
@@ -523,5 +547,87 @@ describe('needsPlugin — the resting metabolism read (R4, the tasks option)', (
         // …and the recovery stays blocked however hard the rest asks
         expect(needs.recovery('a', 12)).toBe(0);
         expect(needs.of('a').energy).toBeCloseTo(19.88, 10);
+    });
+});
+
+describe('needsPlugin — R6 realistic deficit attrition (exact in-game horizons)', () => {
+    /**
+     * The DEFAULT-rate fixture with the belly pressures FROZEN (decay 0):
+     * the only movement is the deficit's health drain, so the death minute
+     * is the horizon itself. 1440 world-minutes a day (dayCycle contract):
+     *   empty thirst → death at minute 5041 (3.5 days + the float's last
+     *                  rounding step — the drain is 100/5040 per minute)
+     *   empty hunger → death at minute 14401 (~10 days)
+     *   both empty   → additive drains, death at minute 3734 (~2.6 days)
+     * The exact minutes are the deterministic accumulation of the pinned
+     * per-minute double (probed, not approximated).
+     */
+    const frozen = () => {
+        const needs = needsPlugin({ hungerPerMinute: 0, thirstPerMinute: 0, energyPerMinute: 0 });
+        const world = createWorld({ seed: 3, tickSize: 1, plugins: [needs] });
+        spawnActor(world);
+        return { world, needs };
+    };
+
+    it('empty thirst drains full health in 3.5 in-game days — no rapid doom', () => {
+        const { world, needs } = frozen();
+        needs.satisfy('a', { thirst: 80 }); // 100 — empty, held (rate 0)
+        // THE OLD DOOM IS GONE: thirty minutes at the line (the legacy
+        // doom window) barely marks the body
+        for (let minute = 0; minute < 30; minute++) {
+            world.step();
+        }
+        expect(world.actors.has('a')).toBe(true);
+        expect(needs.of('a').health).toBeCloseTo(100 - 30 * (100 / 5040), 10);
+        // The 3.5-day horizon: at minute 5039 exactly one drain's worth of
+        // health is left; minute 5040 empties the reservoir to the float's
+        // last rounding dust (alive); 5041 lands the death
+        for (let minute = 30; minute < 5039; minute++) {
+            world.step();
+        }
+        expect(world.actors.has('a')).toBe(true);
+        expect(needs.of('a').health).toBeCloseTo(100 / 5040, 10);
+        world.step(); // minute 5040
+        expect(world.actors.has('a')).toBe(true);
+        expect(needs.of('a').health).toBeLessThan(1e-9);
+        world.step(); // minute 5041 — the reservoir runs dry
+        expect(world.actors.has('a')).toBe(false);
+        expect(world.events.log().some((event) => event.kind === 'death')).toBe(true);
+    });
+
+    it('empty hunger drains full health in ~10 in-game days', () => {
+        const { world, needs } = frozen();
+        needs.satisfy('a', { hunger: 80 }); // 100 — empty, held
+        for (let minute = 1; minute < 14400; minute++) {
+            world.step();
+        }
+        expect(world.actors.has('a')).toBe(true); // minute 14399 — ~10 days, alive
+        world.step(); // minute 14400 — the drain's last rounding dust left
+        expect(world.actors.has('a')).toBe(true);
+        world.step(); // minute 14401 — death
+        expect(world.actors.has('a')).toBe(false);
+    });
+
+    it('both deficits empty stack the drains — death inside the thirst window', () => {
+        const { world, needs } = frozen();
+        needs.satisfy('a', { hunger: 80, thirst: 80 }); // both 100
+        for (let minute = 1; minute < 3734; minute++) {
+            world.step();
+        }
+        expect(world.actors.has('a')).toBe(true); // minute 3733
+        world.step(); // minute 3734 — 100 / (thirstDrain + hungerDrain)
+        expect(world.actors.has('a')).toBe(false);
+    });
+
+    it('a fed belly never negates the deficit wound — damage outranks regen every minute', () => {
+        // Hunger AT the line with thirst comfortably watered: the body is
+        // half-wounded and "fed" by the thirst side, yet the empty hunger
+        // line wounds — the regen branch never runs the same minute
+        const { world, needs } = frozen();
+        needs.satisfy('a', { hunger: 80, health: -50 }); // hunger 100, health 50
+        world.step();
+        expect(needs.of('a').health).toBeCloseTo(50 - 100 / 14400, 12);
+        world.step();
+        expect(needs.of('a').health).toBeCloseTo(50 - 2 * (100 / 14400), 12);
     });
 });

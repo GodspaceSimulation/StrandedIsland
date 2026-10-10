@@ -30,6 +30,9 @@ describe('createIslandWorld', () => {
             'survival',
             'lumber',
             'construction',
+            // R5 — farming mounts right after construction (its rungs read
+            // the built world; the raft gate reads the farm plots)
+            'farming',
             'story',
             'birds',
             'sharks',
@@ -65,8 +68,8 @@ describe('createIslandWorld', () => {
         }))).toEqual([
             { id: 'actor-1', name: 'Ael', position: { x: -11, y: 0, z: 0 }, sex: 'male' },
             { id: 'actor-2', name: 'Bram', position: { x: -9, y: -2, z: 0 }, sex: 'male' },
-            { id: 'actor-3', name: 'Cove', position: { x: -2, y: 5, z: 0 }, sex: 'female' },
-            { id: 'actor-4', name: 'Dune', position: { x: -5, y: -1, z: 0 }, sex: 'male' },
+            { id: 'actor-3', name: 'Cove', position: { x: -3, y: 5, z: 0 }, sex: 'female' },
+            { id: 'actor-4', name: 'Dune', position: { x: 5, y: -2, z: 0 }, sex: 'male' },
         ]);
         // Every landing spot is dry land, ranked from the outermost dry ring
         // inward (Ael's pick — edge[0] — IS the outermost land cell: no dry
@@ -190,8 +193,8 @@ describe('createIslandWorld', () => {
         expect(Array.from(handle.world.actors.values()).map((actor) => ({ ...actor.position }))).toEqual([
             { x: -11, y: 0, z: 0 },
             { x: -9, y: -2, z: 0 },
-            { x: -2, y: 5, z: 0 },
-            { x: -5, y: -1, z: 0 },
+            { x: -3, y: 5, z: 0 },
+            { x: 5, y: -2, z: 0 },
         ]);
         expect(Array.from(handle.world.actors.keys()).map((id) => handle.world.subOf(id))).toEqual([
             { x: -7, y: 0 },
@@ -231,8 +234,8 @@ describe('createIslandWorld', () => {
         expect(Array.from(handle.world.actors.values()).map((actor) => ({ ...actor.position }))).toEqual([
             { x: -11, y: 0, z: 0 },
             { x: -9, y: -2, z: 0 },
-            { x: -2, y: 5, z: 0 },
-            { x: -5, y: -1, z: 0 },
+            { x: -3, y: 5, z: 0 },
+            { x: 5, y: -2, z: 0 },
         ]);
         expect(Array.from(handle.world.actors.keys()).map((id) => handle.world.subOf(id))).toEqual([
             { x: 11, y: 0 },
@@ -313,7 +316,7 @@ describe('createIslandWorld', () => {
         // the lumber chop and would re-route Dune's minutes 12–20 onto the
         // build projects (the rest arithmetic below pins the pure
         // sleep-off/instant-rest fallback, not the construction march).
-        const handle = createIslandWorld({ seed: 7, plugins: { sleep: false, construction: false } });
+        const handle = createIslandWorld({ seed: 7, plugins: { sleep: false, construction: false, farming: false } });
         expect(handle.world.plugins.has('sleep')).toBe(false);
         expect(handle.world.plugins.has('tasks')).toBe(true);
         expect(handle.world.plugins.has('behavior')).toBe(true);
@@ -403,8 +406,9 @@ describe('createIslandWorld', () => {
         expect(frame.tiles[201].glyphs).toEqual([
             { id: 'actor-1', glyph: '🧍‍♂️', color: '#5cb85c', elevation: 0, kind: 'sentient', type: 'human', state: 'well' },
         ]);
-        // Cove stands at (−2,5): tile 13×25+10 = 335 — the FEMALE emoji
-        expect(frame.tiles[335].glyphs).toEqual([
+        // Cove stands at (−3,5) — the river-era landing: tile 13×25+9 = 334
+        // — the FEMALE emoji
+        expect(frame.tiles[334].glyphs).toEqual([
             { id: 'actor-3', glyph: '🧍‍♀️', color: '#5cb85c', elevation: 0, kind: 'sentient', type: 'human', state: 'well' },
         ]);
         // Kiki renders as the bird emoji with her altitude superscript —
@@ -496,8 +500,8 @@ describe('createIslandWorld', () => {
         expect(frame.tiles[201].glyphs).toEqual([
             { id: 'actor-1', glyph: '🧍‍♂️', color: '#5cb85c', elevation: 0, kind: 'sentient', type: 'human', state: 'well' },
         ]);
-        // Cove — the FEMALE emoji at her spot (−2,5) → tile 335
-        expect(frame.tiles[335].glyphs).toEqual([
+        // Cove — the FEMALE emoji at her river-era spot (−3,5) → tile 334
+        expect(frame.tiles[334].glyphs).toEqual([
             { id: 'actor-3', glyph: '🧍‍♀️', color: '#5cb85c', elevation: 0, kind: 'sentient', type: 'human', state: 'well' },
         ]);
         // Kiki renders as the bird emoji with her altitude superscript
@@ -523,8 +527,8 @@ describe('createIslandWorld', () => {
             ['bird-1', 'creature', 'bird', 'Kiki', 'flying-2', 0, 0, 2],
             ['actor-1', 'sentient', 'human', 'Ael', 'well', -11, 0, 0],
             ['actor-2', 'sentient', 'human', 'Bram', 'well', -9, -2, 0],
-            ['actor-3', 'sentient', 'human', 'Cove', 'well', -2, 5, 0],
-            ['actor-4', 'sentient', 'human', 'Dune', 'well', -5, -1, 0],
+            ['actor-3', 'sentient', 'human', 'Cove', 'well', -3, 5, 0],
+            ['actor-4', 'sentient', 'human', 'Dune', 'well', 5, -2, 0],
         ]);
         // Terrain census: cell counts per DOMINANT VISIBLE type (R6 — each
         // coarse tile reads the majority of its children: the tree-fringed
@@ -670,8 +674,8 @@ describe('createIslandWorld', () => {
         // The castaways decayed at the human rates for the same two minutes
         // — float drift pinned from the run
         expect(handle.needs.of('actor-1')).toEqual({
-            hunger: 20.200000000000003,
-            thirst: 20.299999999999997,
+            hunger: 20.069444444444443,
+            thirst: 20.138888888888886,
             energy: 99.88,
             health: 100,
         });
@@ -736,10 +740,10 @@ describe('createIslandWorld', () => {
         // realm's non-travel rungs; the shark is never thirsty — its
         // rate-0 thirst is never charged, so no shark:drink/collect).
         expect([...creatureTaskKinds].sort()).toEqual([
-            'bird:collect',
-            'bird:drink',
-            'bird:eat',
-            'bird:gather',
+            // R1-RECALIBRATION — the day-scale horizons mean the birds and
+            // the shark never cross their need triggers inside the 3000
+            // minutes (the boar's half-fed start still does): the ladder
+            // itself is proven by the boar rows and the behavior suite
             'bird:move',
             'bird:sleep',
             'boar:collect',
@@ -748,8 +752,6 @@ describe('createIslandWorld', () => {
             'boar:gather',
             'boar:move',
             'boar:sleep',
-            'shark:eat',
-            'shark:gather',
             'shark:sleep',
         ]);
         // ZERO DEATHS in 3000 world minutes — the ORIGINAL no-death
@@ -833,8 +835,8 @@ describe('createIslandWorld', () => {
                 delivered: site.delivered,
             })),
         ).toEqual([
-            { id: 's-1', blueprintId: 'shelter', state: 'built', parent: [{ x: -4, y: -1 }], work: 240, delivered: { wood: 120, thatch: 120 } },
-            { id: 's-2', blueprintId: 'raft', state: 'staged', parent: [{ x: -8, y: -5 }], work: 0, delivered: {} },
+            { id: 's-1', blueprintId: 'shelter', state: 'built', parent: [{ x: 4, y: -1 }], work: 240, delivered: { wood: 120, thatch: 120 } },
+            { id: 's-2', blueprintId: 'raft', state: 'staged', parent: [{ x: 8, y: -5 }], work: 0, delivered: {} },
         ]);
         expect(handle.construction.completedBlueprints()).toEqual(['shelter']);
         expect(handle.construction.project()).toBe('raft');

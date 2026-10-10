@@ -37,7 +37,13 @@ const spawn = (world: ReturnType<typeof createWorld>, id: string, name: string, 
 // Full stack with rain disabled so injected water is the only source
 const buildStack = (needsOptions: Parameters<typeof needsPlugin>[0] = {}) => {
     const inventory = inventoryPlugin({ rainChancePerMinute: 0 });
-    const needs = needsPlugin({ thirstPerMinute: 0, energyPerMinute: 0, ...needsOptions });
+    // R6-INTEGRATION — hunger pinned EXPLICITLY at the 0.1/min the ladder
+    // pins were calibrated against: these tests prove the ladder MECHANICS
+    // (triggers, plans, effects), not the scenario's belly calibration —
+    // the default accumulation horizons are pinned where they live
+    // (needsPlugin.test.ts + entityPlugin.test.ts), so a recalibration of
+    // the human profile never churns the whole ladder suite
+    const needs = needsPlugin({ thirstPerMinute: 0, energyPerMinute: 0, hungerPerMinute: 0.1, ...needsOptions });
     const relationship = relationshipPlugin();
     const tasks = tasksPlugin();
     const behavior = behaviorPlugin({ inventory, needs, relationship, tasks });
@@ -883,11 +889,15 @@ describe('behaviorPlugin', () => {
 
     it('R2: a thirsty castaway on a real lake basin collects, drinks, and draws the fresh water down', () => {
         const { world, inventory, needs, tasks } = buildStack({});
-        // Stand ON a genuine lake cell (1,−5) — the 0.8 interior basin that
-        // stocks a unit of fresh water on the survey (no pool injection; the
-        // basin IS the source, unlike the scattered rain pools above)
-        spawn(world, 'a', 'Ael', 1, -5);
-        expect(inventory.cellStock(1, -5).water).toBe(1);
+        // Stand ON a genuine lake cell — the 0.8 interior basin that stocks
+        // a unit of fresh water on the survey (no pool injection; the basin
+        // IS the source, unlike the scattered rain pools above).
+        // R4-INTEGRATION — the river now runs through the old (1,−5) shore
+        // cell (a passable ford whose water is INEXHAUSTIBLE — never drawn
+        // down), so the draw-down proof moves to the lake's (2,−5), the
+        // basin cell beside the ford that still stocks the spendable unit
+        spawn(world, 'a', 'Ael', 2, -5);
+        expect(inventory.cellStock(2, -5).water).toBe(1);
         needs.satisfy('a', { thirst: 50 }); // thirst 70 ≥ the 65 trigger
         world.step();
         // The thirst ladder reads the basin as a water source and plans the
@@ -900,7 +910,7 @@ describe('behaviorPlugin', () => {
         // The collect completed at minute 4 — the drink is planned and the
         // basin's standing water is drawn down (the 1 unit is spent)
         expect(tasks.taskOf('a')).toMatchObject({ behaviour: 'thirst', kind: 'drink', remaining: 2 });
-        expect(inventory.cellStock(1, -5).water).toBeUndefined();
+        expect(inventory.cellStock(2, -5).water).toBeUndefined();
         world.step();
         world.step();
         // −35 thirst relief on the completing minute: the drink ran out of

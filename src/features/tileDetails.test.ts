@@ -530,9 +530,11 @@ describe('tileSummary', () => {
         // Stone, iron and dirt aggregate as materials — R4: the lode's rock
         // stock counts its THREE finite units (3 stone + 1 iron + 1 dirt = 5
         // material units, not the old ×∞ ground line); this run's lode drew
-        // no flint (the survey's chance stream moved with the map)
+        // a flint (the survey's chance stream moved with the map) — the
+        // knapped tool line rides beside the materials
         expect(summary?.ground).toEqual([
             { category: 'material', label: 'Materials', count: 5 },
+            { category: 'tool', label: 'Tools', count: 1 },
         ]);
     });
 
@@ -736,9 +738,11 @@ describe('dominantVisibleType — the coarse-scale majority read (R6)', () => {
         // handful among dirt floors (the 🪨 decoration keeps it findable)
         expect(tileSurfaceKey(island.world.canvas.cells.find((cell) => cell.x === 0 && cell.y === 0)!)).toBe('stone');
         expect(dominantVisibleType(island, [{ x: 0, y: 0 }])).toBe('dirt');
-        // The iron lode (−1,−1): own 'iron', dominant 'dirt' — the rare
+        // The iron lode (0,−1): own 'iron', dominant 'dirt' — the rare
         // landmark still rides the resources lines, the canvas reads ground
-        expect(dominantVisibleType(island, [{ x: -1, y: -1 }])).toBe('dirt');
+        // (R4 moved the 25×17 vein pick from (−1,−1) — the river now fords
+        // that site, and its channel reads 'river' at the coarse scale)
+        expect(dominantVisibleType(island, [{ x: 0, y: -1 }])).toBe('dirt');
         // The lake keeps its water identity (every child is the drowned
         // column); the true canopy reads tree; the sea keeps its plain biome
         expect(dominantVisibleType(island, [{ x: 1, y: -4 }])).toBe('lake');
@@ -904,16 +908,18 @@ describe('tileProgress / progressLine — the standing jobs (R6)', () => {
     it('reads the shared chop job off the tile-work ledger with exact minutes', () => {
         const march = createIslandWorld({ seed: 7 });
         // Tick 0 — nothing stands
-        expect(tileProgress(march, [{ x: -2, y: 5 }])).toEqual([]);
+        expect(tileProgress(march, [{ x: 5, y: -2 }])).toEqual([]);
         // Minute 1: the woodless cast on treed tiles opens the shared jobs
+        // (R4 shifted the island's tree census — the first chop target is
+        // now (5,−2), the same rhythm on the moved tile)
         march.world.step();
-        expect(tileProgress(march, [{ x: -2, y: 5 }])).toEqual([{ label: 'chop', done: 0, total: 15 }]);
+        expect(tileProgress(march, [{ x: 5, y: -2 }])).toEqual([{ label: 'chop', done: 0, total: 15 }]);
         // Minutes 2–3: the beats land — one work-minute per completing beat
         // task into the tile's standing job
         march.world.step();
-        expect(tileProgress(march, [{ x: -2, y: 5 }])).toEqual([{ label: 'chop', done: 1, total: 15 }]);
+        expect(tileProgress(march, [{ x: 5, y: -2 }])).toEqual([{ label: 'chop', done: 1, total: 15 }]);
         march.world.step();
-        expect(tileProgress(march, [{ x: -2, y: 5 }])).toEqual([{ label: 'chop', done: 2, total: 15 }]);
+        expect(tileProgress(march, [{ x: 5, y: -2 }])).toEqual([{ label: 'chop', done: 2, total: 15 }]);
         // The display line reads the exact work minutes
         expect(progressLine({ label: 'chop', done: 2, total: 15 })).toBe('chop 2/15');
     });
@@ -950,18 +956,18 @@ describe('tileProgress / progressLine — the standing jobs (R6)', () => {
         // cell it covers. The Tile Inspector (tileJobs default true) still
         // reads the root ledger at every zoom.
         const march = createIslandWorld({ seed: 7 });
-        march.world.step(); // minute 1: chop opens on (-2,5), the shelter stands on its scored tile
+        march.world.step(); // minute 1: chop opens on (5,−2), the shelter stands on its scored tile
         // The shelter's R1-scored placement tile (read from the site record,
         // not pinned — the scored placement can shift with the campaign)
         const shelter = march.construction.sites.sites().find((site) => site.blueprintId === 'shelter');
         const tile = shelter?.parent[0] ?? { x: 0, y: 0 };
-        // A fine cell under the chop-bearing tile (-2,5): the interior BOARD
+        // A fine cell under the chop-bearing tile (5,−2): the interior BOARD
         // read (tileJobs:false) shows NOTHING — the root chop is never
         // stamped onto the subtile...
-        expect(tileProgress(march, [{ x: -2, y: 5 }, { x: 0, y: 0 }], { tileJobs: false })).toEqual([]);
+        expect(tileProgress(march, [{ x: 5, y: -2 }, { x: 0, y: 0 }], { tileJobs: false })).toEqual([]);
         // ...while the inspector read (default tileJobs:true) rides the ROOT
         // ledger on path[0], regardless of the fine tail.
-        expect(tileProgress(march, [{ x: -2, y: 5 }, { x: 0, y: 0 }])).toEqual([{ label: 'chop', done: 0, total: 15 }]);
+        expect(tileProgress(march, [{ x: 5, y: -2 }, { x: 0, y: 0 }])).toEqual([{ label: 'chop', done: 0, total: 15 }]);
         // The shelter's exact footprint fine cell resolves the SITE even with
         // the ledger half suppressed.
         const fine = march.construction.sites.cellsOf(shelter?.id ?? '')[0];

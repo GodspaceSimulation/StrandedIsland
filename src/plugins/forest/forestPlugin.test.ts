@@ -504,9 +504,14 @@ describe('forestPlugin — the spread (grass substrate only)', () => {
         const meadowSet = world.canvas.cells
             .filter((cell) => cell.biome === 'meadow')
             .map((cell) => `${cell.x},${cell.y}`);
-        expect(meadowSet.length).toBe(63);
+        // R4-INTEGRATION — the river generation carved five of the old 63
+        // meadows into water (the ford at (−1,−2) sits where a converting
+        // wood once stood): the meadow census is 58 and the spread can
+        // never claim a river cell (water substrate — the rule this test
+        // already enforces for sand/stone/water)
+        expect(meadowSet.length).toBe(58);
         ecology.fastForward(10);
-        // Captured conversions: 36 meadow tiles turned into woods — each
+        // Captured conversions: 34 meadow tiles turned into woods — each
         // carries the forest voxel, the forest biome, and a stand of
         // INGRESS + ONE sapling (the ingressed meadows already held their
         // localized edge fringe — the spread's sapling JOINS that stand;
@@ -519,14 +524,15 @@ describe('forestPlugin — the spread (grass substrate only)', () => {
         );
         expect(converted.map((cell) => `${cell.x},${cell.y}:${cell.resources.tree}`)).toEqual([
             '-7,-3:1', '-6,-3:1', '-5,-3:1', '-2,-3:9', '1,-3:12', '-7,-2:12', '-6,-2:4', '-5,-2:1',
-            '-1,-2:9', '0,-2:1', '1,-2:15', '-6,-1:15', '-5,-1:12', '-4,-1:20', '-2,-1:17',
+            '0,-2:1', '1,-2:15', '-6,-1:15', '-5,-1:12', '-4,-1:20', '-2,-1:17',
             '1,-1:15', '-3,0:20', '-3,1:12', '-2,1:1', '6,1:26', '7,1:31', '-4,2:12', '-3,2:4',
             '1,2:12', '-5,3:4', '-4,3:1', '0,3:9', '1,3:7', '2,3:12', '3,3:26', '-1,4:20',
             '1,4:20', '2,4:4', '3,4:12', '3,5:4',
         ]);
-        // The meadow census dropped to 28 (63 before; the spread tick also
-        // re-skins one fringe tile back to meadow, so the net is 28)
-        expect(world.canvas.cells.filter((cell) => cell.biome === 'meadow').length).toBe(28);
+        // The meadow census dropped to 24 (58 before, 34 converted — the
+        // river-era capture; the re-skin fringe the old 63-meadow board
+        // showed does not fire on this generation)
+        expect(world.canvas.cells.filter((cell) => cell.biome === 'meadow').length).toBe(24);
         // A WOOD's sand neighbour never converts: (−8,1) is the beach west
         // of the (−7,1) wood — the spread never touches sand (or stone or
         // water), regardless of the soil underlayer

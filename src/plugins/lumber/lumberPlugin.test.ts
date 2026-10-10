@@ -130,10 +130,14 @@ describe('lumberPlugin', () => {
         // R4/R7: the (−7,0) column is a meadow shore — the finite stone is
         // gone (stone stands only on the highland rock sites); the tree
         // mirror keeps its felled 424 band. The enriched abundance seeds
-        // berry 4 + mushroom 3 + the standing bush + a vine from the 0.6
-        // forest draw; the minute-15 mushroom pulse adds the fourth mushroom
-        // (the berry pulse at 20 has not fired yet at minute 16)
-        expect(inventory.cellStock(-7, 0)).toEqual({ dirt: 1, grass: 1, tree: 424, berry: 4, mushroom: 4, bush: 1, water: 2, vine: 1 });
+        // berry 4 + mushroom 3 + the standing bush; the minute-15 mushroom
+        // pulse adds the fourth mushroom (the berry pulse at 20 has not
+        // fired yet at minute 16)
+        // R4-INTEGRATION — the river generation shifted the survey stream:
+        // this grove cell now MISSES the 0.6 vine draw (the vine key is
+        // simply absent at minute 16 — the first re-hang pulse lands at
+        // minute 30, after this read)
+        expect(inventory.cellStock(-7, 0)).toEqual({ dirt: 1, grass: 1, tree: 424, berry: 4, mushroom: 4, bush: 1, water: 2 });
         expect(world.cellAt(-7, 0)?.resources).toEqual({ dirt: 1, grass: 1, tree: 424 });
         // The felling is silent — a solo beat, not a story between entities
         expect(world.events.log().map((event) => event.kind)).toEqual(['spawn']);
@@ -267,11 +271,14 @@ describe('lumberPlugin', () => {
         // mushroom 3) regrow on their rhythms — the minute-15 mushroom and
         // minute-20 berry pulses add a unit each; this grove cell missed the
         // vine draw; R4: the meadow is no stone-bearing)
+        // R4-INTEGRATION — the river generation shifted the survey stream:
+        // this grove cell now HITS the 0.6 vine draw — the minute-40 read
+        // carries vine 2 (the seeded unit plus the minute-30 re-hang pulse)
         for (let index = 0; index < 40; index++) {
             world.step();
         }
         expect(inventory.of('a')).toEqual({ wood: 2 });
-        expect(inventory.cellStock(1, 5)).toEqual({ dirt: 1, grass: 1, tree: 424, berry: 5, mushroom: 4 });
+        expect(inventory.cellStock(1, 5)).toEqual({ dirt: 1, grass: 1, tree: 424, berry: 5, mushroom: 4, vine: 2 });
         expect(world.cellAt(1, 5)?.biome).toBe('forest');
     });
 

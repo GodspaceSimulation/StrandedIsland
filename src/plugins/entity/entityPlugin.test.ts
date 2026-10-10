@@ -30,7 +30,10 @@ describe('entityPlugin — the stock species', () => {
             type: 'human',
             kind: 'sentient',
             label: 'Human',
-            stats: { hunger: 0.1, thirst: 0.15, energy: 0.06, health: 0 },
+            // R1-RECALIBRATION — the human drains on day-scale horizons:
+            // hunger empties in 2 days (100/2880 per minute), thirst in
+            // 1 day (100/1440); energy and health keep their old values
+            stats: { hunger: 100 / 2880, thirst: 100 / 1440, energy: 0.06, health: 0 },
             start: { hunger: 20, thirst: 20, energy: 100, health: 100 },
             attributes: { strength: 8, stamina: 10, speed: 10, dexterity: 10 },
             abilities: ['walk', 'run', 'swim', 'mine', 'chop', 'forage', 'craft'],
@@ -218,7 +221,7 @@ describe('entityPlugin — profile overrides', () => {
         // Everything untouched keeps the stock shape
         expect(human?.inventorySize).toBe(200);
         expect(human?.abilities).toEqual(['walk', 'run', 'swim', 'mine', 'chop', 'forage', 'craft']);
-        expect(human?.stats).toEqual({ hunger: 0.1, thirst: 0.15, energy: 0.06, health: 0 });
+        expect(human?.stats).toEqual({ hunger: 100 / 2880, thirst: 100 / 1440, energy: 0.06, health: 0 });
     });
 
     it('an override may pin the movement table, skipping the derivation', () => {

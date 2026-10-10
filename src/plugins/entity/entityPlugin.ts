@@ -46,6 +46,7 @@
 // shape can stand in (tests, other distributions).
 
 import type { ActorKind } from '../../engine/types';
+import { DAY_MINUTES } from '../../scenario/dayCycle';
 import type { WorldPlugin } from '@godspace/core';
 
 // ── Movement vocabulary ──────────────────────────────────────────────────────
@@ -203,6 +204,34 @@ const movementOf = (
     override?: Partial<Record<MoveKind, EntityMove>>,
 ): Partial<Record<MoveKind, EntityMove>> => override ?? deriveMovement(attributes, abilities);
 
+// ── R6-INTEGRATION — the castaway depletion horizons ────────────────────────
+// The human belly rates are DERIVED from in-game-day horizons (the shared
+// clock contract, DAY_MINUTES 1440 — the same day-based calibration the
+// needs plugin's health-attrition drains use), replacing the old 0.1/0.15
+// pins that emptied thirst in ~9 awake hours and hunger in ~13: a castaway
+// drank twice a day and ate three, and any half-day without a water run was
+// already an emergency. The chosen accumulation horizons (0 → 100 pressure,
+// per world minute):
+//   thirst — 1 in-game day  (100 / 1440 ≈ 0.0694/min): from the 20-point
+//            arrival, thirst reaches the 65 trigger in ~10.8 h and the 100
+//            empty line in ~19.2 h — a daily drink, never a half-day panic
+//   hunger — 2 in-game days (100 / 2880 ≈ 0.0347/min): the 60 trigger in
+//            ~19.2 h, the empty line in ~38.4 h — a meal a day keeps the
+//            belly off the wound line
+// Health attrition still counts FROM the empty line at full HP (the needs
+// plugin's deficit drains, 3.5/10-day horizons), not from time since the
+// last satisfied meal — accumulation and attrition stay two separate,
+// documented clocks. Energy (0.06/min idle burn + the movement rows) and
+// the sleep metabolic charge (recoveryChargeRatio 0.25) stay as calibrated:
+// normal exertion stays realistic and a night's rest stays a modest cost.
+/** In-game days for a human belly to fill from 0 to the 100 empty line. */
+export const HUMAN_HUNGER_HORIZON_DAYS = 2;
+export const HUMAN_THIRST_HORIZON_DAYS = 1;
+/** The derived per-minute accumulation rates (the needs plugin's fallback
+ * defaults import these — identical values, one vocabulary). */
+export const HUMAN_HUNGER_PER_MINUTE = 100 / (HUMAN_HUNGER_HORIZON_DAYS * DAY_MINUTES);
+export const HUMAN_THIRST_PER_MINUTE = 100 / (HUMAN_THIRST_HORIZON_DAYS * DAY_MINUTES);
+
 /** The stock species of the island — every entity type the plugins coin. */
 const STOCK_PROFILES: Record<string, EntityProfile> = {
     human: {
@@ -210,9 +239,10 @@ const STOCK_PROFILES: Record<string, EntityProfile> = {
         kind: 'sentient',
         label: 'Human',
         // The castaway pacing the island is balanced around (needs plugin's
-        // legacy defaults — identical values, one vocabulary now). health 0
-        // drain: the reservoir only moves when something hurts the entity
-        stats: { hunger: 0.1, thirst: 0.15, energy: 0.06, health: 0 },
+        // legacy defaults — identical values, one vocabulary now; the belly
+        // rates derive from the day horizons above). health 0 drain: the
+        // reservoir only moves when something hurts the entity
+        stats: { hunger: HUMAN_HUNGER_PER_MINUTE, thirst: HUMAN_THIRST_PER_MINUTE, energy: 0.06, health: 0 },
         start: { hunger: 20, thirst: 20, energy: 100, health: 100 },
         attributes: { strength: 8, stamina: 10, speed: 10, dexterity: 10 },
         // People walk, run, swim (slower than they walk), mine stone/iron,

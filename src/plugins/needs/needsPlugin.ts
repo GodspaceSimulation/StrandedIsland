@@ -16,11 +16,21 @@
 // ── HEALTH — the reservoir between an entity and death ──────────────────────
 // Health is a WELLBEING value (100 = healthy, 0 = dead), the fourth survival
 // stat. It only moves when something hurts the entity:
-//   starvation   — hunger or thirst sitting at the 100 line damages health
-//                  every minute (`starveDamagePerMinute`, defaulting to
-//                  100 / doomMinutes so the death timing is the doom
-//                  window's: an entity that stays maxed dies exactly
-//                  `doomMinutes` world minutes after the line is reached).
+//   starvation   — hunger and thirst each carry their OWN realistic health
+//                  drain while they sit at the 100 (empty) line, calibrated
+//                  to real-life-equivalent in-game horizons (1440 minutes a
+//                  day, scenario/dayCycle.ts):
+//                    thirst empty — 100 / (3.5 × 1440) health per minute:
+//                                  a body at FULL health dies of thirst in
+//                                  3.5 in-game days (the 3–4 day window)
+//                    hunger empty — 100 / (10 × 1440) health per minute:
+//                                  a body at FULL health starves in ~10
+//                                  in-game days
+//                  Both empty the drains are ADDITIVE (death ≈ 2.6 days).
+//                  There is no rapid 30-minute doom any more — the deficit
+//                  itself is the slow wound, and a FED belly's regen never
+//                  negates it (damage and regen stay mutually exclusive:
+//                  any empty line wounds, they never heal the same minute).
 //   wounds       — a predator's bite drains health straight through
 //                  satisfy (plugins/predators).
 //   regen        — a FED and WATERED entity (hunger ≤ 50, thirst ≤ 50)
@@ -28,13 +38,16 @@
 //                  close while the belly is full.
 //   passive      — the species profile's stats.health drain (0 for every
 //                  stock species — no species sickens on its own).
+// EXHAUSTION stays a SEPARATE axis: energy at 0 reads critical and forces
+// the rest/sleep rungs (plugins/sleep, plugins/behavior) but never drains
+// health by itself — tired is not wounded; sleep is what fixes it, and the
+// recovery service's metabolic charge (below) is what pays for it.
 // DEATH AT ZERO — THE ONE KILLER: when health reaches 0 the entity dies.
-// EVERY entity — castaway or creature. The old castaway-only doom ladder is
-// gone: the health reservoir IS the doom (its drain rate is calibrated so a
-// starving castaway still dies exactly `doomMinutes` after the hunger/thirst
-// line), and a creature whose health bottoms out dies the same way its
-// registry cousins do. A dead coordinate-space creature is removed from the
-// space directly (world.despawn only reaches the actor registry).
+// EVERY entity — castaway or creature. The health reservoir IS the doom
+// (its two deficit drains are calibrated to the realistic horizons above),
+// and a creature whose health bottoms out dies the same way its registry
+// cousins do. A dead coordinate-space creature is removed from the space
+// directly (world.despawn only reaches the actor registry).
 //
 // Creature conditions are NOT written into the coordinate facet: a bird's
 // facet state is its altitude band ('flying-N', plugins/birds), which the
@@ -63,6 +76,15 @@ import { arrayEach } from '@presource/core';
 import type { World } from '../../engine/world';
 import type { ActorCondition } from '../../engine/types';
 import type { MoveKind, EntityProfiles, EntityStats } from '../entity/entityPlugin';
+// R6-INTEGRATION — the human belly-accumulation defaults are the entity
+// registry's own derived rates (the day-horizon constants above the stock
+// human profile, plugins/entity/entityPlugin.ts) — one vocabulary: the
+// no-profile fallback and the mounted human profile can never disagree.
+import { HUMAN_HUNGER_PER_MINUTE, HUMAN_THIRST_PER_MINUTE } from '../entity/entityPlugin';
+// R6 — the shared clock contract (DAY_MINUTES 1440): the starvation horizons
+// are stated in IN-GAME DAYS, so the per-minute drains derive from this file
+// (imported, never edited here — the terrain worker owns it).
+import { DAY_MINUTES } from '../../scenario/dayCycle';
 import type { PluginContext, WorldPlugin } from '@godspace/core';
 
 export type NeedsPluginOptions = {
@@ -81,25 +103,47 @@ export type NeedsPluginOptions = {
     tasks?: {
         taskOf(entityId: string): { kind: string } | undefined;
     };
-    /** Hunger points per world minute. Default 0.1 — the no-profile fallback. */
+    /**
+     * Hunger points per world minute. Default 100/(2×1440) ≈ 0.0347 — the
+     * no-profile fallback, derived from the human hunger accumulation horizon
+     * (2 in-game days 0→empty, entityPlugin's HUMAN_HUNGER_HORIZON_DAYS).
+     */
     hungerPerMinute?: number;
-    /** Thirst points per world minute. Default 0.15. */
+    /**
+     * Thirst points per world minute. Default 100/1440 ≈ 0.0694 — the
+     * no-profile fallback, derived from the human thirst accumulation
+     * horizon (1 in-game day 0→empty, HUMAN_THIRST_HORIZON_DAYS).
+     */
     thirstPerMinute?: number;
     /** Energy drain per world minute. Default 0.06. */
     energyPerMinute?: number;
     /**
-     * Minutes an entity survives AT THE 100 hunger/thirst line before
-     * dying. Default 30 world minutes. The starvation damage default is
-     * derived from it (100 / doomMinutes per minute) so the death timing
-     * stays exactly this window — through the health reservoir now.
+     * R6 — Health points one world minute of EMPTY THIRST (thirst at the
+     * 100 line) drains. Default 100 / (3.5 × 1440): a body at full health
+     * dies of thirst exactly 3.5 in-game days (5040 world minutes) after
+     * the line — the real-life-equivalent 3–4 day window. An explicit
+     * option pins its own pace (tests use fast horizons).
      */
-    doomMinutes?: number;
+    thirstDamagePerMinute?: number;
     /**
-     * Health points one world minute of starvation (hunger or thirst at
-     * 100) drains. Default 100 / doomMinutes — death exactly one doom
-     * window after the line is hit.
+     * R6 — Health points one world minute of EMPTY HUNGER (hunger at the
+     * 100 line) drains. Default 100 / (10 × 1440): a body at full health
+     * starves ~10 in-game days (14400 world minutes) after the line. With
+     * BOTH lines empty the two drains are additive.
      */
-    starveDamagePerMinute?: number;
+    hungerDamagePerMinute?: number;
+    /**
+     * R4 — the recovery service's METABOLIC CHARGE RATIO: hunger AND thirst
+     * points charged per energy point restored (each, equally). Default
+     * 0.25 — the old 1:1 made a night's sanctioned sleep the dominant
+     * consumption of the day (78 restored energy = 78 hunger + 78 thirst,
+     * ~12× the awake per-minute belly rates); at 0.25 a full night's
+     * recovery costs a quarter of what it restored, comfortably under the
+     * awake day's own spend, so REST pays for itself without eating the
+     * cast alive. The charge stays EQUAL across the charged resources and
+     * still scales with the ACTUAL restore (capped requests charge less).
+     */
+    recoveryChargeRatio?: number;
     /**
      * Health points a FED entity (hunger ≤ 50 AND thirst ≤ 50) heals per
      * world minute. Default 0.2 — a full belly closes wounds slowly.
@@ -183,18 +227,19 @@ export type NeedsPlugin = WorldPlugin<World> & {
      * R4 — THE RECOVERY SERVICE: the ONLY sanctioned route for rest/sleep
      * energy gains. Converts a requested energy top-up into an actual
      * restore that is BACKED BY THE BODY'S RESOURCES: every point of
-     * energy restored charges the body's hunger AND thirst equally (1:1 —
-     * the same amount of each resource the species' metabolism consumes;
-     * a species without a pressure — the shark's rate-0 thirst — is not
-     * charged it, so "equal" binds within the resources the body actually
-     * spends). Limits, all enforced here:
+     * energy restored charges the body's hunger AND thirst equally (each
+     * by `recoveryChargeRatio` — the metabolic conversion cost, default
+     * 0.25 so rest is never the dominant consumption; a species without a
+     * pressure — the shark's rate-0 thirst — is not charged it, so
+     * "equal" binds within the resources the body actually spends).
+     * Limits, all enforced here:
      *   energy cap   — the restore is capped at the 100 headroom and the
      *                  charge equals the ACTUAL restore: a capped request
      *                  charges nothing (no phantom cost at the cap).
      *   empty source — the charge room is the TIGHTER of the charged
-     *                  resources' headroom: a resource at 100 (no room to
-     *                  consume) yields NO energy (nothing converts from
-     *                  an empty source) and charges nothing.
+     *                  resources' headroom divided by the ratio: a resource
+     *                  at 100 (no room to consume) yields NO energy (nothing
+     *                  converts from an empty source) and charges nothing.
      * Returns the actual energy points restored (0 when capped or
      * resource-blocked). Call sites: the sleep plugin's per-minute restore
      * (while the sleep task progresses) and the behavior plugin's rest
@@ -236,6 +281,16 @@ const STARVATION_LINE = 100;
 const REGEN_LINE = 50;
 
 /**
+ * R6 — the realistic health-attrition horizons in in-game days (1440
+ * world-minutes each, scenario/dayCycle.ts DAY_MINUTES): empty thirst kills
+ * a full-health body in 3.5 days (the 3–4 day window the island asks for),
+ * empty hunger in 10 days. The per-minute drains are derived from these so
+ * the death timing IS the horizon, exactly.
+ */
+const THIRST_DOOM_DAYS = 3.5;
+const HUNGER_DOOM_DAYS = 10;
+
+/**
  * The condition ladder from the worst need. Shared by the sweep (castaway
  * condition writes) and the god-view (creature condition dots) — the same
  * thresholds everywhere. Health joins the ladder: a wounded body reads
@@ -254,16 +309,22 @@ export const conditionOf = (state: NeedsState): Exclude<ActorCondition, 'gone'> 
 const clamp01 = (value: number): number => Math.max(0, Math.min(100, value));
 
 export const needsPlugin = (options: NeedsPluginOptions = {}): NeedsPlugin => {
-    const hungerPerMinute = options.hungerPerMinute ?? 0.1;
-    const thirstPerMinute = options.thirstPerMinute ?? 0.15;
+    // R6-INTEGRATION — the fallback belly rates ARE the human profile's
+    // day-horizon-derived rates (see the option docs + entityPlugin)
+    const hungerPerMinute = options.hungerPerMinute ?? HUMAN_HUNGER_PER_MINUTE;
+    const thirstPerMinute = options.thirstPerMinute ?? HUMAN_THIRST_PER_MINUTE;
     const energyPerMinute = options.energyPerMinute ?? 0.06;
-    const doomMinutes = options.doomMinutes ?? 30;
-    // The starvation damage — calibrated off the doom window so a starving
-    // entity dies exactly `doomMinutes` after its hunger/thirst hits the
-    // line (100 health / damage-per-minute = the window). An explicit
-    // option pins its own pace.
-    const starveDamage =
-        options.starveDamagePerMinute ?? (doomMinutes > 0 ? 100 / doomMinutes : 100);
+    // R6 — THE TWO DEFICIT DRAINS — each empty line wounds health at its own
+    // realistic pace: thirst kills a full-health body in THIRST_DOOM_DAYS
+    // in-game days, hunger in HUNGER_DOOM_DAYS (100 health / the horizon's
+    // minutes). With BOTH lines empty the drains stack additively. An
+    // explicit option pins its own pace (fast-horizon tests).
+    const thirstDamage =
+        options.thirstDamagePerMinute ?? 100 / (THIRST_DOOM_DAYS * DAY_MINUTES);
+    const hungerDamage =
+        options.hungerDamagePerMinute ?? 100 / (HUNGER_DOOM_DAYS * DAY_MINUTES);
+    // R4 — the recovery service's metabolic charge per restored point
+    const chargeRatio = options.recoveryChargeRatio ?? 0.25;
     const healthRegen = options.healthRegenPerMinute ?? 0.2;
     // The entity profiles — per-type rates and starts. Null: the legacy
     // flat castaway rates apply to every entity (the pre-entity behavior).
@@ -458,13 +519,14 @@ export const needsPlugin = (options: NeedsPluginOptions = {}): NeedsPlugin => {
             if (rates.thirst > 0) {
                 charged.push('thirst');
             }
-            // THE ROOM — the tighter charged resource's headroom: the equal
-            // charge can only rise until the FIRST resource fills. An empty
-            // charged resource (at the 100 line) yields no energy at all —
-            // nothing converts from an empty source.
+            // THE ROOM — the tighter charged resource's headroom DIVIDED by
+            // the charge ratio: the equal charge (actual × ratio) can only
+            // rise until the FIRST resource fills. An empty charged resource
+            // (at the 100 line) yields no energy at all — nothing converts
+            // from an empty source.
             let room = Infinity;
             charged.forEach((key) => {
-                room = Math.min(room, 100 - state[key]);
+                room = Math.min(room, (100 - state[key]) / chargeRatio);
             });
             // THE ACTUAL RESTORE — the request capped by the energy headroom
             // (at the cap the restore is 0 and NOTHING is charged — no
@@ -474,13 +536,14 @@ export const needsPlugin = (options: NeedsPluginOptions = {}): NeedsPlugin => {
             if (!(actual > 0)) {
                 return 0;
             }
-            // The restore and the EQUAL charge: every charged resource rises
-            // by the same amount, proportional to the energy actually
-            // restored (1:1) — the cost is limited by the actual restore,
-            // never by the request.
+            // The restore and the EQUAL metabolic charge: every charged
+            // resource rises by the same amount — the restored energy times
+            // the charge ratio (default 0.25: rest pays for itself at a
+            // quarter of its gain, never the day's dominant consumption).
+            // The cost is limited by the actual restore, never the request.
             state.energy = clamp01(state.energy + actual);
             charged.forEach((key) => {
-                state[key] = clamp01(state[key] + actual);
+                state[key] = clamp01(state[key] + actual * chargeRatio);
             });
             return actual;
         },
@@ -567,15 +630,20 @@ export const needsPlugin = (options: NeedsPluginOptions = {}): NeedsPlugin => {
                     state.health = clamp01(state.health - rates.health);
                 }
 
-                // ── THE HEALTH RESERVOIR ── starvation wounds, a fed body
-                // heals. Damage and regen are mutually exclusive (a body is
-                // never starving and full-bellied in the same minute). A
-                // DRY reservoir never regenerates — health 0 is death, not
-                // a scratch to sleep off.
-                const starving =
-                    state.hunger >= STARVATION_LINE || state.thirst >= STARVATION_LINE;
-                if (starving) {
-                    state.health = clamp01(state.health - starveDamage);
+                // ── THE HEALTH RESERVOIR (R6) ── each empty line wounds at
+                // its own realistic pace (thirst 3.5 days, hunger ~10 days
+                // from full health; additive when BOTH are empty), a fed
+                // body heals. Damage and regen stay mutually exclusive — a
+                // fed belly NEVER negates the deficit's wound in the same
+                // minute (any line at 100 means damage only). A DRY
+                // reservoir never regenerates — health 0 is death, not a
+                // scratch to sleep off.
+                const thirstEmpty = state.thirst >= STARVATION_LINE;
+                const hungerEmpty = state.hunger >= STARVATION_LINE;
+                const deficitDamage =
+                    (thirstEmpty ? thirstDamage : 0) + (hungerEmpty ? hungerDamage : 0);
+                if (deficitDamage > 0) {
+                    state.health = clamp01(state.health - deficitDamage);
                 } else if (
                     state.hunger <= REGEN_LINE &&
                     state.thirst <= REGEN_LINE &&
