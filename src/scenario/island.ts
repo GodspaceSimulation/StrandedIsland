@@ -135,7 +135,12 @@ export type IslandOptions = {
         /** The task ledger the agents plan through. Default on. */
         tasks?: boolean;
         behavior?: boolean;
-        /** Timed sleep as a ledger behaviour (shadows the rest fallback). Default on. */
+        /**
+         * Timed sleep as a ledger behaviour (shadows the rest fallback) —
+         * and since R3 the SHELTER TREK: an owed body walks to the nearest
+         * built roofed gate before lying down, where the construction
+         * sweep's comfort bonus and healing wait. Default on.
+         */
         sleep?: boolean;
         /**
          * The flee-from-wild-animals behaviour (priority 60 — the highest

@@ -48,8 +48,11 @@ import {
     TREE_ICON_FULL_COVERAGE,
     TREE_ICON_MIN_OPACITY,
     dominantVisibleType,
+    farmLine,
 } from './tileDetails';
 import { tileSurfaceKey } from '../plugins/terrain/islandTerrain';
+// R5 — the farm plot card shape (the farming plugin's public view type)
+import type { FarmPlotView } from '../plugins/farming/farmingPlugin';
 
 const island = createIslandWorld({ seed: 7 });
 // The 37×25 reference board — the pre-shrink default island, kept for the
@@ -906,7 +909,10 @@ describe('tileProgress / progressLine — the standing jobs (R6)', () => {
     // so the standing jobs are read from a controlled march (seed 7,
     // deterministic)
     it('reads the shared chop job off the tile-work ledger with exact minutes', () => {
-        const march = createIslandWorld({ seed: 7 });
+        // R5 — farming OFF: with the husbandry mounted, Dune's minute 1 on
+        // the treed landing opens a farm-plant job instead of the chop (the
+        // bars fixtures own the LEDGER READ, not the farm)
+        const march = createIslandWorld({ seed: 7, plugins: { farming: false } });
         // Tick 0 — nothing stands
         expect(tileProgress(march, [{ x: 5, y: -2 }])).toEqual([]);
         // Minute 1: the woodless cast on treed tiles opens the shared jobs
@@ -955,7 +961,7 @@ describe('tileProgress / progressLine — the standing jobs (R6)', () => {
         // while the exact construction footprint still resolves on the fine
         // cell it covers. The Tile Inspector (tileJobs default true) still
         // reads the root ledger at every zoom.
-        const march = createIslandWorld({ seed: 7 });
+        const march = createIslandWorld({ seed: 7, plugins: { farming: false } }); // R5 — see the chop-job twin above
         march.world.step(); // minute 1: chop opens on (5,−2), the shelter stands on its scored tile
         // The shelter's R1-scored placement tile (read from the site record,
         // not pinned — the scored placement can shift with the campaign)
@@ -977,5 +983,57 @@ describe('tileProgress / progressLine — the standing jobs (R6)', () => {
         // A fine cell on the SAME tile the shelter does NOT cover reads empty
         // (no site, and the board read carries no ledger either).
         expect(tileProgress(march, [{ x: tile.x, y: tile.y }, { x: fine.x + 1, y: fine.y + 1 }], { tileJobs: false })).toEqual([]);
+    });
+});
+
+describe('farmLine / tileSummary.farm — the plot inspector card (R5)', () => {
+    it('an immature plot counts the minutes off its fruiting line', () => {
+        // Pure helper read — the exact card the Tile Inspector renders
+        // (plugins/farming defaults: 2880 min to first fruit, 4 berries)
+        const plot: FarmPlotView = {
+            x: 2, y: -3, stage: 'immature', plantedAt: 0, matureAt: 2880, cycles: 0, yieldPerHarvest: 4,
+        };
+        expect(farmLine(plot, 600)).toBe('berry plot · immature · fruits in 2280 min · 0 harvests');
+    });
+
+    it('a ripe plot invites the pick, names the yield and counts the cycles', () => {
+        const plot: FarmPlotView = {
+            x: 2, y: -3, stage: 'ripe', plantedAt: 0, matureAt: 2880, cycles: 2, yieldPerHarvest: 4,
+        };
+        expect(farmLine(plot, 3000)).toBe('berry plot · ripe · pick now (+4 berries) · 2 harvests');
+        // The cycle count singularizes at exactly one harvest
+        expect(farmLine({ ...plot, cycles: 1 }, 3000)).toBe('berry plot · ripe · pick now (+4 berries) · 1 harvest');
+    });
+
+    it('the countdown clamps at the fruiting line — never a negative wait', () => {
+        const plot: FarmPlotView = {
+            x: 2, y: -3, stage: 'immature', plantedAt: 0, matureAt: 2880, cycles: 0, yieldPerHarvest: 4,
+        };
+        // now === matureAt on an immature card (the read races the flip):
+        // the Math.max(0, …) guard lands the line on 0 min, not −0
+        expect(farmLine(plot, 2880)).toBe('berry plot · immature · fruits in 0 min · 0 harvests');
+    });
+
+    it('tileSummary carries the standing plot card — and nothing on bare ground', () => {
+        // A LOCAL world (the module fixtures stay plot-free for the other
+        // describes); the bed is the first eligible tile in row-major scan
+        // (the farmingPlugin.test.ts firstEligible pattern — no fabricated
+        // state, the plot stands through the plugin's supported plant API)
+        const march = createIslandWorld({ seed: 7 });
+        const bed = march.world.canvas.cells.find((cell) => march.farming.eligibleAt(cell.x, cell.y))!;
+        expect(march.farming.plant(bed.x, bed.y)).toBe(true);
+        // The exact card at minute 0 — the documented default pacing
+        expect(tileSummary(march, [{ x: bed.x, y: bed.y }])?.farm).toEqual({
+            x: bed.x,
+            y: bed.y,
+            stage: 'immature',
+            plantedAt: 0,
+            matureAt: 2880,
+            cycles: 0,
+            yieldPerHarvest: 4,
+        });
+        // A sea tile holds no plot — the field stays undefined
+        const sea = march.world.canvas.cells.find((cell) => !cell.passable)!;
+        expect(tileSummary(march, [{ x: sea.x, y: sea.y }])?.farm).toBeUndefined();
     });
 });

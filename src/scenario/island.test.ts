@@ -2,6 +2,10 @@
 
 import { describe, it, expect } from 'vitest';
 import { createIslandWorld } from './island';
+// R4 — the terrain plugin's river color is the SINGLE source of truth for
+// the palette join (scenario/island.ts GRASS_TILE_PALETTE.river); this pin
+// keeps the legend swatch and the painted tiles from ever disagreeing
+import { RIVER_TILE_COLOR } from '../plugins/terrain/islandTerrain';
 
 describe('createIslandWorld', () => {
     it('assembles all stock plugins in tick order (packages + environment)', () => {
@@ -169,13 +173,14 @@ describe('createIslandWorld', () => {
             { x: 5, y: -2, z: 0 },
         ]);
         expect(handle.tasks.tasks().map((task) => ({ actorId: task.actorId, kind: task.kind, label: task.label, remaining: task.remaining }))).toEqual([
-            { actorId: 'actor-1', kind: 'move', label: 'travels to trees', remaining: 1 },
-            { actorId: 'actor-2', kind: 'move', label: 'travels to trees', remaining: 1 },
-            // R6 — the chop is a 1-minute BEAT on the tile's shared job (the
-            // 15-work-minute demand stands in the tasks plugin's tile-work
-            // ledger, not in the actor's countdown)
-            { actorId: 'actor-3', kind: 'chop', label: 'chops a tree', remaining: 1 },
-            { actorId: 'actor-4', kind: 'chop', label: 'chops a tree', remaining: 1 },
+            // R5 — minute 1 belongs to the farm: every castaway lands
+            // beside berry ground, so the plant rung (12) opens plots
+            // before the wood trek or the chop ever queues (the treed
+            // landings are a river-era world away)
+            { actorId: 'actor-1', kind: 'move', label: 'travels to the farm', remaining: 1 },
+            { actorId: 'actor-2', kind: 'move', label: 'travels to the farm', remaining: 1 },
+            { actorId: 'actor-3', kind: 'farmPlant', label: 'plants a berry plot', remaining: 1 },
+            { actorId: 'actor-4', kind: 'farmPlant', label: 'plants a berry plot', remaining: 1 },
         ]);
         // The SECOND minute carries the first completing task: Ael
         // fine-steps exactly ONE Scale-0 tile east (an interior move — the
@@ -199,8 +204,10 @@ describe('createIslandWorld', () => {
         expect(Array.from(handle.world.actors.keys()).map((id) => handle.world.subOf(id))).toEqual([
             { x: -7, y: 0 },
             { x: -9, y: -8 },
-            { x: -3, y: -2 },
-            { x: -8, y: 2 },
+            // R5 — the farm treks pull the two east-side castaways off
+            // their landing tiles' coarse cells on the very first minute
+            { x: 9, y: -7 },
+            { x: 7, y: 8 },
         ]);
         // Eighteen more minutes: Ael keeps trekking east toward the woods
         // (19 interior fine steps — the wrap onto the next tile is still
@@ -208,9 +215,9 @@ describe('createIslandWorld', () => {
         // on (Dune's wandering wrapped off the tile's west edge — the
         // island position moved with it). The log gains the wilds' own
         // beat: Tusk the boar wanders in from the far shore at minute 6
-        // (far from the cast — no meeting). The seeded rain of minute 8
-        // now lands inside the window (the 0.8 basins shifted the survey's
-        // roll stream — the water rhythm moved earlier).
+        // (far from the cast — no meeting). The seeded rain of minute 15
+        // now lands inside the window (the river-era survey shifted the
+        // weather roll stream — the water rhythm moved later).
         for (let index = 0; index < 18; index++) {
             handle.world.step();
         }
@@ -222,7 +229,7 @@ describe('createIslandWorld', () => {
             { kind: 'spawn', message: 'Dune washes ashore.', time: 0 },
             { kind: 'spawn', message: 'Kiki wheels above the island.', time: 0 },
             { kind: 'spawn', message: 'Tusk wanders in from the wilds.', time: 6 },
-            { kind: 'weather', message: 'Rain sweeps the island.', time: 8 },
+            { kind: 'weather', message: 'Rain sweeps the island.', time: 15 },
         ]);
         // The boar roams the far shore — no castaway has met it yet. Tusk
         // is a living thing: the behavior plugin plans it through the
@@ -240,8 +247,10 @@ describe('createIslandWorld', () => {
         expect(Array.from(handle.world.actors.keys()).map((id) => handle.world.subOf(id))).toEqual([
             { x: 11, y: 0 },
             { x: 9, y: -8 },
-            { x: -4, y: -3 },
-            { x: -7, y: 3 },
+            // R5 — the two east-side farm crews stay on their plot tiles
+            // (the coarse cells the minute-1 treks landed them on)
+            { x: 9, y: -7 },
+            { x: 7, y: 8 },
         ]);
     });
 
@@ -512,6 +521,17 @@ describe('createIslandWorld', () => {
         expect(frame.tiles[0].glyphs).toEqual([]);
         // The legend source shares the ascii tile palette
         expect(handle.svg.palette().tiles.ocean).toBe('#173a52');
+    });
+
+    it("the river tiles paint with the terrain plugin's river color — palette single source (R4)", () => {
+        const handle = createIslandWorld({ seed: 7 });
+        // R4 — the meandering courses surface through the GRASS_TILE_PALETTE
+        // join (scenario/island.ts): every canvas's palette carries the
+        // terrain plugin's own RIVER_TILE_COLOR, so the legend swatch and
+        // the painted tiles can never disagree (single source of truth)
+        expect(handle.ascii.palette().tiles.river).toBe(RIVER_TILE_COLOR);
+        expect(handle.unicode.palette().tiles.river).toBe(RIVER_TILE_COLOR);
+        expect(handle.svg.palette().tiles.river).toBe(RIVER_TILE_COLOR);
     });
 
     it('the data canvas frame renders plain tables of the live world', () => {

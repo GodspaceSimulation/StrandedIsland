@@ -31,10 +31,13 @@ const island = (options?: Parameters<typeof createIslandWorld>[0]): IslandHandle
         seed: 7,
         // R5 — this suite owns the CONSTRUCTION march; the farm rungs
         // (harvest 41 / plant 12) reroute the crew's minutes and
-        // pre-empt the hand-queued build tasks (priority 21), so the
-        // campaign fixtures mount WITHOUT farming by default. The one
-        // test that owns the farmed registry opts back in.
-        plugins: { farming: false },
+        // pre-empt the hand-queued build tasks (priority 21), and the
+        // clock-forced sleep quota (30) eats the hand-driven minutes
+        // (the river-era drives land the hand windows in the wrong half
+        // of the day), so the campaign fixtures mount WITHOUT farming
+        // and sleep by default. The tests that own the farmed/sleeping
+        // registry rows opt back in.
+        plugins: { farming: false, sleep: false },
         ...options,
     });
 
@@ -161,7 +164,7 @@ const handBuild = (
        // (the probe shows one delta-0 step at the open), so the loop runs a
        // few minutes PAST the work total and stops the moment the site
        // reads built - extra minutes onto a finished site are rejected
-       for (let minute = 0; minute < work + 8 + 400 && sites(handle).siteOf(siteId)?.state !== 'built'; minute++) {
+        for (let minute = 0; minute < work + 8 + 1440 && sites(handle).siteOf(siteId)?.state !== 'built'; minute++) {
            // The march leaves survivors DEPLETED (thirst/hunger past their
            // triggers, energy low) - the survival rungs (50/40/30) outrank
            // build (21), so the scheduler churns every hand-queued minute
@@ -283,8 +286,9 @@ describe('constructionPlugin — the shared registries', () => {
     it('registers the construction rungs between rest (25) and social (20), built from the shared factories', () => {
         // The ONE fixture that opts INTO farming: this test owns the farmed
         // registry — every other campaign fixture in the suite runs without
-        // the farm rungs (see the island() helper)
-        const handle = island({ plugins: { farming: true } });
+        // the farm rungs (see the island() helper). Sleep rides along: the
+        // ladder pin below names the sleep rung.
+        const handle = island({ plugins: { farming: true, sleep: true } });
         // The planning order — the priority DESC walk the ledger plans
         // through. The craft and build rungs are composed FROM the core's
         // craftTaskBehaviour/buildTaskBehaviour factories (the rung
@@ -786,7 +790,8 @@ describe('constructionPlugin — the autonomous staging and work', () => {
     });
 
     it('a sheltered sleeper recovers faster — the shelter rest bonus through the recovery service', () => {
-        const handle = island();
+        // This fixture owns the SLEEP path of the rest bonus — opt back in
+        const handle = island({ plugins: { sleep: true } });
         driveUntil(handle, () => sites(handle).sites().some((site) => site.blueprintId === 'shelter' && site.state === 'built'), 12000);
         const shelter = sites(handle).sites().find((site) => site.blueprintId === 'shelter');
         const gate = (sites(handle).cellsOf(shelter?.id ?? '') ?? [])[0];
@@ -926,7 +931,8 @@ describe('constructionPlugin — the autonomous staging and work', () => {
     });
 
     it('R3 — a sheltered wounded sleeper heals on the gate, and deprivation refuses the mend', () => {
-        const handle = island();
+        // This fixture owns the SLEEP path of the on-gate heal — opt back in
+        const handle = island({ plugins: { sleep: true } });
         driveUntil(handle, () => sites(handle).sites().some((site) => site.blueprintId === 'shelter' && site.state === 'built'), 12000);
         const shelter = sites(handle).sites().find((site) => site.blueprintId === 'shelter');
         const gate = (sites(handle).cellsOf(shelter?.id ?? '') ?? [])[0];
@@ -1292,16 +1298,17 @@ describe('constructionPlugin — the vessels', () => {
             blueprintId: 'raft',
             label: 'Raft',
             // The mooring: the launch scan (west, east, north, south) finds
-            // the sea at the raft anchor's (-8,-5) north neighbour -8,-6
-            x: -8,
-            y: -6,
+            // the sea at the river-era raft anchor's (8,-5) EAST neighbour
+            // 9,-5 (the west neighbour is inland sand on the new board)
+            x: 9,
+            y: -5,
             launchedAt,
         });
         expect(handle.construction.vessels()).toEqual([vessel]);
         expect(sites(handle).siteOf(raft?.id ?? '')).toBeUndefined();
         // The log carries the launch (a world-scale happening)
         expect(handle.world.events.log().filter((event) => event.kind === 'launch').map((event) => event.message)).toEqual([
-            'The raft is launched into the water at (-8, -6).',
+            'The raft is launched into the water at (9, -5).',
         ]);
         // The completed ledger keeps the raft (the plan never rebuilds it)
         expect(handle.construction.completedBlueprints()).toEqual(['shelter', 'raft']);
@@ -1328,6 +1335,13 @@ describe('constructionPlugin — R3/R4 maintenance, the quarry cut and R1 rock s
      * drivePinned (the crew never starves mid-window). The AUTONOMOUS
      * shelter integration is NOT isolated here — it stays covered whole by
      * the untouched seed-7 block above and scenario/island.test.ts.
+     * R5 — farming is restated OFF here because this options object
+     * OVERRIDES the island() helper default: the probe caught the brick
+     * ladder stalling at staged 7/10 — the worker's idle minutes planted a
+     * plot, the harvest rung (41, above maintain 15) filled the bag with
+     * berries, and the stone gather beats then landed on a weight-FULL bag
+     * and paid nothing (berries never leave a pinned-full body's bag).
+     * The orders, not the farm, are what this fixture owns.
      */
     const mechanicsShelter = (): {
         handle: IslandHandle;
@@ -1335,7 +1349,7 @@ describe('constructionPlugin — R3/R4 maintenance, the quarry cut and R1 rock s
         workerId: string;
         park: () => void;
     } => {
-        const handle = island({ plugins: { sharks: false, predators: false } });
+        const handle = island({ plugins: { sharks: false, predators: false, farming: false } });
         driveUntil(handle, () => sites(handle).sites().some((site) => site.blueprintId === 'shelter'), 10);
         const shelter = sites(handle).sites().find((site) => site.blueprintId === 'shelter');
         if (!shelter) {
@@ -1386,8 +1400,26 @@ describe('constructionPlugin — R3/R4 maintenance, the quarry cut and R1 rock s
         minutes: number,
         stop?: () => boolean,
     ): number => {
+        // R4-RIVERS — the scored shelter tile moved east, into the boar's
+        // roam band: the flee rung (60) outranks every build/maintain rung
+        // and churns the driven minutes (the handBuild helper documents the
+        // same trap — the prowling beasts go EVERY minute, the plugins
+        // respawn them mid-window, so the clear rides the top of the loop)
+        const clearThreats = (): void => {
+            handle.predators
+                .predators()
+                .map((boar) => boar?.id)
+                .filter((id): id is string => id !== undefined)
+                .forEach((id) => handle.world.coordinates.remove(id));
+            handle.sharks
+                .sharks()
+                .map((shark) => shark?.id)
+                .filter((id): id is string => id !== undefined)
+                .forEach((id) => handle.world.coordinates.remove(id));
+        };
         for (let minute = 0; minute < minutes; minute++) {
             handle.needs.satisfy(workerId, { thirst: -100, hunger: -100, energy: 100, health: 100 });
+            clearThreats();
             if (stop && stop()) {
                 return minute;
             }
@@ -1472,6 +1504,11 @@ describe('constructionPlugin — R3/R4 maintenance, the quarry cut and R1 rock s
         const order = handle.construction.orderRepair(shelterId, 'sec-2');
         // missing 1 hp → ceil(1/10) = 1 unit of thatch, 5 work minutes
         expect(order).toMatchObject({ item: 'thatch', units: 1, work: 5, state: 'open' });
+        // R4-RIVERS — the march leaves the worker's bag heavier on the new
+        // board, and spawnKit CLAMPS to the bag's remaining weight (a full
+        // bag silently lands a PARTIAL kit — the probe: zero thatch).
+        // Empty the bag first: the repair material must actually be carried
+        emptyBag(handle, workerId);
         handle.inventory.spawnKit(workerId, { thatch: 1 });
         // DEAD-material distinction: a mended wall is not the living woods.
         // Capture the forest stand on the shelter tile - a repair spends
@@ -1480,11 +1517,14 @@ describe('constructionPlugin — R3/R4 maintenance, the quarry cut and R1 rock s
         const standBefore = JSON.stringify(handle.forest.standOf(anchor ?? { x: 0, y: 0 }));
         // PHASE 1 - the haul and the stage: the crew carries the one thatch
         // onto the footprint. Staged is NOT done: the order still owes its
-        // work minutes, and the section stays worn.
+        // work minutes, and the section stays worn. (R4-RIVERS pacing — the
+        // scored shelter tile moved; the thatch trek routes around the new
+        // water, so the haul window widens 120 → 900. The END STATE is the
+        // contract, the minute is not.)
         drivePinned(
             handle,
             workerId,
-            120,
+            900,
             () => (orderOf(handle, order?.id ?? '')?.staged ?? 0) >= 1,
         );
         const staged = orderOf(handle, order?.id ?? '');
@@ -1798,10 +1838,13 @@ describe('constructionPlugin — R3/R4 maintenance, the quarry cut and R1 rock s
         emptyBag(handle, workerId);
         handle.inventory.spawnKit(workerId, { stone: 5 });
         park();
+        // R4-RIVERS pacing — the stone hauls from the new scored shelter
+        // tile detour the water: the window widens 2500 → 7000 (the END
+        // STATE is the contract, the completion minute is not)
         drivePinned(
             handle,
             workerId,
-            2500,
+            7000,
             () => orderOf(handle, stoneOrder?.id ?? '')?.state === 'done',
         );
         expect(orderOf(handle, stoneOrder?.id ?? '')).toMatchObject({ state: 'done' });
@@ -1880,10 +1923,12 @@ describe('constructionPlugin — R3/R4 maintenance, the quarry cut and R1 rock s
         // With the kiln standing, the crew fires the FIRST brick through
         // the real recipe (sand 2 + stone 1 → brick), hauls it to the
         // shelter and stages it onto the order - the raws are CONSUMED
+        // (R4-RIVERS pacing — the kiln-to-shelter haul is longer on the
+        // new board: the window widens 600 → 2500; END STATE is the pin)
         drivePinned(
             handle,
             workerId,
-            600,
+            2500,
             () => (orderOf(handle, brickOrder?.id ?? '')?.staged ?? 0) >= 1,
         );
         expect(orderOf(handle, brickOrder?.id ?? '')).toMatchObject({ staged: 1, state: 'open' });
@@ -1894,10 +1939,15 @@ describe('constructionPlugin — R3/R4 maintenance, the quarry cut and R1 rock s
         // THE LADDER'S TOP RUNG: nine more firings and the hundred work
         // minutes are the same cycle - the crew runs the full campaign
         // autonomously and the section rises to brick
+        // (R5 pacing, MEASURED not guessed: the probe clocked the ladder
+        // finishing at minute 10691 — sleep eats the night minutes and each
+        // brick is a kiln↔shelter↔raws trek — so the window is 15000, a
+        // bounded ~40% margin over the measured finish; END STATE is the
+        // pin, and the probe shows staged climbing 1→10 with no stall)
         drivePinned(
             handle,
             workerId,
-            6000,
+            15000,
             () => orderOf(handle, brickOrder?.id ?? '')?.state === 'done',
         );
         expect(orderOf(handle, brickOrder?.id ?? '')).toMatchObject({ state: 'done' });
@@ -1918,10 +1968,12 @@ describe('constructionPlugin — R3/R4 maintenance, the quarry cut and R1 rock s
         emptyBag(handle, workerId);
         handle.inventory.spawnKit(workerId, { stone: 5 });
         park();
+        // R4-RIVERS pacing — same widened stone-haul window as the ladder
+        // test (the END STATE is the contract)
         drivePinned(
             handle,
             workerId,
-            2500,
+            7000,
             () => orderOf(handle, stoneOrder?.id ?? '')?.state === 'done',
         );
         expect(orderOf(handle, stoneOrder?.id ?? '')).toMatchObject({ state: 'done' });

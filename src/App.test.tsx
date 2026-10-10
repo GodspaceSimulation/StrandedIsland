@@ -6,6 +6,9 @@
 
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
+// R5 farm UI test — the supported actor move (engine/world.ts relocate,
+// pinned in engine/world.test.ts) walks a castaway onto a plot tile
+import { position3 } from '@godspace/core';
 import { App } from './App';
 import { Dashboard } from './features/dashboard';
 import { bumpRevision, useTile } from './features/worldBridge';
@@ -642,6 +645,69 @@ describe('App', () => {
         // A bare sea tile draws neither icon nor text
         expect(tiles[0].querySelector('[data-testid="tree-icon-svg-canopy"]')).toBeNull();
         expect(tiles[0].querySelector('text')).toBeNull();
+    });
+
+    it('a standing berry plot renders the inspector row, the board stage icon and the legend pair — and ripens on the world clock', () => {
+        // R5 — the farm UI end to end on a REAL handle: the plot stands
+        // through the plugin's supported god-side plant API (no fabricated
+        // state, no unsafe casts), and every panel reads it through the
+        // same public plotAt the live simulation drives. The bed is the
+        // first eligible tile in the row-major scan (the farmingPlugin
+        // test pattern — deterministic for seed 7).
+        const island = createIslandWorld({ seed: 7 });
+        const bed = island.world.canvas.cells.find((cell) => island.farming.eligibleAt(cell.x, cell.y))!;
+        expect(island.farming.plant(bed.x, bed.y)).toBe(true);
+        render(<Dashboard island={island} onReroll={() => undefined} />);
+        const tileId = `unicode-tile-${bed.x}-${bed.y}`;
+        // ── IMMATURE — the board draws the sprout, the inspector the card ──
+        const bedTile = screen.getByTestId(tileId);
+        expect(bedTile.textContent).toBe('🌱');
+        expect(bedTile.querySelector('[data-testid="farm-icon-unicode"]')).not.toBeNull();
+        fireEvent.click(bedTile);
+        // The exact card at minute 0 (the documented default pacing:
+        // 2880 min to first fruit, 4 berries per harvest)
+        expect(screen.getByTestId('tile-farm').textContent).toBe(
+            '🌱 berry plot · immature · fruits in 2880 min · 0 harvests',
+        );
+        // ── THE LEGEND — both stage glyphs taught beside the surfaces ──────
+        const legend = screen.getByTestId('grid-legend-unicode');
+        expect(legend.textContent).toContain('🌱 farm');
+        expect(legend.textContent).toContain('🍇 ripe farm');
+        // ── RIPENING — the clock flips the stage, decor and card follow ────
+        // The lighting test's clock jump (one tickSize step past matureAt,
+        // then the bridge pulse re-renders every panel — growth is lazy
+        // and timestamp-derived, so the step IS the fast-forward)
+        act(() => {
+            island.world.ticker.tickSize(2880);
+            island.world.ticker.step();
+            island.world.ticker.tickSize(1);
+            bumpRevision();
+        });
+        expect(screen.getByTestId(tileId).textContent).toBe('🍇');
+        expect(screen.getByTestId('tile-farm').textContent).toBe(
+            '🍇 berry plot · ripe · pick now (+4 berries) · 0 harvests',
+        );
+        // ── THE SVG TWIN — the vector farm text at the plot's address ──────
+        fireEvent.click(screen.getByTestId('canvas-tab-svg'));
+        expect(screen.getByTestId(`farm-icon-svg-${bed.x}-${bed.y}`).textContent).toBe('🍇');
+        expect(screen.getByTestId('grid-legend-svg').textContent).toContain('🍇 ripe farm');
+        // ── THE FARMER STAYS VISIBLE — an entity always wins the tile ──────
+        // Walk Ael onto the plot (the supported relocate — actor record
+        // and coordinate record move together)
+        fireEvent.click(screen.getByTestId('canvas-tab-unicode'));
+        act(() => {
+            island.world.relocate('actor-1', position3(bed.x, bed.y, 0));
+            bumpRevision();
+        });
+        // The human emoji replaces the sprout on the tile — the plot never
+        // masks the farmer standing on it (the decoration ladder)
+        expect(screen.getByTestId(tileId).textContent).toBe('🧍‍♂️');
+        expect(screen.getByTestId(tileId).querySelector('[data-testid="farm-icon-unicode"]')).toBeNull();
+        // …while the inspector still reads the plot card on the tile
+        fireEvent.click(screen.getByTestId(tileId));
+        expect(screen.getByTestId('tile-farm').textContent).toBe(
+            '🍇 berry plot · ripe · pick now (+4 berries) · 0 harvests',
+        );
     });
 
     it('the island view fades tree icons by true coverage and draws the rock icon on rock sites', () => {
