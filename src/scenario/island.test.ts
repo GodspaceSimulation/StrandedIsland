@@ -37,6 +37,10 @@ describe('createIslandWorld', () => {
             // R5 — farming mounts right after construction (its rungs read
             // the built world; the raft gate reads the farm plots)
             'farming',
+            // T4 — fishing mounts right after farming (the same governance
+            // shape: the net/bridge rungs register into the ledger at setup
+            // and ride the behavior planning sweep; no tick)
+            'fishing',
             'story',
             'birds',
             'sharks',
@@ -443,6 +447,10 @@ describe('createIslandWorld', () => {
         expect(handle.unicode.palette().kinds.sentient).toBe('🧑');
         expect(handle.unicode.palette().types.coconut).toBe('🥥');
         expect(handle.unicode.palette().types.berry).toBe('🍒');
+        // T4 — the stock taxonomy's fish emoji stays (the shared canvas
+        // package owns it; the glyph is DORMANT: no ground entry is ever
+        // typed 'fish' again — the water stocks no fish to draw — so no
+        // wild-fish indicator can appear at any zoom, hover or inspector)
         expect(handle.unicode.palette().types.fish).toBe('🐟');
     });
 

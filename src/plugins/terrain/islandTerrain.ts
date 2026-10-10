@@ -250,23 +250,9 @@ export const ROCK_NEIGHBOR_CARDINAL = 0.1;
 /** Coverage penalty per DIAGONAL highland neighbor — half the cardinal. */
 export const ROCK_NEIGHBOR_DIAGONAL = 0.05;
 
-/**
- * Meadow TREE INGRESS per cardinal forest neighbor — the localized tree
- * seeding a meadow tile gains along the edge it shares with the woods (the
- * grassland complementing the forest border). The spots are the fine cells
- * closest to that shared edge (meadowIngressSpots), so the ingress stays a
- * thin fringe, never a full stand.
- */
-export const MEADOW_INGRESS_CARDINAL = 8;
-
-/**
- * Meadow tree ingress per diagonal forest neighbor — the corner fringe.
- * Raised 2 → 3 for the resource-density fix (T2): thin woodland borders
- * read as bare meadow; the fuller corner fringe keeps the woods' edges
- * continuous (a meadow sharing 1 cardinal + 1 diagonal forest edge now
- * ingresses 8 + 3 = 11 spots, not 8).
- */
-export const MEADOW_INGRESS_DIAGONAL = 3;
+// (R1 — the fixed meadow ingress quotas MEADOW_INGRESS_CARDINAL/DIAGONAL
+//  retired: the ingress fringe is the meadow side of the shared forest SEAM
+//  now — seamSpots' meander sets its shape and size per edge, no quota.)
 
 // ── The river carving (R4) ───────────────────────────────────────────────────
 //
@@ -332,6 +318,234 @@ export const forestTreeCount = (width: number, height: number): number =>
 
 /** One neighbor direction ({ dx, dy } — the NEIGHBOR_OFFSETS element shape). */
 type Offset = { dx: number; dy: number };
+
+// ── The scale-0 EDGE WEAVE (R1 — natural neighbor blending) ──────────────────
+//
+// The zoomed interior of a tile used to end at its borders the way it began:
+// every fine cell inherited the parent column, so two neighboring tiles of
+// different terrain met along a perfectly straight world line, and the only
+// edge treatments were FIXED GEOMETRY — the checkerboard rock spill
+// (rockSpillSpots) and the distance-ranked meadow ingress strip
+// (meadowIngressSpots). The god's complaint: the scale-0 edges read as
+// script, not as country.
+//
+// The EDGE WEAVE replaces the fixed geometry with ONE shared, deterministic
+// seam mechanism. Every shared border of two adjacent tiles is a SEAM keyed
+// by BOTH tile addresses (`seam:<low>~<high>` — a stable spatial key in an
+// independent stream namespace); ONE keyed stream derives a smooth meander
+// (a low-frequency sine quantized to a boundary offset o(t) in
+// [−BLEND_MAX_PUSH, +BLEND_MAX_PUSH] along the edge) that BOTH tiles read,
+// so the two zoomed interiors agree on where the boundary wanders: the side
+// the offset pushes into converts its outermost fine cells toward the
+// NEIGHBOR's terrain — the meadow grows into the wood, the wood into the
+// meadow — one meandering ecotone instead of a walled line. Sparse FEATHER
+// wisps (BLEND_FEATHER_CHANCE per edge position) put the occasional lone
+// cell one step beyond the band — irregularity without speckle.
+//
+//   WHAT CONVERTS — the pair table below (lendSurface): the blend cell keeps
+//     its parent column and gains the neighbor's SURFACE (a grass patch in
+//     the wood, a canopy patch on the slope, a sand tongue on the grass, a
+//     gravel scree at the rock's foot — the rock look carries NO stock: the
+//     finite stone never clones into a neighboring-biome cell, R2). The two
+//     richer pairs keep their treatments: forest→highland blends as the
+//     STONE-CROWNED boulder carve (generation pass 3 below), meadow→forest
+//     as the REAL TREE INGRESS (the stand the lumber chop works).
+//   WATER — a land tile beside water (the sea, a basin, or a river ford)
+//     waves a WATERLINE along the shared edge (the same sea-shaped columns
+//     the shore mask lays): reach |o(t)| fine cells, one voxel deep (two on
+//     ocean), fresh basins and rivers lending their own biome. Water flows
+//     onto the LAND side only — R2: a WATER PARENT (ocean, shallows, lake,
+//     pond) blends NOTHING, so no land surface, decoration or deposit ever
+//     creeps into standing water. T3 CARVES THE RIVER OUT of that rule: the
+//     passable ford zooms into the living riverbank (riverFineMask below) —
+//     the organic fresh-water body ringed by SYNTHESIZED dry banks carried
+//     in EdgeMask.bank, a representation DISTINCT from the borrowed land
+//     looks (a bank is raised new ground, not a surface swap onto the
+//     parent's water column). The river's water stays the INHERITED parent
+//     column — never a ShoreMask spot — so the ford's passability survives
+//     untouched (fineCellDraft's water branch would hard-impassable it);
+//     the basins and the sea still zoom 100% pure.
+//   MAJORITY — the conversions are edge bands (≤ BLEND_MAX_PUSH cells deep)
+//     on a minority of each edge's positions, so the parent's own look keeps
+//     the dominant majority the coarse fold reads (R3: scale 1 barely moves).
+//   AGREEMENT — edgeMask below is the SINGLE source of truth: the
+//     materializer (generateSubCanvas), the fast histogram (surfaceKeyCounts)
+//     and generation pass 3 (the carve/ingress records) all read the SAME
+//     mask, so the zoomed board, the coarse fold and the recorded deposits
+//     agree cell-for-cell.
+//   CACHE — the mask reads the tile's EIGHT NEIGHBORS (biome + passable), so
+//     the sub-grid fingerprint stamps them (fingerprintOf / the tileDetails
+//     dominantStamp mirror): a cached grid never outlives the neighborhood it
+//     blended toward (the forest ecology's spread conversions mutate neighbor
+//     biomes — the cache-correctness rule for neighbor-derived data, the same
+//     rule the carve already follows).
+
+/** Max fine cells one seam may push into a tile per edge position. */
+export const BLEND_MAX_PUSH = 2;
+
+/** Feather chance per edge position — the sparse lone wisps beyond the band. */
+export const BLEND_FEATHER_CHANCE = 0.05;
+
+/** The land look a blend spot lends the tile (the neighbor's surface). */
+export type BlendLook = 'grass' | 'forest' | 'sand' | 'rock';
+
+/** The per-tile blend plan: the water spots, the land-look spots and the river banks. */
+export type EdgeMask = {
+    /** Fine "x,y" → the water the spot materializes as (shore ∪ seams). */
+    water: ShoreMask;
+    /** Fine "x,y" → the neighbor's surface the spot lends (plain swaps). */
+    land: Map<string, BlendLook>;
+    /**
+     * T3 — fine "x,y" → the synthesized dry riverbank the spot materializes
+     * as (river parents only — riverFineMask below; everything the bank plan
+     * does not claim is the river's inherited ford water). Empty for every
+     * non-river parent.
+     */
+    bank: Map<string, RiverBank>;
+};
+
+/**
+ * The plain surface one neighbor's terrain lends THIS tile at a blended spot
+ * (undefined: the pair is governed by a richer treatment — the forest→highland
+ * carve, the meadow→forest tree ingress — or the neighbor is water, whose
+ * waterline seams are handled separately). Same-biome pairs never seam.
+ */
+const lendSurface = (self: Biome, other: Biome): BlendLook | undefined => {
+    if (other === 'meadow') {
+        return self === 'meadow' ? undefined : 'grass';
+    }
+    if (other === 'forest') {
+        // The meadow side of a meadow↔forest seam is the TREE INGRESS's —
+        // not a plain surface swap
+        return self === 'forest' || self === 'meadow' ? undefined : 'forest';
+    }
+    if (other === 'highland') {
+        // The forest side of a forest↔highland seam is the BOULDER CARVE's
+        return self === 'highland' || self === 'forest' ? undefined : 'rock';
+    }
+    if (other === 'beach') {
+        return self === 'beach' ? undefined : 'sand';
+    }
+    // Water neighbors — the waterline seams govern (edgeMask)
+    return undefined;
+};
+
+/**
+ * The shared seam of two adjacent tiles: THIS side's blend spots ("x,y" →
+ * intrusion depth 1..2). Both tiles of the seam call it with their own key
+ * and the neighbor's — the canonical `seam:<low>~<high>` stream derives ONE
+ * meander (the quantized sine o(t)) both sides read, so the composite
+ * boundary is a single wavy line, not two independent scars. The stream
+ * draws in a FIXED order (the wave's three parameters, then one roll per
+ * edge position — never conditionally), so the two tiles' derivations stay
+ * bit-aligned. Cardinal edges convert |o(t)| cells deep; a diagonal seam is
+ * the shared corner (a wedge: the corner cell, its two flanks joining when
+ * the push runs deep and the flank roll agrees). Pure, no allocation leaks.
+ */
+export const seamSpots = (
+    width: number,
+    height: number,
+    seed: number,
+    selfKey: string,
+    otherKey: string,
+    offset: Offset,
+): Map<string, number> => {
+    const spots = new Map<string, number>();
+    if (offset.dx === 0 && offset.dy === 0) {
+        return spots;
+    }
+    // The canonical pair — the low address key sorts first; a tile converts
+    // when the meander pushes INTO it (o(t) negative pushes the canonical-A
+    // side, positive the canonical-B side)
+    const [keyA, keyB] = selfKey <= otherKey ? [selfKey, otherKey] : [otherKey, selfKey];
+    const selfFirst = selfKey === keyA;
+    const halfX = (width - 1) / 2;
+    const halfY = (height - 1) / 2;
+    const diagonal = offset.dx !== 0 && offset.dy !== 0;
+    const stream = randomKeyed(seed, `seam:${keyA}~${keyB}`);
+    const phase = stream() * Math.PI * 2;
+    const cycles = 1 + Math.floor(stream() * 2);
+    const maxPush = 1 + Math.floor(stream() * 2);
+    // The edge's traversal: a cardinal edge runs its axis' full length in
+    // grid-global order (t indexes y for vertical seams, x for horizontal —
+    // identical for both tiles); a diagonal seam is the shared corner (t = 0)
+    const length = diagonal ? 1 : offset.dx !== 0 ? height : width;
+    // The quantized boundary offset o(t) ∈ [−maxPush, maxPush] — the ONE
+    // meander both tiles read (round keeps the runs contiguous: adjacent
+    // positions differ by at most the sine's step)
+    const pushAt = (t: number): number => {
+        const wave = Math.sin(phase + (2 * Math.PI * cycles * t) / length);
+        return Math.round(((wave + 1) / 2 - 0.5) * 2 * maxPush);
+    };
+    // This side's fine spot for a depth-d conversion at edge position t —
+    // the cells step INTO the tile from the shared edge (depth 1 is the
+    // outermost fine row/column)
+    const spotAt = (t: number, depth: number): string => {
+        if (diagonal) {
+            const cornerX = offset.dx < 0 ? -halfX : halfX;
+            const cornerY = offset.dy < 0 ? -halfY : halfY;
+            return `${cornerX},${cornerY}`;
+        }
+        if (offset.dx !== 0) {
+            const edgeX = offset.dx < 0 ? -halfX : halfX;
+            return `${edgeX - offset.dx * (depth - 1)},${t - halfY}`;
+        }
+        const edgeY = offset.dy < 0 ? -halfY : halfY;
+        return `${t - halfX},${edgeY - offset.dy * (depth - 1)}`;
+    };
+    // The diagonal wedge's two flanks (one along each edge sharing the corner)
+    const flankAt = (): string[] => {
+        const cornerX = offset.dx < 0 ? -halfX : halfX;
+        const cornerY = offset.dy < 0 ? -halfY : halfY;
+        return [`${cornerX - offset.dx},${cornerY}`, `${cornerX},${cornerY - offset.dy}`];
+    };
+    for (let t = 0; t < length; t++) {
+        const o = pushAt(t);
+        const depth = Math.abs(o);
+        // Only the tile the push runs into converts (o < 0 pushes canonical-A)
+        const mine = selfFirst ? o < 0 : o > 0;
+        if (diagonal) {
+            // The flank roll draws EVERY position (both tiles' streams stay
+            // aligned — no conditional draws on a shared stream)
+            const flankRoll = stream();
+            if (mine && depth > 0) {
+                spots.set(spotAt(t, 1), 1);
+                if (depth >= 2 && flankRoll < 0.5) {
+                    flankAt().forEach((key) => spots.set(key, 1));
+                }
+            }
+        } else {
+            if (mine && depth > 0) {
+                for (let d = 1; d <= depth; d++) {
+                    spots.set(spotAt(t, d), d);
+                }
+            }
+            // THE FEATHER — a sparse lone wisp: at a quiet position either
+            // side may grow a single cell (the side roll picks, both tiles
+            // agree); at a shallow band position the wisp runs one deeper.
+            // The rolls draw every position — aligned streams
+            const roll = stream();
+            if (roll < BLEND_FEATHER_CHANCE && depth <= 1) {
+                if (o === 0) {
+                    if (stream() < 0.5 ? selfFirst : !selfFirst) {
+                        spots.set(spotAt(t, 1), 1);
+                    }
+                } else if (mine) {
+                    spots.set(spotAt(t, 2), 2);
+                }
+            }
+        }
+    }
+    return spots;
+};
+
+/** Row-major "x,y" sort — the stable layout the recorded treatments stamp. */
+const rowMajorSort = (keys: Iterable<string>): string[] =>
+    Array.from(keys).sort((left, right) => {
+        const [lx, ly] = left.split(',').map(Number);
+        const [rx, ry] = right.split(',').map(Number);
+        return ly - ry || lx - rx;
+    });
 
 /** The biome classes of a tile's eight IN-GRID neighbors. */
 export type Neighborhood = {
@@ -410,134 +624,68 @@ export const forestCoverageOf = (forest: Offset[], rock: Offset[], meadow: Offse
 
 /**
  * The rock-spillover band of a forest tile: the fine spots ("x,y" keys,
- * row-major order) a rocky neighbor's boulders spill onto. A cardinal
- * highland spills one full fine ROW/COLUMN deep along the shared edge; a
- * diagonal highland spills the corner wedge (the corner fine cell + its two
- * edge flanks). The checkerboard parity ((x + y) even — normalized for the
- * centered negative coordinates) halves the band, so scree scatters along
- * the edge instead of walling it. The zoomed interior crowns each spot's
- * column with a boulder voxel (generateSubCanvas) and the stand seeding
- * refuses them (no tree stands on a boulder). Pure — no draws, row-major
- * output order stamped into the sub-grid fingerprint.
+ * row-major order) a rocky neighbor's boulders spill onto. R1's EDGE WEAVE —
+ * the band is the FOREST side of each shared highland SEAM (seamSpots: the
+ * seeded meander both tiles read), no longer a checkerboard: the boulders
+ * follow the same wavy boundary the highland's own grass patches do. Spots
+ * falling on the tile's WATER spots are refused (no boulder stands in water
+ * — R2). The zoomed interior crowns each spot's column with a boulder voxel
+ * (generateSubCanvas) and the stand seeding refuses them (no tree stands on
+ * a boulder). Pure — the streams are keyed, row-major output order stamped
+ * into the sub-grid fingerprint.
  */
-export const rockSpillSpots = (width: number, height: number, rock: Offset[]): string[] => {
-    const halfX = (width - 1) / 2;
-    const halfY = (height - 1) / 2;
-    // The checkerboard: (x + y) even. The centered coordinates go negative,
-    // and JavaScript's % keeps the sign — normalize before the even test.
-    const bouldered = (x: number, y: number): boolean => ((x + y) % 2 + 2) % 2 === 0;
+export const rockSpillSpots = (
+    width: number,
+    height: number,
+    seed: number,
+    origin: { x: number; y: number },
+    rock: Offset[],
+    refuse?: { has: (key: string) => boolean },
+): string[] => {
+    const selfKey = tilePathKey([{ x: origin.x, y: origin.y }]);
     const spots = new Set<string>();
     arrayEach(rock, ({ value: offset }) => {
-        if (offset.dx === 0) {
-            // Cardinal north/south — the first fine row on that edge
-            const y = offset.dy < 0 ? -halfY : halfY;
-            for (let x = -halfX; x <= halfX; x++) {
-                if (bouldered(x, y)) {
-                    spots.add(`${x},${y}`);
-                }
+        const otherKey = tilePathKey([{ x: origin.x + offset.dx, y: origin.y + offset.dy }]);
+        seamSpots(width, height, seed, selfKey, otherKey, offset).forEach((_reach, key) => {
+            if (!refuse?.has(key)) {
+                spots.add(key);
             }
-        } else if (offset.dy === 0) {
-            // Cardinal west/east — the first fine column on that edge
-            const x = offset.dx < 0 ? -halfX : halfX;
-            for (let y = -halfY; y <= halfY; y++) {
-                if (bouldered(x, y)) {
-                    spots.add(`${x},${y}`);
-                }
-            }
-        } else {
-            // Diagonal — the corner wedge: the corner fine cell plus its two
-            // flanks (one along each edge sharing the corner)
-            const cornerX = offset.dx < 0 ? -halfX : halfX;
-            const cornerY = offset.dy < 0 ? -halfY : halfY;
-            arrayEach(
-                [
-                    { x: cornerX, y: cornerY },
-                    { x: cornerX - offset.dx, y: cornerY },
-                    { x: cornerX, y: cornerY - offset.dy },
-                ],
-                ({ value: spot }) => {
-                    if (bouldered(spot.x, spot.y)) {
-                        spots.add(`${spot.x},${spot.y}`);
-                    }
-                },
-            );
-        }
+        });
     });
-    // Row-major output order — the stable layout the fingerprint stamps
-    return Array.from(spots).sort((left, right) => {
-        const [lx, ly] = left.split(',').map(Number);
-        const [rx, ry] = right.split(',').map(Number);
-        return ly - ry || lx - rx;
-    });
+    return rowMajorSort(spots);
 };
 
 /**
- * The meadow TREE INGRESS spots: the fine cells ("x,y" keys) a meadow tile
- * gains trees on, LOCALIZED along the edges it shares with the woods. Each
- * forest-facing edge claims its own fringe — MEADOW_INGRESS_CARDINAL spots
- * along a cardinal edge, MEADOW_INGRESS_DIAGONAL at a shared corner — taken
- * in the edges' NEIGHBOR_OFFSETS order, each edge ranking its fine cells by
- * distance to THAT edge (cardinal: the perpendicular distance; diagonal: the
- * Chebyshev distance to the shared corner), ties breaking row-major. A spot
- * an earlier edge claimed is skipped (shared corners belong to the first
- * edge that reaches them), so EVERY shared edge gains its fringe — the
- * ingress stays a thin tree border hugging the woods, never crowding one
- * edge while starving another. The same selection the generation pass and
- * the stand seeding both read (one source of truth — the deposit count IS
- * this list's length). Pure — no draws.
+ * The meadow TREE INGRESS spots: the fine cells ("x,y" keys, row-major
+ * order) a meadow tile gains trees on, LOCALIZED along the edges it shares
+ * with the woods. R1's EDGE WEAVE — the fringe is the MEADOW side of each
+ * shared forest SEAM (seamSpots: the seeded meander both tiles read; the
+ * wood grows clearings exactly where the meadow does not grow trees), no
+ * longer a fixed distance-ranked strip. Spots falling on the tile's WATER
+ * spots are refused (`refuse` — the tile's own waterline: no tree stands on
+ * water, R2) and the deposit IS the filtered list's length, so generation
+ * pass 3 and the stand seeding agree (one source of truth). Pure — no
+ * unordered draws.
  */
-export const meadowIngressSpots = (width: number, height: number, forest: Offset[]): string[] => {
-    const halfX = (width - 1) / 2;
-    const halfY = (height - 1) / 2;
-    if (forest.length === 0) {
-        return [];
-    }
-    // Distance from a fine spot to one forest-facing edge (cardinal: the
-    // perpendicular; diagonal: the Chebyshev distance to the shared corner —
-    // the max over the axes the offset actually crosses)
-    const edgeDistance = (x: number, y: number, offset: Offset): number => {
-        let distance = 0;
-        if (offset.dx !== 0) {
-            distance = Math.max(distance, offset.dx > 0 ? halfX - x : x + halfX);
-        }
-        if (offset.dy !== 0) {
-            distance = Math.max(distance, offset.dy > 0 ? halfY - y : y + halfY);
-        }
-        return distance;
-    };
-    // Per-edge allocation in the fixed NEIGHBOR_OFFSETS order — each shared
-    // edge fills its own quota from its closest unclaimed spots
-    const taken = new Set<string>();
+export const meadowIngressSpots = (
+    width: number,
+    height: number,
+    seed: number,
+    origin: { x: number; y: number },
+    forest: Offset[],
+    refuse?: { has: (key: string) => boolean },
+): string[] => {
+    const selfKey = tilePathKey([{ x: origin.x, y: origin.y }]);
+    const spots = new Set<string>();
     arrayEach(forest, ({ value: offset }) => {
-        const quota = offset.dx !== 0 && offset.dy !== 0 ? MEADOW_INGRESS_DIAGONAL : MEADOW_INGRESS_CARDINAL;
-        const ranked: Array<{ key: string; distance: number; order: number }> = [];
-        for (let row = 0; row < height; row++) {
-            for (let col = 0; col < width; col++) {
-                const x = col - halfX;
-                const y = row - halfY;
-                ranked.push({ key: `${x},${y}`, distance: edgeDistance(x, y, offset), order: ranked.length });
+        const otherKey = tilePathKey([{ x: origin.x + offset.dx, y: origin.y + offset.dy }]);
+        seamSpots(width, height, seed, selfKey, otherKey, offset).forEach((_reach, key) => {
+            if (!refuse?.has(key)) {
+                spots.add(key);
             }
-        }
-        ranked.sort((left, right) => left.distance - right.distance || left.order - right.order);
-        // The closest unclaimed spots fill the quota (clamped to the grid —
-        // a tiny board fully ringed by woods ingresses every cell it has)
-        let claimed = 0;
-        for (let index = 0; index < ranked.length && claimed < quota; index++) {
-            const spot = ranked[index];
-            if (taken.has(spot.key)) {
-                continue;
-            }
-            taken.add(spot.key);
-            claimed = claimed + 1;
-        }
+        });
     });
-    // Row-major output order — the stable layout the deposit and the stand
-    // seeding both read
-    return Array.from(taken).sort((left, right) => {
-        const [lx, ly] = left.split(',').map(Number);
-        const [rx, ry] = right.split(',').map(Number);
-        return ly - ry || lx - rx;
-    });
+    return rowMajorSort(spots);
 };
 
 // ── The scale-0 SHORE MASK (R1 — the realistic partial shore) ────────────────
@@ -602,23 +750,33 @@ export const SHORE_DEEP_LAYERS = 2;
 export type ShoreWater = {
     /** Water voxels above the lowered seabed: 1 = shallows rim, 2 = ocean-deep. */
     depth: number;
-    /** The fresh-basin biome a BASIN neighbor lends (undefined: sea water). */
-    basin?: 'lake' | 'pond';
+    /** The fresh-basin biome a BASIN or RIVER neighbor lends (undefined: sea water). */
+    basin?: 'lake' | 'pond' | 'river';
 };
 
 /** The shore mask of one tile's interior: fine spot "x,y" → its water. */
 export type ShoreMask = Map<string, ShoreWater>;
 
 /** The water class a neighbor lends the shore mask (undefined: not water). */
-type ShoreNeighbor = 'shallow' | 'deep' | 'lake' | 'pond';
+type ShoreNeighbor = 'shallow' | 'deep' | 'lake' | 'pond' | 'river';
 
 /**
  * Classifies one neighbor cell as the water it lends the shore mask: the
  * open ocean is deep water, the shallows rim shallow, the interior fresh
- * basins their own (fresh) water. Dry or missing cells lend nothing.
+ * basins their own (fresh) water — and R1's EDGE WEAVE joins the river
+ * ford: the channel is PASSABLE (the ford's semantics untouched) but it is
+ * WATER, so the shore lays its one-voxel fresh waterline against it and the
+ * river's mouth reads as a river at the zoomed scale. Dry or missing cells
+ * lend nothing.
  */
 const shoreNeighborOf = (cell: TerrainCell | undefined): ShoreNeighbor | undefined => {
-    if (!cell || cell.passable) {
+    if (!cell) {
+        return undefined;
+    }
+    if (cell.biome === 'river') {
+        return 'river';
+    }
+    if (cell.passable) {
         return undefined;
     }
     if (cell.biome === 'ocean') {
@@ -639,7 +797,11 @@ const shoreEdgeName = (offset: Offset): string =>
  * above). `parentCanvas` is the grid the parent sits in (the root canvas at
  * scale 1, a sub-grid deeper) — the mask reads the parent's in-grid
  * neighbors off it, exactly the neighbors the parent tile shares borders
- * with. `pathKey` keys the deep-edge wave streams per tile address.
+ * with. `pathKey` keys the deep-edge wave streams per tile address. R1's
+ * EDGE WEAVE joins the RIVER ford to the shore's water vocabulary: the
+ * passable channel is still water, so a beach tile at a river mouth lays
+ * its one-voxel fresh (basin 'river') waterline against the channel and the
+ * ford's banks stop reading as dry sand flush against dry sand.
  */
 export const shoreMask = (
     parent: TerrainCell,
@@ -686,7 +848,8 @@ export const shoreMask = (
         if (!water) {
             return;
         }
-        const basin: ShoreWater['basin'] = water === 'lake' ? 'lake' : water === 'pond' ? 'pond' : undefined;
+        const basin: ShoreWater['basin'] =
+            water === 'lake' ? 'lake' : water === 'pond' ? 'pond' : water === 'river' ? 'river' : undefined;
         if (offset.dx !== 0 && offset.dy !== 0) {
             // Diagonal water — the corner wedge: the corner fine cell plus
             // one flank along each edge sharing the corner (contiguous, no
@@ -725,8 +888,8 @@ export const shoreMask = (
                 line.push({ x, y });
             }
         }
-        // The waterline's VOXEL depth: shallow seas/basins lap one voxel
-        // deep, the open ocean two (the sea columns' own shapes)
+        // The waterline's VOXEL depth: shallow seas/basins/rivers lap one
+        // voxel deep, the open ocean two (the sea columns' own shapes)
         const lineDepth = water === 'deep' ? 2 : 1;
         // The deep sea's extra INLAND layer — a smooth low-frequency wave
         // over the edge's own keyed stream gates where the shallows tongue
@@ -807,6 +970,621 @@ export const fineWaterColumn = (
         height: ground,
         biome: water.basin ?? deriveBiome('sand', true, water.depth, false),
     };
+};
+
+// ── The scale-0 RIVER FINE MASK (T3 — the living riverbank) ──────────────────
+//
+// A RIVER tile's zoomed interior is no longer a solid ford block: the coarse
+// channel widens into an organic fresh-water body — the channel core plus a
+// seeded floodplain — ringed by DRY banks the land creeps onto. The rule: a
+// scale-0 river tile reads about 60–70% water, the rest surrounding land or
+// islands, the majority still river. Everything is deterministic and a pure
+// function of the parent cell, its in-grid CARDINAL neighbors' biomes, the
+// seed and the tile address:
+//
+//   EDGE PLAN — only cardinal neighbors share an edge, so only they can hand
+//     the channel across the border. A neighbor that is WATER the channel
+//     can flow into (another river course, the open sea — the mouth, or an
+//     interior basin the channel meets) opens a WATER edge: the river lays
+//     its FULL fine row/column along it, so two adjacent river tiles meet
+//     water on water at every shared position and the sea mouth fans onto
+//     the sea's inherited water — the shared neighbor exits need no shared
+//     stream, both tiles derive the same full line from their own edge plan.
+//     A DRY neighbor (beach, meadow, forest, highland) is a LAND edge: its
+//     outermost fine row stays BANK — the river banks against its land
+//     neighbors, the water never spills along a land border (a beach
+//     neighbor's own river waterline laps against the bank from the other
+//     side). A river tile whose cardinal neighbors are all dry keeps the old
+//     pure zoom (defensive — the carve always leaves a channel neighbor;
+//     hand-built fixtures may not).
+//   THE SPINE — the union of half-lines from every water edge to the grid
+//     center: the channel core, ONE cardinally connected body by
+//     construction (a course that turns inside the tile bends the spine
+//     through the center; a single edge grows a source stub). Water wins the
+//     corner where a land edge and a water edge meet (deeper water wins —
+//     the shore mask's own rule).
+//   THE FLOOD — the free cells (nothing forced) sample a seeded lattice
+//     value noise in the INDEPENDENT `riverfine:<pathKey>` stream namespace
+//     (the coarse `river:` jitter, the seams and the shore waves untouched)
+//     and the water GROWS off the spine in noise order: the waterliest
+//     frontier cell admits first, so the flood spreads along the noise's low
+//     contours — organic bays and bars, never speckle. Admission stops at
+//     RIVER_FINE_WATER_TARGET of the whole grid — the 60–70% band's midpoint,
+//     so every normal river tile lands mid-band regardless of its edge plan
+//     (sensible tiny-grid rounding: a jammed frontier simply admits less).
+//     Every admitted cell touched standing water when it entered the
+//     frontier, so the channel stays connected by construction; a cell
+//     skipped at its rank (the frontier was dry then) stays bank even when
+//     later growth surrounds it — the SEEDED ISLANDS.
+//   THE BANKS — every dry cell reads its material from its position against
+//     the final water: 8-adjacent to water is the WET SAND ring (the beach
+//     hugging the channel, the bays and every island shore), deeper dry
+//     ground grows GRASS. The bank column is SYNTHESIZED (raised dry ground
+//     at the water line — never the inherited ford column, which carries the
+//     water): riverBankColumn below.
+//   PARITY + CACHE — the mask reads ONLY inputs the sub-grid fingerprint
+//     already stamps (the parent's own fields + each in-grid neighbor's
+//     biome — tileDetails' dominantStamp mirrors the same stamp, so no
+//     fingerprint extension and no tileDetails edit); generateSubCanvas (the
+//     materializer) and surfaceKeyCounts (the fast histogram) both read the
+//     SAME mask, so the zoomed board and the coarse majority fold agree
+//     cell-for-cell; and the deposit scatter refuses bank spots (no finite
+//     stock stands on synthesized ground — subPrep).
+
+/** The water share of a river tile's zoomed interior — the 60–70% band's midpoint. */
+export const RIVER_FINE_WATER_TARGET = 0.65;
+
+/** The lattice scale of the flood noise — the organic blob size in fine cells. */
+export const RIVER_FINE_NOISE_SCALE = 3;
+
+/** The bank material one dry river fine cell materializes as. */
+export type RiverBank = {
+    /** 'sand' — the wet beach ring hugging the water; 'grass' — the dry meadow bank. */
+    surface: 'sand' | 'grass';
+};
+
+/**
+ * The SYNTHESIZED raised dry column of one river fine bank cell — the ground
+ * the land creeps onto the river as. The column stands AT the water line (the
+ * dry sandbar elevation generateIsland gives shore columns — a column exactly
+ * at the water line is dry): gravel bedrock ×(ground−2), a dirt underlayer at
+ * ground ≥ 2, the bank's surface voxel — and NO water voxel under the
+ * synthetic bank. Its resources are the GROUND SUPPLY of its own voxels (the
+ * dry-column rule: dirt and the surface material supply their resource at the
+ * symbolic ×1, never depleted; the gravel bedrock supplies nothing) — NO
+ * finite stock and no tree stands on synthesized ground.
+ */
+export const riverBankColumn = (
+    waterLevel: number,
+    bank: RiverBank,
+): { voxels: VoxelKind[]; height: number; biome: Biome; resources: TileResources } => {
+    const ground = Math.max(1, waterLevel);
+    const stack: VoxelKind[] = [];
+    if (ground >= 3) {
+        for (let bedrock = 0; bedrock < ground - 2; bedrock++) {
+            stack.push('gravel');
+        }
+    }
+    if (ground >= 2) {
+        stack.push('dirt');
+    }
+    stack.push(bank.surface);
+    const resources: TileResources = {};
+    if (stack.includes('dirt')) {
+        resources.dirt = 1;
+    }
+    resources[bank.surface] = 1;
+    return {
+        voxels: stack,
+        height: ground,
+        biome: bank.surface === 'sand' ? 'beach' : 'meadow',
+        resources,
+    };
+};
+
+/**
+ * The dry-bank plan of one RIVER tile's zoomed interior (see the rule block
+ * above): fine spot "x,y" → its synthesized bank. Everything the plan does
+ * NOT bank is the river's inherited ford water. `pathKey` keys the flood
+ * stream per tile address (the `riverfine:` namespace); `parentCanvas` is the
+ * grid the parent sits in — the edge plan reads the parent's in-grid cardinal
+ * neighbors off it. Pure: same inputs → the identical plan.
+ */
+export const riverFineMask = (
+    parent: TerrainCell,
+    pathKey: string,
+    parentCanvas: Pick<Canvas, 'width' | 'height' | 'cells'>,
+    seed: number,
+): Map<string, RiverBank> => {
+    const width = parentCanvas.width;
+    const height = parentCanvas.height;
+    const halfX = (width - 1) / 2;
+    const halfY = (height - 1) / 2;
+    const total = width * height;
+    const banks = new Map<string, RiverBank>();
+    // The parent's own grid cell lookup — the same centered read cellOn does
+    const neighborAt = (dx: number, dy: number): TerrainCell | undefined => {
+        const nx = parent.x + dx;
+        const ny = parent.y + dy;
+        if (ny < -halfY || ny > halfY || nx < -halfX || nx > halfX) {
+            return undefined;
+        }
+        return parentCanvas.cells[(ny + halfY) * width + (nx + halfX)];
+    };
+    // THE EDGE PLAN — the four cardinal neighbors decide where the channel
+    // enters/exits and where the banks hold the border
+    const CARDINALS: Array<[number, number]> = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+    const isChannelWater = (biome: Biome): boolean =>
+        biome === 'river' || biome === 'ocean' || biome === 'shallows' ||
+        biome === 'lake' || biome === 'pond';
+    const edgeWater = CARDINALS.map(([dx, dy]) => {
+        const neighbor = neighborAt(dx, dy);
+        return !!neighbor && isChannelWater(neighbor.biome);
+    });
+    // A river tile with no channel edge keeps the old pure zoom (defensive:
+    // the carve always leaves a channel neighbor; hand-built fixtures may not)
+    if (!edgeWater.some(Boolean)) {
+        return banks;
+    }
+    // The outermost fine line along one cardinal edge (the shared border)
+    const edgeLine = (dx: number, dy: number): Array<{ x: number; y: number }> => {
+        const line: Array<{ x: number; y: number }> = [];
+        if (dx === 0) {
+            const y = dy < 0 ? -halfY : halfY;
+            for (let x = -halfX; x <= halfX; x++) {
+                line.push({ x, y });
+            }
+        } else {
+            const x = dx < 0 ? -halfX : halfX;
+            for (let y = -halfY; y <= halfY; y++) {
+                line.push({ x, y });
+            }
+        }
+        return line;
+    };
+    // The water field, row-major — every cell starts DRY; the plan opens the
+    // channel edges and the flood admits the rest. `forced` marks the plan's
+    // own cells (excluded from the flood's noise pool).
+    const indexAt = (x: number, y: number): number => (y + halfY) * width + (x + halfX);
+    const water = new Array<boolean>(total).fill(false);
+    const forced = new Uint8Array(total);
+    // 1. THE LAND BOUNDARY — the full fine row along every land edge is bank
+    CARDINALS.forEach(([dx, dy], direction) => {
+        if (edgeWater[direction]) {
+            return;
+        }
+        edgeLine(dx, dy).forEach(({ x, y }) => {
+            const index = indexAt(x, y);
+            water[index] = false;
+            forced[index] = 1;
+        });
+    });
+    // 2. THE CHANNEL — every water edge lays its full row/column (the shared
+    //    exit; water wins the shared corner over the bank boundary), and the
+    //    spine — the half-line from the edge to the center — joins them into
+    //    ONE connected channel core
+    CARDINALS.forEach(([dx, dy], direction) => {
+        if (!edgeWater[direction]) {
+            return;
+        }
+        edgeLine(dx, dy).forEach(({ x, y }) => {
+            const index = indexAt(x, y);
+            water[index] = true;
+            forced[index] = 1;
+        });
+        // The spine's half-line: from the edge's midpoint inward to the
+        // center cell (inclusive)
+        if (dx === 0) {
+            const end = dy < 0 ? -halfY : halfY;
+            const stepY = dy < 0 ? 1 : -1;
+            for (let y = end; ; y += stepY) {
+                const index = indexAt(0, y);
+                water[index] = true;
+                forced[index] = 1;
+                if (y === 0) {
+                    break;
+                }
+            }
+        } else {
+            const end = dx < 0 ? -halfX : halfX;
+            const stepX = dx < 0 ? 1 : -1;
+            for (let x = end; ; x += stepX) {
+                const index = indexAt(x, 0);
+                water[index] = true;
+                forced[index] = 1;
+                if (x === 0) {
+                    break;
+                }
+            }
+        }
+    });
+    // 3. THE FLOOD — the free cells grow the water off the spine with a
+    //    PRIM-STYLE FRONTIER: the noise samples come from a keyed lattice in
+    //    the INDEPENDENT `riverfine:<pathKey>` stream namespace (the coarse
+    //    `river:` jitter, the seams and the shore waves untouched; latticeNoise
+    //    is declared further down the module — the reference resolves lazily,
+    //    the mask only ever runs at zoom time), and every step admits the
+    //    WATERLIEST cell of the current frontier (the free cells touching
+    //    standing water). The flood thus spreads along the noise's low
+    //    contours — organic bays and bars, never speckle — and can never
+    //    freeze behind a noise ridge (a single sorted pass would strand the
+    //    growth: cells passed while dry are never revisited). Every admitted
+    //    cell touches standing water, so the channel stays ONE cardinally
+    //    connected body by construction; the cells still dry when the water
+    //    share reaches the target are the banks — interior dry blobs the
+    //    flood surrounded are the SEEDED ISLANDS.
+    const random = randomKeyed(seed, `riverfine:${pathKey}`);
+    const noise = latticeNoise(random, width, height, RIVER_FINE_NOISE_SCALE);
+    // The cardinal steps — the connectivity vocabulary the coarse walk uses
+    const STEPS: Array<[number, number]> = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+    const inRange = (x: number, y: number): boolean =>
+        y >= -halfY && y <= halfY && x >= -halfX && x <= halfX;
+    // The frontier heap: free (nothing forced) dry cells 4-adjacent to
+    // standing water, keyed by their noise sample. A flat array scanned for
+    // the minimum each admission — at most total entries, total admissions:
+    // O(total²) worst case, microseconds at zoom scale.
+    const heap: Array<{ index: number; sample: number }> = [];
+    const heaped = new Uint8Array(total);
+    const sampleOf: number[] = new Array<number>(total);
+    for (let index = 0; index < total; index++) {
+        const x = (index % width) - halfX;
+        const y = Math.floor(index / width) - halfY;
+        sampleOf[index] = noise(x, y);
+    }
+    // Seed the frontier with the dry free cells the channel already touches
+    for (let index = 0; index < total; index++) {
+        if (water[index] || forced[index]) {
+            continue;
+        }
+        const x = (index % width) - halfX;
+        const y = Math.floor(index / width) - halfY;
+        if (STEPS.some(([dx, dy]) => inRange(x + dx, y + dy) && water[indexAt(x + dx, y + dy)])) {
+            heaped[index] = 1;
+            heap.push({ index, sample: sampleOf[index] });
+        }
+    }
+    // The growth — always admit the frontier's waterliest cell (ties break
+    // row-major: deterministic, no stream involved) until the water share
+    // reaches the target
+    const target = Math.round(RIVER_FINE_WATER_TARGET * total);
+    let standing = 0;
+    for (let index = 0; index < total; index++) {
+        if (water[index]) {
+            standing = standing + 1;
+        }
+    }
+    while (standing < target && heap.length > 0) {
+        let best = 0;
+        for (let slot = 1; slot < heap.length; slot++) {
+            const candidate = heap[slot];
+            const champion = heap[best];
+            if (candidate.sample < champion.sample ||
+                (candidate.sample === champion.sample && candidate.index < champion.index)) {
+                best = slot;
+            }
+        }
+        const { index } = heap[best];
+        heap[best] = heap[heap.length - 1];
+        heap.pop();
+        // The cell may have been wetted by no path to here — but a heaped
+        // cell is dry by construction (only dry free cells enter the heap
+        // and an admitted cell's entry was popped with it)
+        const x = (index % width) - halfX;
+        const y = Math.floor(index / width) - halfY;
+        water[index] = true;
+        standing = standing + 1;
+        // The newly wet cell extends the frontier to its dry free neighbors
+        STEPS.forEach(([dx, dy]) => {
+            const nx = x + dx;
+            const ny = y + dy;
+            if (!inRange(nx, ny)) {
+                return;
+            }
+            const nIndex = indexAt(nx, ny);
+            if (!water[nIndex] && !forced[nIndex] && !heaped[nIndex]) {
+                heaped[nIndex] = 1;
+                heap.push({ index: nIndex, sample: sampleOf[nIndex] });
+            }
+        });
+    }
+    // 4. THE BANK SURFACES — wet sand hugging the water, dry grass deeper in
+    for (let index = 0; index < total; index++) {
+        if (water[index]) {
+            continue;
+        }
+        const x = (index % width) - halfX;
+        const y = Math.floor(index / width) - halfY;
+        const wet = NEIGHBOR_OFFSETS.some((offset) => {
+            const nx = x + offset.dx;
+            const ny = y + offset.dy;
+            return inRange(nx, ny) && water[indexAt(nx, ny)];
+        });
+        banks.set(`${x},${y}`, { surface: wet ? 'sand' : 'grass' });
+    }
+    return banks;
+};
+
+// ── The blend cell builder + the per-tile blend plan ─────────────────────────
+
+/**
+ * The draft fields of one fine cell of a parent's sub-grid — exactly what
+ * generateSubCanvas materializes and surfaceKeyCounts keys. Built by
+ * fineCellDraft below (the SINGLE builder both readers run — the
+ * materializer/histogram agreement is structural, not lucky).
+ */
+type FineFlags = {
+    /** A scattered finite deposit record landing on the spot. */
+    deposit?: TileResources;
+    /** The persistent stand's tree standing on the spot. */
+    tree?: boolean;
+    /** A visible stone crown (the carve's stock-backed boulder). */
+    crown?: boolean;
+    /** A boulder crown (the carve band's gravel stack). */
+    rock?: boolean;
+    /** A blend spot: the neighbor's surface the cell lends (plain swaps). */
+    look?: BlendLook;
+    /** A water spot: the sea-shaped column the cell materializes as. */
+    water?: ShoreWater;
+    /**
+     * T3 — a river parent's synthesized dry bank: the raised column the spot
+     * materializes as (disjoint from `water` — the river's ford water is the
+     * inherited column, never a water spot).
+     */
+    bank?: RiverBank;
+};
+
+/**
+ * Applies one blend look to a fine cell's draft — the transformation the
+ * materializer and the histogram both run. The cell keeps its parent column
+ * and gains the neighbor's SURFACE (voxel + biome + the borrowed ground
+ * supply); a canopy never stands under a borrowed surface (only the forest
+ * patch keeps one); the rock look strips the ground supply (bare scree
+ * gathers nothing) and carries NO stock — the finite stone never clones into
+ * a neighboring-biome cell (R2). Mutates the passed stack/resources.
+ */
+const applyBlendLook = (stack: VoxelKind[], resources: TileResources, look: BlendLook): Biome => {
+    if (look !== 'forest') {
+        // The borrowed surface replaces the canopy — the wood's clearing,
+        // the sand tongue and the scree carry no standing woods of their own
+        const canopy = stack.indexOf('forest');
+        if (canopy !== -1) {
+            stack.splice(canopy, 1);
+        }
+    }
+    if (look === 'grass') {
+        if (stack[stack.length - 1] !== 'grass') {
+            stack.push('grass');
+        }
+        resources.grass = Math.max(resources.grass ?? 0, 1);
+        return 'meadow';
+    }
+    if (look === 'forest') {
+        if (stack[stack.length - 1] !== 'forest') {
+            stack.push('forest');
+        }
+        return 'forest';
+    }
+    if (look === 'sand') {
+        if (stack[stack.length - 1] !== 'sand') {
+            stack.push('sand');
+        }
+        resources.sand = Math.max(resources.sand ?? 0, 1);
+        return 'beach';
+    }
+    // THE ROCK — bare scree: the gravel crown, the ground supply stripped
+    if (stack[stack.length - 1] !== 'gravel') {
+        stack.push('gravel');
+    }
+    delete resources.dirt;
+    delete resources.grass;
+    delete resources.sand;
+    return 'highland';
+};
+
+/**
+ * Builds the EXACT fine cell draft for one spot of a parent's sub-grid — the
+ * shared builder generateSubCanvas materializes with and surfaceKeyCounts
+ * keys with, position-for-position (the three-reader agreement). The build
+ * order is the materializer's: water spots are REAL water (impassable,
+ * deposit-free — the submerged-supplies-nothing rule), then a river parent's
+ * SYNTHESIZED BANK (the raised dry column — riverBankColumn), then the
+ * scattered deposits, the stand tree, the crown stone, the inherited column
+ * (+ the boulder's gravel stack), the unlimited ground supply, and finally
+ * the blend look's borrowed surface.
+ */
+const fineCellDraft = (
+    parent: TerrainCell,
+    flags: FineFlags,
+): { voxels: VoxelKind[]; height: number; biome: Biome; passable: boolean; resources: TileResources } => {
+    if (flags.water) {
+        const column = fineWaterColumn(parent.waterLevel, flags.water);
+        return {
+            voxels: column.voxels,
+            height: column.height,
+            biome: column.biome,
+            passable: false,
+            resources: {},
+        };
+    }
+    if (flags.bank) {
+        // THE RIVER BANK (T3) — the synthesized raised dry column: new ground
+        // at the water line, NO water voxel under it, the bank's own ground
+        // supply, no finite stock, no tree — passable dry land the ford's
+        // water laps against
+        const column = riverBankColumn(parent.waterLevel, flags.bank);
+        return {
+            voxels: column.voxels,
+            height: column.height,
+            biome: column.biome,
+            passable: true,
+            resources: column.resources,
+        };
+    }
+    const resources: TileResources = { ...(flags.deposit ?? {}) };
+    if (flags.tree) {
+        resources.tree = 1;
+    }
+    if (flags.crown) {
+        resources.stone = 1;
+    }
+    const stack = [...parent.voxels];
+    if (flags.rock) {
+        stack.push('gravel');
+    }
+    // Unlimited deposits are the ground itself — every subtile carries the
+    // symbolic deposit so the zoomed tile keeps the look its parent paints
+    // with (the microscopic-zoom rule). Stone is NOT in the ladder — the
+    // crown/pile units are its only fine-scale presence.
+    TILE_RESOURCES.forEach((resource) => {
+        if (UNLIMITED_TILE_RESOURCES.includes(resource) && (parent.resources[resource] ?? 0) > 0) {
+            resources[resource] = 1;
+        }
+    });
+    let biome = parent.biome;
+    if (flags.look) {
+        biome = applyBlendLook(stack, resources, flags.look);
+    }
+    return {
+        voxels: stack,
+        height: parent.height,
+        biome,
+        passable: parent.passable,
+        resources,
+    };
+};
+
+/**
+ * The blend plan of one tile's zoomed interior — the SINGLE source of truth
+ * the materializer, the fast histogram and generation pass 3 all read (see
+ * the EDGE WEAVE rule block). `path` is the tile's full address (its tail is
+ * the tile inside `parentCanvas`); the seam streams key off both sides'
+ * addresses, so two adjacent tiles derive ONE coherent meander.
+ */
+export const edgeMask = (
+    parent: TerrainCell,
+    path: TilePath,
+    parentCanvas: Pick<Canvas, 'width' | 'height' | 'cells'>,
+    seed: number,
+): EdgeMask => {
+    const water: ShoreMask = new Map();
+    const land = new Map<string, BlendLook>();
+    const bank = new Map<string, RiverBank>();
+    const width = parentCanvas.width;
+    const height = parentCanvas.height;
+    const halfX = (width - 1) / 2;
+    const halfY = (height - 1) / 2;
+    // T3 — THE RIVER zooms into the living riverbank: the passable ford's
+    // fine grid is the organic water body ringed by synthesized dry banks
+    // (riverFineMask). The river's water is NOT a ShoreMask spot — it stays
+    // the inherited parent column, so the ford's passability survives
+    // untouched (the water branch below would hard-impassable it); only the
+    // DRY banks are new surface. This branch must precede the water-parent
+    // early return: isFreshBasin is true for 'river'.
+    if (parent.biome === 'river' && parent.passable) {
+        riverFineMask(parent, tilePathKey(path), parentCanvas, seed).forEach((spot, key) => {
+            bank.set(key, spot);
+        });
+        return { water, land, bank };
+    }
+    // R2 — WATER PARENTS BLEND NOTHING: no land surface, no decoration, no
+    // deposit ever creeps into standing water. An impassable column is water
+    // alike. (The river branched above — T3's fine banks; the basins and the
+    // sea still zoom 100% pure.)
+    if (
+        !parent.passable ||
+        parent.biome === 'ocean' ||
+        parent.biome === 'shallows' ||
+        isFreshBasin(parent.biome)
+    ) {
+        return { water, land, bank };
+    }
+    // The parent's own grid cell lookup — the same centered read cellOn does
+    const neighborAt = (dx: number, dy: number): TerrainCell | undefined => {
+        const nx = parent.x + dx;
+        const ny = parent.y + dy;
+        if (ny < -halfY || ny > halfY || nx < -halfX || nx > halfX) {
+            return undefined;
+        }
+        return parentCanvas.cells[(ny + halfY) * width + (nx + halfX)];
+    };
+    const selfKey = tilePathKey(path);
+    const otherKeyOf = (offset: Offset): string =>
+        tilePathKey([...path.slice(0, -1), { x: parent.x + offset.dx, y: parent.y + offset.dy }]);
+    // Deeper water wins a shared spot (the shore's put rule — the two
+    // readers stay consistent on corner overlaps). The sweep walks the
+    // neighbors in the fixed NEIGHBOR_OFFSETS order, so a LAND seam can be
+    // processed BEFORE the water seam claiming the same fine cell (a
+    // highland north, the ocean east — both meanders reach the shared
+    // corner): the land sweep's guard only skips water written SO FAR, so
+    // putWater must clear the stale land entry here or the spot would sit
+    // in BOTH masks — an order-dependent invariant (harmless to the readers
+    // today, the draft and the histogram read water first, but the masks
+    // themselves must not depend on the neighbor walk's order)
+    const putWater = (key: string, spot: ShoreWater): void => {
+        const standing = water.get(key);
+        if (standing && standing.depth >= spot.depth) {
+            return;
+        }
+        water.set(key, spot);
+        // The early-return above cannot leave a stale pair behind: a
+        // standing water spot was itself put through here (deleting the
+        // land entry then), and the land sweep never writes under a water
+        // spot that already exists
+        land.delete(key);
+    };
+    // THE SHORE — the beach's impassable-water edges shape the pinned full
+    // waterline (river fords included — shoreNeighborOf reads them as water)
+    if (parent.biome === 'beach') {
+        shoreMask(parent, tilePathKey(path), parentCanvas, seed).forEach((spot, key) => {
+            water.set(key, spot);
+        });
+    }
+    // The seam sweep in the fixed NEIGHBOR_OFFSETS order — water seams first
+    // (water wins a shared corner), then the plain land looks
+    arrayEach(NEIGHBOR_OFFSETS, ({ value: offset }) => {
+        const neighbor = neighborAt(offset.dx, offset.dy);
+        if (!neighbor) {
+            return;
+        }
+        if (neighbor.biome === parent.biome) {
+            // Uniform ground — no seam across a same-biome border
+            return;
+        }
+        const otherKey = otherKeyOf(offset);
+        const otherBiome = neighbor.biome;
+        if (otherBiome === 'ocean' || otherBiome === 'shallows' || isFreshBasin(otherBiome)) {
+            if (parent.biome === 'beach') {
+                // The shore's pinned lines govern every beach water edge —
+                // rivers included (the mask above already laid them)
+                return;
+            }
+            // THE WAVY WATERLINE — the seam's meander decides the reach;
+            // the waterline layer carries the water type's voxel depth (two
+            // on ocean), a reach-2 second layer shallows to one voxel
+            const spots = seamSpots(width, height, seed, selfKey, otherKey, offset);
+            spots.forEach((reach, key) => {
+                const typeDepth = otherBiome === 'ocean' ? 2 : 1;
+                const basin: ShoreWater['basin'] =
+                    otherBiome === 'lake' ? 'lake' : otherBiome === 'pond' ? 'pond' : otherBiome === 'river' ? 'river' : undefined;
+                putWater(key, { depth: reach === 1 ? typeDepth : 1, basin });
+            });
+            return;
+        }
+        const look = lendSurface(parent.biome, otherBiome);
+        if (!look) {
+            // The richer treatments govern this pair: the forest→highland
+            // carve (the boulders), the meadow→forest tree ingress (the stand)
+            return;
+        }
+        const spots = seamSpots(width, height, seed, selfKey, otherKey, offset);
+        spots.forEach((_reach, key) => {
+            if (water.has(key) || land.has(key)) {
+                return;
+            }
+            land.set(key, look);
+        });
+    });
+    return { water, land, bank };
 };
 
 // ── The persistent forest stands ─────────────────────────────────────────────
@@ -1223,27 +2001,15 @@ export const generateIsland = (
             // carries (the stand seeds from the mirror in seedStands). R1:
             // the meadow (grassland) edges feed the woods on the gain side,
             // so the coverage prices forest + meadow neighbors alike.
+            // (R1's EDGE WEAVE: the ROCK CARVE and the MEADOW INGRESS moved
+            // to pass 3 below — they re-derive from the shared seam geometry
+            // on the FINAL water map, this pass only prices the coverage.)
             const coverage = forestCoverageOf(
                 neighborhood.forest,
                 neighborhood.rock,
                 neighborhood.meadow,
             );
             cell.resources.tree = Math.round(coverage * width * height);
-            // The rock-spillover carve — only rocky neighborhoods carve
-            const rock = rockSpillSpots(width, height, neighborhood.rock);
-            if (rock.length > 0) {
-                // The TileCarving (engine/types.ts) — the neighbor-derived
-                // data the zoomed interior reads and the fingerprint stamps
-                const carve: TileCarving = { rock };
-                cell.carving = carve;
-            }
-        } else if (neighborhood.forest.length > 0) {
-            // The meadow's localized ingress — the deposit IS the fringe's
-            // size (meadowIngressSpots' length), so seeding and mirror agree
-            const ingress = meadowIngressSpots(width, height, neighborhood.forest);
-            if (ingress.length > 0) {
-                cell.resources.tree = ingress.length;
-            }
         }
     });
 
@@ -1612,6 +2378,57 @@ export const generateIsland = (
         }
     }
 
+    // ── pass 3 — THE EDGE WEAVE RECORDS (R1) ─────────────────────────────────
+    // The RECORDED edge treatments re-derive from the SHARED seam geometry on
+    // the FINAL water map (the basins and the rivers above are already
+    // carved): every forest tile beside highlands records its boulder carve
+    // (rockSpillSpots — the stone-crowned band the stock splits across, the
+    // stand seeding refuses), every meadow beside woods records its tree
+    // ingress (meadowIngressSpots — the fringe the stand seeds and the mirror
+    // counts). Both REFUSE the tile's own water spots (edgeMask's waterline —
+    // no boulder in water, no tree on water, R2). The tree COVERAGE pricing
+    // (pass 2) stays the pre-basin map's pure neighborhood math untouched;
+    // this pass only re-shapes WHERE the recorded treatments stand and how
+    // many ingress spots survive the water. Deterministic: the seam streams
+    // are keyed, the sweep is row-major.
+    {
+        const seed = options.seed ?? 1;
+        canvas.cells.forEach((cell) => {
+            const rockOffsets: Offset[] = [];
+            const forestOffsets: Offset[] = [];
+            arrayEach(NEIGHBOR_OFFSETS, ({ value: offset }) => {
+                const nx = cell.x + offset.dx;
+                const ny = cell.y + offset.dy;
+                if (ny < -halfY || ny > halfY || nx < -halfX || nx > halfX) {
+                    return;
+                }
+                const neighbor = canvas.cells[(ny + halfY) * width + (nx + halfX)];
+                if (neighbor.biome === 'highland') {
+                    rockOffsets.push(offset);
+                } else if (neighbor.biome === 'forest') {
+                    forestOffsets.push(offset);
+                }
+            });
+            if (cell.biome === 'forest' && rockOffsets.length > 0) {
+                const refuse = edgeMask(cell, [{ x: cell.x, y: cell.y }], canvas, seed).water;
+                const rocks = rockSpillSpots(width, height, seed, cell, rockOffsets, refuse);
+                if (rocks.length > 0) {
+                    // The TileCarving (engine/types.ts) — the neighbor-derived
+                    // data the zoomed interior reads and the fingerprint stamps
+                    cell.carving = { rock: rocks };
+                }
+            } else if (cell.biome === 'meadow' && forestOffsets.length > 0) {
+                const refuse = edgeMask(cell, [{ x: cell.x, y: cell.y }], canvas, seed).water;
+                const ingress = meadowIngressSpots(width, height, seed, cell, forestOffsets, refuse);
+                if (ingress.length > 0) {
+                    // The deposit IS the fringe's size — the same list the
+                    // stand seeding reads (one source of truth)
+                    cell.resources.tree = ingress.length;
+                }
+            }
+        });
+    }
+
     // ── THE IRON GUARANTEE (R5) ─────────────────────────────────────────────
     // The vein noise keeps lodes a rare landmark, which leaves the DEFAULT
     // 25×17 seed-7 island with ZERO lodes (every vein sample lands under
@@ -1963,17 +2780,23 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
                 return;
             }
             const stream = randomKeyed(resolvedSeed, `forest:${cell.x},${cell.y}`);
+            // R1 — the tile's WATER spots (its own edge-weave waterline): no
+            // tree stands on water, so the stand's pool refuses them beside
+            // the boulder band (the mirror re-reads the stand below)
+            const waterSpots = edgeMask(cell, [{ x: cell.x, y: cell.y }], canvas, resolvedSeed).water;
             let spots: Array<{ x: number; y: number }>;
             if (forested) {
                 // The rock-spillover band holds boulders, not trees — the
                 // stand's pool excludes it (the deposit count already priced
-                // the rock in via the coverage penalty)
+                // the rock in via the coverage penalty); the waterline spots
+                // hold water, not trees either
                 const rocks = new Set(cell.carving?.rock ?? []);
                 spots = [];
                 for (let row = 0; row < dims.height; row++) {
                     for (let col = 0; col < dims.width; col++) {
                         const spot = { x: col - halfX, y: row - halfY };
-                        if (!rocks.has(`${spot.x},${spot.y}`)) {
+                        const key = `${spot.x},${spot.y}`;
+                        if (!rocks.has(key) && !waterSpots.has(key)) {
                             spots.push(spot);
                         }
                     }
@@ -1986,10 +2809,11 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
                     spots[swap] = held;
                 }
             } else {
-                // The ingress meadow's edge-ranked spots — the SAME pure
-                // selection the deposit was written from (generation pass 2)
+                // The ingress meadow's seam-side spots — the SAME pure
+                // selection the deposit was written from (generation pass 3,
+                // the water spots refused identically)
                 const edges = neighborhoodOf(canvas, cell.x, cell.y).forest;
-                spots = meadowIngressSpots(dims.width, dims.height, edges)
+                spots = meadowIngressSpots(dims.width, dims.height, resolvedSeed, cell, edges, waterSpots)
                     .slice(0, Math.max(0, count))
                     .map((key) => {
                         const [x, y] = key.split(',').map(Number);
@@ -2033,19 +2857,27 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
     };
 
     // The parent-change stamp of a cell: its deposits + height + water line
-    // + biome + voxel stack + NEIGHBORHOOD CARVE. The forest ecology now
-    // DOES reshape columns after generation (the spread conversion stacks a
-    // forest voxel onto a converted meadow and re-biomes it), so the stamp
-    // carries the voxels and biome too — a stamp change invalidates the
-    // cached sub-grid exactly when the parent tile changed (gathering, tree
-    // work, spread). The carve rides the stamp as well: it is the
-    // NEIGHBOR-DERIVED sub-canvas data (the spillover band), so a cached
-    // grid must never outlive the carve it was generated from — the stamp
-    // covers it (the cache-correctness rule for neighbor-derived data:
-    // generation pass 2 computes the carve, generateSubCanvas consumes it,
-    // and the stamp serializes it).
-    const fingerprintOf = (cell: TerrainCell): string =>
-        `${TILE_RESOURCES.map((resource) => cell.resources[resource] ?? 0).join(',')}|${cell.height}|${cell.waterLevel}|${cell.biome}|${cell.voxels.join('+')}|${cell.carving ? cell.carving.rock.join(';') : 'none'}`;
+    // + biome + voxel stack + NEIGHBORHOOD CARVE + the EIGHT NEIGHBORS'
+    // water-class fragments. The forest ecology now DOES reshape columns
+    // after generation (the spread conversion stacks a forest voxel onto a
+    // converted meadow and re-biomes it), so the stamp carries the voxels
+    // and biome too — a stamp change invalidates the cached sub-grid exactly
+    // when the parent tile changed (gathering, tree work, spread). The carve
+    // rides the stamp as well: it is the NEIGHBOR-DERIVED sub-canvas data
+    // (the spillover band), so a cached grid must never outlive the carve it
+    // was generated from — the stamp covers it (the cache-correctness rule
+    // for neighbor-derived data: generation pass 3 computes the carve,
+    // generateSubCanvas consumes it, and the stamp serializes it). R1's EDGE
+    // WEAVE extends the same rule to the mask's NEW neighbor inputs: the
+    // blend reads each in-grid neighbor's biome and passability, so the
+    // stamp serializes those too (`nb(...)` — `rim` beyond the grid) — a
+    // neighbor's spread conversion moves the stamp of every tile that blends
+    // toward it, and the cached grids re-derive their seams fresh.
+    const fingerprintOf = (cell: TerrainCell, canvas: Pick<Canvas, 'width' | 'height' | 'cells'>): string =>
+        `${TILE_RESOURCES.map((resource) => cell.resources[resource] ?? 0).join(',')}|${cell.height}|${cell.waterLevel}|${cell.biome}|${cell.voxels.join('+')}|${cell.carving ? cell.carving.rock.join(';') : 'none'}|nb(${NEIGHBOR_OFFSETS.map((offset) => {
+            const neighbor = cellOn(canvas, cell.x + offset.dx, cell.y + offset.dy);
+            return neighbor ? `${neighbor.biome}${neighbor.passable ? 1 : 0}` : 'rim';
+        }).join(',')})`;
 
     /**
      * The scatter PREPARATION of one tile's sub-grid — the single source of
@@ -2105,7 +2937,13 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
         deposits: Map<string, TileResources>;
     };
 
-    const subPrep = (parent: TerrainCell, pathKey: string, water: ShoreMask): SubPrep => {
+    const subPrep = (
+        parent: TerrainCell,
+        pathKey: string,
+        water: ShoreMask,
+        bank: Map<string, RiverBank>,
+        root: boolean,
+    ): SubPrep => {
         const width = dims.width;
         const height = dims.height;
         const halfX = (width - 1) / 2;
@@ -2113,8 +2951,15 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
 
         // The parent's persistent stand — its positions author the tree
         // mirror (a stand-less forest tile falls back to the seeded scatter
-        // below, the pre-ecology shape)
-        const stand = forestOf(parent.x, parent.y);
+        // below, the pre-ecology shape). R2's zoom discipline: the stand
+        // registry is keyed by ROOT tile coordinates, so only a ROOT-grid
+        // parent may read it — a deeper parent's coords are fine coords of
+        // its own grid, and reading the registry with them would materialize
+        // an UNRELATED tile's stand inside this grid (trees materialized on
+        // whatever the coordinates collided with — a river's or pond's
+        // fine cell zoomed at depth 2 would grow the coincidental root
+        // tile's whole stand: land standing in water, R2's exact ban).
+        const stand = root ? forestOf(parent.x, parent.y) : undefined;
 
         // The parent's spillover band — the fine spots that crown with a
         // boulder (rockSpillSpots wrote it at generation in ROW-MAJOR order;
@@ -2164,6 +3009,12 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
             water.forEach((_spot, key) => {
                 taken.add(key);
             });
+            // T3 — the river's dry banks refuse every deposit too: no finite
+            // stock stands on synthesized ground (the bank columns carry
+            // their own ground supply and nothing else — riverBankColumn)
+            bank.forEach((_spot, key) => {
+                taken.add(key);
+            });
             if (resource === 'stone') {
                 // No loose pile on a boulder (every crown spot — visible or
                 // bare, rock is not a pile) and none under a standing tree
@@ -2195,90 +3046,62 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
     /**
      * Generates one tile's sub-grid — the materializer half of the scatter
      * (the preparation is the shared subPrep above; the long rule comment
-     * lives there). `parentCanvas` is the grid the parent sits in — the
-     * R1 shore mask reads the parent's water neighbors off it.
+     * lives there). `path` is the tile's full address (its tail is the tile
+     * inside `parentCanvas`) — the blend mask's seam streams key off it.
+     * `parentCanvas` is the grid the parent sits in — the R1 shore mask and
+     * the edge weave read the parent's in-grid neighbors off it. `root`
+     * flags a ROOT-grid parent (the only parent the stand registry may
+     * answer — see subPrep's zoom discipline).
      */
-    const generateSubCanvas = (parent: TerrainCell, pathKey: string, parentCanvas: Canvas): Canvas => {
+    const generateSubCanvas = (parent: TerrainCell, path: TilePath, parentCanvas: Canvas, root: boolean): Canvas => {
         const width = dims.width;
         const height = dims.height;
         const halfX = (width - 1) / 2;
         const halfY = (height - 1) / 2;
-        // R1 — the shore mask: the fine waterline this parent's interior
-        // carries toward its water neighbors (empty for every non-beach
-        // parent — see shoreMask's rule block)
-        const shore = shoreMask(parent, pathKey, parentCanvas, resolvedSeed);
-        const { stand, rocks, visibleCrowns, deposits } = subPrep(parent, pathKey, shore);
+        const pathKey = tilePathKey(path);
+        // R1 — the blend plan: the shore's waterline (beach parents) plus the
+        // EDGE WEAVE — the wavy water seams and the neighbor-surface looks
+        // this parent's interior carries toward its differing neighbors (the
+        // SINGLE mask surfaceKeyCounts keys with — one source of truth)
+        const mask = edgeMask(parent, path, parentCanvas, resolvedSeed);
+        const { stand, rocks, visibleCrowns, deposits } = subPrep(
+            parent,
+            pathKey,
+            mask.water,
+            mask.bank,
+            root,
+        );
 
         const cells: TerrainCell[] = [];
         for (let row = 0; row < height; row++) {
             for (let col = 0; col < width; col++) {
                 const x = col - halfX;
                 const y = row - halfY;
-                // R1 — the shore's water fine cells: REAL water — the
-                // lowered seabed + water column the sea columns get,
-                // impassable and deposit-free (the scatter refuses them).
-                // The spot keeps the parent's water line; its biome reads
-                // the water it borders (shallows rim, ocean-deep coves,
-                // fresh-basin inlets).
-                const shoreWater = shore.get(`${x},${y}`);
-                if (shoreWater) {
-                    const column = fineWaterColumn(parent.waterLevel, shoreWater);
-                    cells.push({
-                        x,
-                        y,
-                        voxels: column.voxels,
-                        height: column.height,
-                        waterLevel: parent.waterLevel,
-                        biome: column.biome,
-                        passable: false,
-                        resources: {},
-                    });
-                    continue;
-                }
-                const resources: TileResources = { ...(deposits.get(`${x},${y}`) ?? {}) };
-                // The persistent tree: the stand's exact fine position puts
-                // ONE tree unit here (a fine cell holds at most one tree)
-                if (stand?.trees.has(`${x},${y}`)) {
-                    resources.tree = 1;
-                }
-                // The boulder's own STONE UNIT — the crown-first allocation:
-                // the visible crowns carry the parent stock's first units
-                // (the 🪨 icon + the 'stone' surface key read this live
-                // per-fine-cell stock; it drops as the parent is mined)
-                if (visibleCrowns.has(`${x},${y}`)) {
-                    resources.stone = 1;
-                }
-                // The inherited column — and the spillover band's boulder:
-                // a GRAVEL voxel stacked ON TOP (the visible rock surface —
-                // reads as the 'stone' surface key only while the crown
-                // carries the stock above; tree positions and boulders never
-                // share a spot — seedStands refuses the band)
-                const stack = [...parent.voxels];
-                if (rocks.has(`${x},${y}`)) {
-                    stack.push('gravel');
-                }
-                // Unlimited deposits are the ground itself — every subtile
-                // carries the symbolic deposit so the zoomed tile keeps the
-                // look its parent paints with (the microscopic-zoom rule).
-                // Stone is NOT in the unlimited ladder anymore — the crown/
-                // pile units above are its only fine-scale presence.
-                TILE_RESOURCES.forEach((resource) => {
-                    if (
-                        UNLIMITED_TILE_RESOURCES.includes(resource) &&
-                        (parent.resources[resource] ?? 0) > 0
-                    ) {
-                        resources[resource] = 1;
-                    }
+                const spot = `${x},${y}`;
+                // The SHARED fine cell builder — the exact draft both this
+                // materializer and the fast histogram derive (structural
+                // agreement: water spots real water, a river parent's
+                // synthesized banks, deposits, the stand's tree, the crown
+                // stone, the boulder's gravel stack, the unlimited ground
+                // supply, then the blend look's surface)
+                const draft = fineCellDraft(parent, {
+                    water: mask.water.get(spot),
+                    bank: mask.bank.get(spot),
+                    look: mask.land.get(spot),
+                    deposit: deposits.get(spot),
+                    tree: stand?.trees.has(spot) ?? false,
+                    crown: visibleCrowns.has(spot),
+                    rock: rocks.has(spot),
                 });
                 cells.push({
                     x,
                     y,
-                    voxels: stack,
-                    height: parent.height,
+                    voxels: draft.voxels,
+                    height: draft.height,
                     waterLevel: parent.waterLevel,
-                    biome: parent.biome,
-                    passable: parent.passable,
-                    resources,
+                    biome: draft.biome,
+                    passable: draft.passable,
+                    resources: draft.resources,
                 });
             }
         }
@@ -2303,13 +3126,16 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
                 return undefined;
             }
             const key = tilePathKey(path.slice(0, level + 1));
-            const stamp = fingerprintOf(parentCell);
+            // The stamp reads the parent's OWN grid — its blend inputs (the
+            // neighbors' water classes) ride it, so a cached grid never
+            // outlives the neighborhood it blended toward
+            const stamp = fingerprintOf(parentCell, canvas);
             const cached = subCanvases.get(key);
             if (cached && cached.stamp === stamp) {
                 canvas = cached.canvas;
                 continue;
             }
-            canvas = generateSubCanvas(parentCell, key, canvas);
+            canvas = generateSubCanvas(parentCell, path.slice(0, level + 1), canvas, level === 0);
             subCanvases.set(key, { stamp, canvas });
             // FIFO eviction — the freshly inserted entry sorts last, so the
             // oldest grids drop first
@@ -2332,12 +3158,15 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
      * ~180k cells per root and thrashed the FIFO sub-grid cache).
      *
      * Exactness: the scan reproduces generateSubCanvas position-for-position
-     * from the SAME subPrep — an ordinary cell carries only the inherited
-     * column + the unlimited ground supply (one base key computed once),
-     * and only the SPECIAL fine cells (deposit landing, stand tree, visible
-     * crown, boulder gravel) re-derive a key through tileSurfaceKey, memoized
-     * per distinct shape signature (identical deposits + flags ⇒ identical
-     * key). Undefined when no grid exists at `path` (empty path, beyond the
+     * from the SAME subPrep AND the SAME edgeMask (R1's blend plan — the
+     * shore waterline, the water seams, the neighbor-surface looks) — an
+     * ordinary cell carries only the inherited column + the unlimited ground
+     * supply (one base key computed once through the shared fineCellDraft
+     * builder), and only the SPECIAL fine cells (water spot, deposit
+     * landing, stand tree, visible crown, boulder gravel, blend look)
+     * re-derive a key through tileSurfaceKey, memoized per distinct shape
+     * signature (identical deposits + flags + look ⇒ identical key).
+     * Undefined when no grid exists at `path` (empty path, beyond the
      * configured depth, unresolvable parent, unbound plugin).
      */
     const surfaceKeyCounts = (path: TilePath): SurfaceKeyCount[] | undefined => {
@@ -2349,17 +3178,19 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
         const parentCanvas = canvasAtPath(path.slice(0, -1));
         const tail = path[path.length - 1];
         const parent = parentCanvas ? cellOn(parentCanvas, tail.x, tail.y) : undefined;
-        // The GUARD narrows BOTH reads: the shore mask and the scatter read
+        // The GUARD narrows BOTH reads: the blend mask and the scatter read
         // the parent's grid, so an unresolved canvas (and its missing parent
         // with it) answers undefined before either runs
         if (!parentCanvas || !parent) {
             return undefined;
         }
-        // R1 — the shore mask this parent's interior carries (the SAME mask
-        // generateSubCanvas materializes — one source of truth, the histogram
-        // is exact only while it mirrors the materializer position-for-position)
-        const shoreWaterMask = shoreMask(parent, tilePathKey(path), parentCanvas, resolvedSeed);
-        const prep = subPrep(parent, tilePathKey(path), shoreWaterMask);
+        // R1 — the SAME blend plan generateSubCanvas materializes (the
+        // shore's waterline for beach parents + the EDGE WEAVE's water
+        // seams and neighbor-surface looks) — one source of truth, the
+        // histogram is exact only while it mirrors the materializer
+        // position-for-position
+        const mask = edgeMask(parent, path, parentCanvas, resolvedSeed);
+        const prep = subPrep(parent, tilePathKey(path), mask.water, mask.bank, path.length === 1);
         const width = dims.width;
         const height = dims.height;
         const halfX = (width - 1) / 2;
@@ -2387,40 +3218,55 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
             const [x, y] = spot.split(',').map(Number);
             rockAt[(y + halfY) * width + (x + halfX)] = 1;
         });
-        // R1 — the shore mask indexed by row-major cell: the water fine
+        // R1 — the water spots indexed by row-major cell: the water fine
         // cells (voxel depth + the lending basin) the materializer rebuilds
         // as sea-shaped columns
         const waterAt = new Uint8Array(total);
         const basinAt: Array<ShoreWater['basin']> = new Array(total);
-        shoreWaterMask.forEach((spot, key) => {
+        mask.water.forEach((spot, key) => {
             const [x, y] = key.split(',').map(Number);
             const index = (y + halfY) * width + (x + halfX);
             waterAt[index] = spot.depth;
             basinAt[index] = spot.basin;
         });
+        // R1 — the blend's land-look spots indexed the same way (the
+        // neighbor's surface each spot lends)
+        const landAt: Array<BlendLook | undefined> = new Array(total);
+        mask.land.forEach((look, key) => {
+            const [x, y] = key.split(',').map(Number);
+            landAt[(y + halfY) * width + (x + halfX)] = look;
+        });
+        // T3 — the river parent's dry bank spots indexed the same way (the
+        // synthesized raised columns the materializer builds)
+        const bankAt: Array<RiverBank | undefined> = new Array(total);
+        mask.bank.forEach((spot, key) => {
+            const [x, y] = key.split(',').map(Number);
+            bankAt[(y + halfY) * width + (x + halfX)] = spot;
+        });
         // The ORDINARY cell's key — the inherited column carrying only the
         // unlimited ground supply (the materializer's per-cell loop sets
-        // exactly these on a special-less cell): computed once per grid
-        const baseResources: TileResources = {};
-        TILE_RESOURCES.forEach((resource) => {
-            if (UNLIMITED_TILE_RESOURCES.includes(resource) && (parent.resources[resource] ?? 0) > 0) {
-                baseResources[resource] = 1;
-            }
-        });
+        // exactly these on a special-less cell): computed once per grid,
+        // through the SAME shared builder the materializer runs
+        const baseDraft = fineCellDraft(parent, {});
         const baseKey = tileSurfaceKey({
-            biome: parent.biome,
-            resources: baseResources,
-            voxels: parent.voxels,
+            biome: baseDraft.biome,
+            resources: baseDraft.resources,
+            voxels: baseDraft.voxels,
         });
         // Special cells share keys by SHAPE (same deposit record + tree/
-        // crown/gravel flags ⇒ same surface key) — tileSurfaceKey runs once
-        // per distinct signature, not once per cell
+        // crown/gravel flags + blend look ⇒ same surface key) —
+        // tileSurfaceKey runs once per distinct signature, not once per cell
         const specialKeys = new Map<string, string | undefined>();
-        // R1 — the shore's water fine cells share keys by COLUMN SHAPE (the
+        // R1 — the water fine cells share keys by COLUMN SHAPE (the
         // same water depth + lending basin ⇒ the same sea-shaped column) —
         // the materializer's fineWaterColumn + tileSurfaceKey run once per
         // distinct signature, mirroring specialKeys above
         const waterKeys = new Map<string, string | undefined>();
+        // T3 — the synthesized banks share keys by SURFACE (the same sand or
+        // grass bank ⇒ the same raised column) — the materializer's
+        // riverBankColumn + tileSurfaceKey run once per distinct shape,
+        // mirroring waterKeys above
+        const bankKeys = new Map<string, string | undefined>();
         const counts = new Map<string, SurfaceKeyCount>();
         const bump = (key: string | undefined, index: number): void => {
             if (key === undefined) {
@@ -2435,14 +3281,14 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
             counts.set(key, { key, count: 1, first: index, last: index });
         };
         for (let index = 0; index < total; index++) {
-            // R1 — THE SHORE WATER first: a masked water fine cell is REAL
+            // R1 — THE WATER first: a masked water fine cell is REAL
             // water (the materializer rebuilds it as the sea-shaped column of
             // fineWaterColumn — impassable, deposit-free), so its surface key
             // is its resolved water biome ('shallows' | 'ocean' | the basin's
-            // own name), never the parent's land key. Checked before every
-            // land flag: the scatter refuses water spots for deposits, and
-            // beach parents carry no stands or carves, but the ordering makes
-            // the agreement with generateSubCanvas structural, not lucky.
+            // or the river's own name), never the parent's land key. Checked
+            // before every land flag: the scatter refuses water spots for
+            // deposits, and the ordering makes the agreement with
+            // generateSubCanvas structural, not lucky.
             const waterDepth = waterAt[index];
             if (waterDepth > 0) {
                 const signature = `${waterDepth}|${basinAt[index] ?? ''}`;
@@ -2461,39 +3307,56 @@ export const islandTerrainPlugin = (options: IslandTerrainOptions = {}): WorldPl
                 bump(waterKeys.get(signature), index);
                 continue;
             }
+            // T3 — THE SYNTHESIZED BANK second: a river parent's dry fine
+            // cell materializes the raised column (riverBankColumn — no water
+            // voxel, its own ground supply), never the inherited ford column.
+            // Checked before every land flag, exactly like the water branch:
+            // the scatter refuses bank spots, so no deposit can land there.
+            const bank = bankAt[index];
+            if (bank) {
+                const signature = bank.surface;
+                if (!bankKeys.has(signature)) {
+                    // The materializer's EXACT column slice for this shape —
+                    // the same riverBankColumn call generateSubCanvas makes
+                    const column = riverBankColumn(parent.waterLevel, bank);
+                    bankKeys.set(
+                        signature,
+                        tileSurfaceKey({
+                            biome: column.biome,
+                            resources: column.resources,
+                            voxels: column.voxels,
+                        }),
+                    );
+                }
+                bump(bankKeys.get(signature), index);
+                continue;
+            }
             const deposit = depositAt[index];
             const tree = treeAt[index] === 1;
             const crown = crownAt[index] === 1;
             const rock = rockAt[index] === 1;
-            if (!deposit && !tree && !crown && !rock) {
+            const look = landAt[index];
+            if (!deposit && !tree && !crown && !rock && !look) {
                 bump(baseKey, index);
                 continue;
             }
-            // The shape signature — deposit counts + the three flags
+            // The shape signature — deposit counts + the flags + the look
             const signature = `${TILE_RESOURCES.map((resource) => deposit?.[resource] ?? 0).join(
                 ',',
-            )}|${tree ? 1 : 0}${crown ? 1 : 0}${rock ? 1 : 0}`;
+            )}|${tree ? 1 : 0}${crown ? 1 : 0}${rock ? 1 : 0}|${look ?? ''}`;
             if (!specialKeys.has(signature)) {
-                // Rebuild the materializer's exact cell slice for this shape:
-                // deposit spread, then the tree/crown units, then the
-                // unlimited ground, then the boulder's gravel stack (the
-                // same order generateSubCanvas's loop applies)
-                const resources: TileResources = { ...(deposit ?? {}) };
-                if (tree) {
-                    resources.tree = 1;
-                }
-                if (crown) {
-                    resources.stone = 1;
-                }
-                TILE_RESOURCES.forEach((resource) => {
-                    if (UNLIMITED_TILE_RESOURCES.includes(resource) && (parent.resources[resource] ?? 0) > 0) {
-                        resources[resource] = 1;
-                    }
-                });
-                const voxels = rock ? [...parent.voxels, 'gravel' as VoxelKind] : parent.voxels;
+                // The materializer's EXACT cell slice for this shape — the
+                // same shared builder generateSubCanvas runs (deposit
+                // spread, tree/crown units, the inherited column + gravel,
+                // the unlimited ground, then the blend look's surface)
+                const draft = fineCellDraft(parent, { deposit, tree, crown, rock, look });
                 specialKeys.set(
                     signature,
-                    tileSurfaceKey({ biome: parent.biome, resources, voxels }),
+                    tileSurfaceKey({
+                        biome: draft.biome,
+                        resources: draft.resources,
+                        voxels: draft.voxels,
+                    }),
                 );
             }
             bump(specialKeys.get(signature), index);

@@ -21,8 +21,9 @@
 // trees, a boar drinks, and a castaway runs the full castaway ladder. The
 // REALM decides which rungs serve a body: the travel rungs (and the idle
 // wander) need dry ground underfoot — the water realm's non-travel rungs
-// still apply (a floater gathers the fish underfoot, a spent swimmer
-// rests) — while flyers (z > ground) keep their plugin-owned flight (the
+// still apply (a floater feeds itself off the water underfoot — T4's
+// natural feeding path; a spent swimmer rests) — while flyers (z > ground)
+// keep their plugin-owned flight (the
 // birds plugin drives every airborne minute). See taskLedger.ts TaskEntity
 // for the shared planning shape.
 //
@@ -53,11 +54,18 @@
 //                                    pre-emption, one payout per finished
 //                                    job), fish the water at
 //                                    the body's feet when standing on a dry
-//                                    fishing shore (3 min — R5: cardinal-
-//                                    adjacent water stocking fish, the body
-//                                    never enters it), or travel toward the
-//                                    nearest food stock or fishing shore
-//                                    (1 min)
+//                                    fishing shore WITH A SPEAR OR A ROD IN
+//                                    HAND (3 min — T4: the barehand cast is
+//                                    gone; the water itself is an unlimited
+//                                    source so no shoal stock exists), feed
+//                                    naturally when afloat on the water (the
+//                                    creatures' path — the shark's hunt, the
+//                                    afloat bird's feed; no tool, no stock —
+//                                    the same unlimited source at the body's
+//                                    own cell), or travel toward the nearest
+//                                    food stock (or — tool-holders only —
+//                                    the nearest FISHING SHORE, a dry tile
+//                                    beside fishing water) (1 min)
 //   roost   33 — a FLY-ABILITY creature (a seabird) with energy ≤ 22 not
 //                                    standing on a treed tile travels one
 //                                    strict fine step toward the nearest
@@ -123,7 +131,9 @@
 //   gather  — gathers from the cell (the inventory re-validates the stock).
 //   fish    — R5 — takes the planned fish from the adjacent water cell into
 //             the bag (the inventory's fish primitive re-validates the dry
-//             ground, the cardinal shore reach, the stock and the capacity).
+//             ground, the cardinal shore reach, the stock and the capacity),
+//             the WATER BIOME and the spear-or-rod tool gate — the source is
+//             UNLIMITED so no shoal stock is ever checked or drawn down).
 //   rest    — restores energy (the instant-rest recovery, once per
 //             completed rest, through the needs plugin's recovery service
 //             — the R4 resource-backed route: the restore charges the
@@ -165,6 +175,10 @@ import {
 } from '../movement/fineMovement';
 import type { World } from '../../engine/world';
 import type { Actor, TerrainCell } from '../../engine/types';
+// T4 — the shared water predicates: the fishing-shore eligibility runs the
+// BIOME vocabulary (sea + fresh basin — passable river fords included),
+// never passability alone
+import { isFreshBasin, isSeaWater } from '../../engine/types';
 import type { InventoryPlugin } from '../inventory/inventoryPlugin';
 import type { NeedsPlugin } from '../needs/needsPlugin';
 import type { RelationshipPlugin } from '../relationship/relationshipPlugin';
@@ -417,7 +431,8 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
      * floater would mill inside its water tile forever (a busy body every
      * minute, the birds plugin's busy gate never re-opening — pinned afloat
      * to die of thirst). The non-travel rungs still serve the water realm: a
-     * floater gathers the fish underfoot (every water cell stocks them) and
+     * floater FEEDS ITSELF off the water it stands on (T4 — the natural
+     * feeding path: the unlimited source underfoot, no tool, no stock) and
      * eats from the beak-bag, a spent swimmer rests — and the sleep rung lets
      * a tired bird doze afloat while its drift carries it toward the shore.
      */
@@ -427,12 +442,17 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
     };
 
     /**
-     * R5 — THE FISHING SHORE read: the water cell CARDINAL-adjacent to the
-     * actor's DRY tile that currently stocks fish, or undefined. The shore
-     * rule in one look — dry ground underfoot, water at the body's feet
-     * (cardinal only: no diagonals, no distance, no fishing from afloat),
-     * fish in its live stock. Deterministic: the fixed cardinal ladder. The
-     * inventory's fish primitive re-validates everything at completion.
+     * R5/T4 — THE FISHING SHORE read: the FISHING-WATER cell
+     * CARDINAL-adjacent to the actor's DRY tile, or undefined. The shore
+     * rule in one look: dry ground underfoot, water at the body's feet
+     * (cardinal only: no diagonals, no distance, no casting from afloat),
+     * the water ELIGIBLE BY BIOME (isSeaWater — ocean/shallows — or
+     * isFreshBasin — lake/pond AND the passable river fords; R2: never
+     * passability alone, a ford is as fishable as a basin's shore). The
+     * water is an UNLIMITED source — no fish stock exists to read, so the
+     * read is pure terrain. Deterministic: the fixed cardinal ladder. The
+     * inventory's fish primitive re-validates everything at completion
+     * (including the spear-or-rod tool gate).
      */
     const adjacentFishWater = (
         active: World,
@@ -450,14 +470,30 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
         ];
         const spot = reach.find(({ dx, dy }) => {
             const neighbor = active.cellAt(actor.position.x + dx, actor.position.y + dy);
-            return neighbor !== undefined && !neighbor.passable &&
-                (inventory.cellStock(neighbor.x, neighbor.y).fish ?? 0) > 0;
+            return neighbor !== undefined &&
+                (isSeaWater(neighbor.biome) || isFreshBasin(neighbor.biome));
         });
         if (!spot) {
             return undefined;
         }
         return { x: actor.position.x + spot.dx, y: actor.position.y + spot.dy };
     };
+
+    /**
+     * T4 — THE FISHING TOOL in the actor's bag: the spear first (the fast
+     * thrust tool), then the rod (the patient line). Null: no fishing gear
+     * — the barehand cast is gone, so a tool-less hungry actor cannot plan
+     * a catch (the trek below only aims at shores it can actually work).
+     */
+    const fishingToolOf = (bag: Record<string, number | undefined>): 'spear' | 'rod' | null =>
+        (bag.spear ?? 0) > 0 ? 'spear' : (bag.rod ?? 0) > 0 ? 'rod' : null;
+
+    /**
+     * T4 — whether the body stands on FISHING WATER (the sea or a fresh
+     * basin — the shared biome predicates, never passability alone).
+     */
+    const onFishingWater = (cell: TerrainCell): boolean =>
+        isSeaWater(cell.biome) || isFreshBasin(cell.biome);
 
     /**
      * The social opportunity an actor has RIGHT NOW — a PURE read (no side
@@ -788,18 +824,69 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                         // The hand holds room now — the gather / trek below
                         // take it
                     }
+                    // T4 — THE NATURAL FEEDING PATH: the body stands ON the
+                    // water (a shark swimming the sea, a gull afloat, a
+                    // creature wading a ford) — it feeds itself straight
+                    // from the unlimited source, the way the wilds always
+                    // ate: no tool, no stock, no shore. The gate is the
+                    // WATER REALM itself — an IMPASSABLE water cell
+                    // underfoot (no human can ever stand there — the
+                    // movement rules refuse it), or a CREATURE standing in
+                    // a passable ford. A HUMAN standing in a fordable
+                    // river is exactly the barehand loophole this closes:
+                    // the shore rule + the spear-or-rod gate govern every
+                    // land-agent catch. Ranks FIRST among the forages: a
+                    // water-realm body hunts before it picks seaweed (the
+                    // open ocean still stocks its mats).
+                    const here = world.cellAt(actor.position.x, actor.position.y);
+                    if (
+                        here && onFishingWater(here) &&
+                        (!here.passable || actor.kind === 'creature')
+                    ) {
+                        if (!mayForage(actor.type)) {
+                            return undefined;
+                        }
+                        const x = actor.position.x;
+                        const y = actor.position.y;
+                        // The SAME shared tile job + beat shape the R6
+                        // forage uses — the job names the 'fish' product,
+                        // the payout closure routes the claim through the
+                        // inventory's natural gather path (the cell is
+                        // water: gather pays a fish off the unlimited
+                        // source, capacity-gated)
+                        openGatherJob(tasks.tileWork, {
+                            x,
+                            y,
+                            item: 'fish',
+                            units: gatherMinutes,
+                            skill: 'forage',
+                        });
+                        return {
+                            kind: 'gather',
+                            label: 'gathers',
+                            minutes: 1,
+                            payload: { itemId: 'fish', source: 'fish', beat: true, x, y },
+                        };
+                    }
                     // The current cell's stock: any FOOD-kind item is gatherable,
-                    // AND a berry bush is — a bush stands as a MATERIAL but it
-                    // BEARS berries (the gather effect plucks a berry off it,
+                    // AND a laden berry bush is — a bush stands as a MATERIAL but
+                    // it BEARS berries (the gather effect plucks a berry off it,
                     // inventoryPlugin's bush path), so a hungry body underfoot a
-                    // bush may forage it even with no loose food beside it.
-                    // Without this the hunger rung's underfoot check (FOOD-kind
-                    // only) misses the bush and the body mills / travels away
-                    // from the very plant that feeds it (the local stall the
-                    // long march exposed).
+                    // bush with ripe fruit may forage it even with no loose food
+                    // beside it. T4 — the bush's fruit batch gates the forage: a
+                    // PLUCKED-BARE bush (its lazy fruit count at zero — the plant
+                    // itself never depletes) declines the job instead of banking
+                    // beats a payout would roll back every minute. Without this
+                    // the hunger rung's underfoot check (FOOD-kind only) misses
+                    // the bush and the body mills / travels away from the very
+                    // plant that feeds it (the local stall the long march exposed).
                     const stock = inventory.cellStock(actor.position.x, actor.position.y);
                     const gatherable = Object.keys(stock).find(
-                        (item) => (stock[item] ?? 0) > 0 && (itemDef(item).kind === 'food' || item === 'bush'),
+                        (item) =>
+                            (stock[item] ?? 0) > 0 &&
+                            (itemDef(item).kind === 'food' ||
+                                (item === 'bush' &&
+                                    (inventory.bushView(actor.position.x, actor.position.y)?.fruits ?? 0) > 0)),
                     );
                     if (gatherable !== undefined) {
                         // R6 — the forage is a SHARED TILE JOB: the tile's
@@ -839,18 +926,24 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                             payload: { itemId: product, source: gatherable, beat: true, x, y },
                         };
                     }
-                    // R5 — THE FISHING SHORE: dry ground underfoot and fish
-                    // in the water AT THE BODY'S FEET (a cardinal-adjacent
-                    // water cell stocking fish) → fish. The take lands in
-                    // the bag through the inventory's fish primitive (dry
-                    // ground, cardinal reach, live stock and capacity all
-                    // re-validated at completion). Ranks BELOW the underfoot
-                    // forage (a berry forages faster than a fish lands) and
-                    // ABOVE the trek (the water here already feeds — no use
-                    // walking away from the shoal at hand). The body never
-                    // enters the water: the shore is the fishery.
+                    // R5/T4 — THE FISHING SHORE: dry ground underfoot and
+                    // FISHING WATER at the body's feet (a cardinal-adjacent
+                    // sea or fresh-basin cell — biomes, never stock), AND a
+                    // SPEAR OR ROD in the bag → fish. The take lands in the
+                    // bag through the inventory's fish primitive (dry
+                    // ground, cardinal reach, water biome, tool gate and
+                    // capacity all re-validated at completion; the source
+                    // is UNLIMITED — every cast lands). Ranks BELOW the
+                    // underfoot forage (a berry forages faster than a fish
+                    // lands) and ABOVE the trek (the water here already
+                    // feeds — no use walking away from the water at hand).
+                    // The body never enters the water: the shore is the
+                    // fishery. A tool-less hungry actor at a shore falls
+                    // through to the trek (berries are the fallback —
+                    // standing at water it cannot work is a stall, not a
+                    // plan).
                     const shoal = adjacentFishWater(world, actor);
-                    if (shoal) {
+                    if (shoal && fishingToolOf(bag) !== null) {
                         return {
                             kind: 'fish',
                             label: 'fishes',
@@ -874,25 +967,30 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                     const targets = [...FOOD_PRIORITY, 'bush']
                         .flatMap((item) => inventory.cellsWithItem(item))
                         .filter((cell) => cell.passable);
-                    // R5 — the FISHING SHORES join the food targets at a
-                    // distance: every DRY tile whose cardinal water stocks
-                    // fish is a food source the body can work (the trek ends
-                    // on the shore, then the fishing rung above takes the
-                    // minute). Deterministic: cellsWithItem's insertion order
-                    // (the row-major survey) × the fixed cardinal ladder.
-                    inventory.cellsWithItem('fish').forEach((water) => {
-                        [
-                            { x: water.x + 1, y: water.y },
-                            { x: water.x - 1, y: water.y },
-                            { x: water.x, y: water.y + 1 },
-                            { x: water.x, y: water.y - 1 },
-                        ].forEach((spot) => {
-                            const dry = world.cellAt(spot.x, spot.y);
-                            if (dry && dry.passable) {
-                                targets.push(dry);
-                            }
+                    // R5/T4 — the FISHING SHORES join the food targets at a
+                    // distance FOR TOOL-HOLDERS ONLY: every DRY tile whose
+                    // cardinal neighbor is fishing water is a food source the
+                    // body can work (the trek ends on the shore, then the
+                    // fishing rung above takes the minute). A tool-less actor
+                    // never treks to water — there is no barehand cast to
+                    // meet it with, so aiming there is a wasted journey.
+                    // Deterministic: fishingWaters' insertion order (the
+                    // row-major survey) × the fixed cardinal ladder.
+                    if (fishingToolOf(bag) !== null) {
+                        inventory.fishingWaters().forEach((water) => {
+                            [
+                                { x: water.x + 1, y: water.y },
+                                { x: water.x - 1, y: water.y },
+                                { x: water.x, y: water.y + 1 },
+                                { x: water.x, y: water.y - 1 },
+                            ].forEach((spot) => {
+                                const dry = world.cellAt(spot.x, spot.y);
+                                if (dry && dry.passable) {
+                                    targets.push(dry);
+                                }
+                            });
                         });
-                    });
+                    }
                     const target = nearestCell(actor, targets);
                     if (!target || !onDryGround(actor)) {
                         return undefined;
@@ -1234,10 +1332,14 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                             }
                             // A BUSH-sourced job pays through the inventory's
                             // bush path (the berry is plucked off the standing
-                            // plant); every other job takes its own item
+                            // plant); a FISH-sourced job is the NATURAL
+                            // FEEDING path (T4 — a body afloat on the water
+                            // pays its fish off the unlimited source through
+                            // the same gather primitive); every other job
+                            // takes its own item
                             const source = task.payload?.source;
                             beatGatherJob(tasks.tileWork, { x, y, item: itemId }, () =>
-                                source === 'bush'
+                                source === 'bush' || source === 'fish'
                                     ? inventory.gather(actor) !== null
                                     : inventory.takeFromCell(actor, itemId),
                             );
@@ -1255,11 +1357,14 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                         return;
                     }
                     case 'fish': {
-                        // R5 — the planned water cell (the fishing shore):
+                        // R5/T4 — the planned water cell (the fishing shore):
                         // the inventory primitive re-validates everything at
                         // completion — dry ground underfoot, the cardinal
-                        // reach, the live shoal, the bag's room. A failed
-                        // cast is a no-op; the actor re-plans next minute.
+                        // reach, the WATER BIOME, the spear-or-rod tool gate
+                        // and the bag's room (the source is UNLIMITED — no
+                        // shoal stock to re-validate; a successful catch
+                        // wears the held tool). A failed cast is a no-op;
+                        // the actor re-plans next minute.
                         const x = task.payload?.x;
                         const y = task.payload?.y;
                         if (typeof x === 'number' && typeof y === 'number') {
@@ -1324,8 +1429,9 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
             // realm plans too (a shark in the sea, a gull afloat): the
             // travel rungs decline for impassable underfoot (onDryGround —
             // a task ladder that walks tiles is not their vocabulary) while
-            // the non-travel rungs serve them (a floater gathers the fish
-            // underfoot, a spent swimmer rests, a tired gull dozes afloat),
+            // the non-travel rungs serve them (a floater feeds itself off
+            // the water underfoot — T4's natural feeding path, a spent
+            // swimmer rests, a tired gull dozes afloat),
             // and the wander filler leaves their idle minute to the realm's
             // own script. Each creature plans through its coordinate
             // identity (taskLedger.ts TaskEntity).

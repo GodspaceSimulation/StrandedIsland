@@ -344,11 +344,14 @@ describe('App', () => {
         expect(screen.queryByTestId('actor-inventory')).toBeNull();
     });
 
-    it('clicking a sea tile shows the submerged voxel column with its fish stock', () => {
+    it('clicking a sea tile shows the submerged voxel column — the unlimited water source reads bare (T4)', () => {
         render(<App seed={7} />);
         // Tile (-12,-8) — the top-left corner: shallow seabed under one
-        // water voxel, fish swim here; sea columns carry no deposits, so
-        // the tile keeps its plain biome surface
+        // water voxel; sea columns carry no deposits, so the tile keeps its
+        // plain biome surface. T4 — the water stocks NO fish: the sea is an
+        // UNLIMITED source (the fishing tools + the constructed nets work
+        // it), marked a fishing water instead of a stock — no tile carries
+        // a fish count to indicate
         fireEvent.click(screen.getByTestId('unicode-tile--12--8'));
         expect(screen.getByTestId('tile-position').textContent).toBe('(-12, -8) · shallows');
         expect(screen.getByTestId('tile-resources').textContent).toBe('—');
@@ -356,10 +359,11 @@ describe('App', () => {
             'height 2 · water line 3 · submerged',
         );
         expect(screen.getByTestId('tile-voxels').textContent).toBe('dirt, sand, water');
-        // The fish generalizes to its category at scale 0
+        // The ground derivation reads empty at scale 0 (T4 — the wild-fish
+        // indicator boundary: no zoom, hover or inspector read shows a fish)
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
-        ).toEqual(['Foods ×2']);
+        ).toEqual(['Nothing on the ground.']);
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['No one here.']);
@@ -430,10 +434,11 @@ describe('App', () => {
             'height 2 · water line 3 · submerged',
         );
         expect(screen.getByTestId('tile-voxels').textContent).toBe('dirt, sand, water');
-        // The fish generalizes to its category at scale 0
+        // T4 — the ground derivation reads empty at scale 0 (the sea stocks
+        // no fish — the unlimited source carries no indicator)
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
-        ).toEqual(['Foods ×2']);
+        ).toEqual(['Nothing on the ground.']);
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['No one here.']);
@@ -579,21 +584,23 @@ describe('App', () => {
         // 0.85-era (1,-4) tile became a lake at the lowered 0.8 threshold)
         expect((screen.getByTestId('unicode-tile-1--2').textContent)).toBe('🌳');
         // A BARE meadow tile shows nothing but terrain — no woods beside
-        // (0,-3), no fringe, no decoration (the berries stay list-only)
+        // (0,-3), no fringe, no decoration
         expect((screen.getByTestId('unicode-tile-0--3').textContent)).toBe('');
-        // Zoom into the meadow: the interior view (scale 0) — its two berries
-        // stand at their scattered subtiles (1,-3) and (11,0) as visible
-        // objects (the 0.8 berry scatter, regrow-capped)
+        // T4 — zoom into the meadow: the interior view (scale 0) — NO
+        // ground objects stand anywhere on it (no loose berries exist — the
+        // berry hangs on the standing bush's lazy batch, list-only, and
+        // this meadow carries no bush at all), but the fringe's TREES stand
+        // at their persistent subtiles (the fine-scale stand draws inside)
         fireEvent.click(screen.getByTestId('unicode-tile-1--2'));
         fireEvent.click(screen.getByTestId('zoom-toggle'));
         expect(screen.getByTestId('scale-badge').textContent).toBe('Scale 0');
-        expect(screen.getByTestId('unicode-tile-1--3').textContent).toBe('🍒');
-        expect(screen.getByTestId('unicode-tile-11-0').textContent).toBe('🍒');
-        // The berry subtiles list their berries by name (item granularity)
+        expect(screen.getByTestId('unicode-tile-1--3').textContent).toBe('');
+        expect(screen.getByTestId('unicode-tile-11-0').textContent).toBe('🌳');
+        // The bare subtile lists nothing
         fireEvent.click(screen.getByTestId('unicode-tile-1--3'));
         expect(
             Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
-        ).toEqual(['1 Berry']);
+        ).toEqual(['Nothing on the ground.']);
         // Kiki zoomed at her own tile stands at her fine spot (4, -6) — no
         // altitude superscript (the stone stock never becomes a canvas
         // object: tile-resource units ARE the subtile surfaces)
@@ -602,12 +609,27 @@ describe('App', () => {
         fireEvent.click(screen.getByTestId('zoom-toggle'));
         expect(screen.getByTestId('unicode-tile-4--6').textContent).toBe('🐦');
         fireEvent.click(screen.getByTestId('zoom-toggle'));
-        // The fish floats as an object at its scattered subtile (9, 5)
+        // The BEACH zoom in: the loose stock draws as objects — the two
+        // coconuts at their scattered subtiles ((−11,5), (7,−4)) and the
+        // shell at (−6,6)
+        fireEvent.click(screen.getByTestId('unicode-tile--11-0'));
+        fireEvent.click(screen.getByTestId('zoom-toggle'));
+        expect(screen.getByTestId('unicode-tile--11-5').textContent).toBe('🥥');
+        expect(screen.getByTestId('unicode-tile-7--4').textContent).toBe('🥥');
+        expect(screen.getByTestId('unicode-tile--6-6').textContent).toBe('🐚');
+        // The coconut subtile lists its unit by name (item granularity)
+        fireEvent.click(screen.getByTestId('unicode-tile--11-5'));
+        expect(
+            Array.from(screen.getByTestId('tile-ground').children).map((child) => child.textContent),
+        ).toEqual(['1 Coconut']);
+        fireEvent.click(screen.getByTestId('zoom-toggle'));
+        // T4 — the sea zoom in: NO wild-fish object anywhere (the fish glyph
+        // left the island's ground palette — the water is the unlimited
+        // source and no tile stocks a fish to scatter); the old shoal
+        // subtile is bare
         fireEvent.click(screen.getByTestId('unicode-tile--12--8'));
         fireEvent.click(screen.getByTestId('zoom-toggle'));
-        const fish = screen.getByTestId('unicode-tile-9-5');
-        expect(fish.textContent).toBe('🐟');
-        expect(fish.title).toContain('Fish');
+        expect(screen.getByTestId('unicode-tile-9-5').textContent).toBe('');
     });
 
     it('treed tiles draw the tree icon in unicode and the vector tree in svg', () => {
@@ -944,7 +966,7 @@ describe('App', () => {
         // singularization at 383) — the exact line (the card span is
         // empty at the island view, so the row IS the stand line)
         expect(screen.getByTestId('tile-forest').textContent).toBe(
-            '383 trees · 1518 wood standing',
+            '383 trees · 1522 wood standing',
         );
         // No tree card at the island view (the summary shape)
         expect(screen.getByTestId('tile-forest-tree').textContent).toBe('');
@@ -952,8 +974,8 @@ describe('App', () => {
         // densified 14-tree fringe); a BARE meadow carries no forest layer
         // at all
         fireEvent.click(screen.getByTestId('unicode-tile-1--2'));
-        // The 14-tree fringe keeps its plural stand read
-        expect(screen.getByTestId('tile-forest').textContent).toBe('14 trees · 61 wood standing');
+        // The seam-meandered fringe keeps its plural stand read (R1: 11 spots)
+        expect(screen.getByTestId('tile-forest').textContent).toBe('11 trees · 51 wood standing');
         fireEvent.click(screen.getByTestId('unicode-tile-0--3'));
         expect(screen.queryByTestId('tile-forest')).toBeNull();
         // -- Scale 0: the tree card on the inspected fine spot ------------
@@ -966,16 +988,16 @@ describe('App', () => {
         // maturity, never a second "wood N"
         fireEvent.click(screen.getByTestId('unicode-tile-4--7'));
         expect(screen.getByTestId('tile-forest').textContent).toBe(
-            '1 tree · 6 wood standing · age 6.6 y · growing',
+            '1 tree · 6 wood standing · age 6.8 y · growing',
         );
-        expect(screen.getByTestId('tile-forest-tree').textContent).toBe(' · age 6.6 y · growing');
+        expect(screen.getByTestId('tile-forest-tree').textContent).toBe(' · age 6.8 y · growing');
         expect(screen.getByTestId('tile-forest-tree').textContent).not.toContain('wood');
         // A bare fine cell of the same wood carries no card — the forest
         // layer resolves only for a TREED fine spot, so the row drops out.
         // The first bare spot row-major on the densified (4,-5) stand is
-        // (-2,-8) (the (9,5) spot the 319-tree stand left bare now stands
-        // treed)
-        fireEvent.click(screen.getByTestId('unicode-tile--2--8'));
+        // (-12,-8) (R1's weave reseeded the stand's shuffle pool — the old
+        // (-2,-8) spot now stands treed)
+        fireEvent.click(screen.getByTestId('unicode-tile--12--8'));
         expect(screen.queryByTestId('tile-forest')).toBeNull();
     });
 

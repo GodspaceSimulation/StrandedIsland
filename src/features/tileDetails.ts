@@ -68,7 +68,7 @@
 // ground" at the island view — Sand reads as a Material).
 
 import type { CoordinateEntry, TilePath } from '@godspace/core';
-import { randomKeyed, tilePathKey, tilePathParent, tilePathTail } from '@godspace/core';
+import { NEIGHBOR_OFFSETS, randomKeyed, tilePathKey, tilePathParent, tilePathTail } from '@godspace/core';
 import type { Canvas, TerrainCell, TileResource, TileResources, VoxelKind } from '../engine/types';
 import { TILE_RESOURCES, UNLIMITED_TILE_RESOURCES } from '../engine/types';
 import type { IslandHandle } from '../scenario/island';
@@ -85,6 +85,11 @@ import type { SectionView } from '../plugins/construction/constructionPlugin';
 // R5 — the farm plot card (type-only: the farming plugin's public view
 // shape; the scenario handle carries the plugin instance)
 import type { FarmPlotView } from '../plugins/farming/farmingPlugin';
+// T4 — the standing bush's fruit card + the fishing net's catch card
+// (type-only: the inventory plugin's and the fishing plugin's public view
+// shapes; the scenario handle carries the plugin instances)
+import type { BushView } from '../plugins/inventory/inventoryPlugin';
+import type { FishingNetView } from '../plugins/fishing/fishingPlugin';
 
 // ── Voxel stack ──────────────────────────────────────────────────────────────
 
@@ -712,6 +717,24 @@ export type TileSummary = {
      * same plot. Undefined when no plot stands here (or farming unmounted).
      */
     farm?: FarmPlotView;
+    /**
+     * T4 — the standing BERRY BUSH on this tile (plugins/inventory): the
+     * lazy fruit batch (berries ripe, the ceiling, the next-ripen minute).
+     * Bushes are keyed to ROOT tile addresses (the plant registry), so the
+     * read rides the path's first step — every zoom level of the same
+     * ground shows the same plant, FULL OR PLUCKED BARE (the plant never
+     * depletes — R4: the bush stays visible when its berries are gone).
+     * Undefined when no bush stands here.
+     */
+    bush?: BushView;
+    /**
+     * T4 — the constructed FISHING NET on this tile (plugins/fishing): the
+     * banked catch (stored against its cap) and the minutes to the next
+     * banked fish. Nets are keyed to ROOT tile addresses, so the read rides
+     * the path's first step — every zoom level agrees. Undefined when no
+     * net stands here.
+     */
+    net?: FishingNetView;
 };
 
 /**
@@ -759,6 +782,12 @@ export const tileSummary = (island: IslandHandle, path: TilePath): TileSummary |
         // board's farm decoration (the scenario's decorationOfCell reads
         // the very same plotAt)
         farm: island.farming.plotAt(path[0].x, path[0].y),
+        // T4 — the standing berry bush + the constructed fishing net (the
+        // same root-addressed reads the boards/behavior use; the inspector
+        // card exposes the bush's lazy fruit batch and the net's banked
+        // catch at every zoom level)
+        bush: island.inventory.bushView(path[0].x, path[0].y),
+        net: island.fishing.netAt(path[0].x, path[0].y),
     };
 };
 
@@ -775,6 +804,38 @@ export const farmLine = (farm: FarmPlotView, now: number): string => {
             ? `ripe · pick now (+${farm.yieldPerHarvest} berries)`
             : `immature · fruits in ${Math.max(0, farm.matureAt - now)} min`;
     return `berry plot · ${stage} · ${farm.cycles} harvest${farm.cycles === 1 ? '' : 's'}`;
+};
+
+/**
+ * T4 — the berry bush's inspector line: the standing plant's fruit batch
+ * (the lazy count advanced at the read) and the ripening clock. A plucked
+ * BARE bush still reads as the plant it is — "0/3 berries ripe" with the
+ * minutes to the next berry — never as a vanished feature (R4: the bush
+ * stays visible when depleted). A FULL bush reads "full" (no countdown —
+ * the next pluck restarts the clock).
+ */
+export const bushLine = (bush: BushView, now: number): string => {
+    const ripe = `${bush.fruits}/${bush.cap} ${bush.fruits === 1 ? 'berry' : 'berries'} ripe`;
+    if (bush.fruits >= bush.cap) {
+        return `berry bush · ${ripe} · full`;
+    }
+    return `berry bush · ${ripe} · next in ${Math.max(0, bush.nextRipeAt - now)} min`;
+};
+
+/**
+ * T4 — the fishing net's inspector line: the banked catch against its
+ * storage ceiling and the minutes to the next banked fish (the net view
+ * carries the countdown already computed against the plugin's own read
+ * clock, so no `now` argument is needed). An EMPTY net reads "0/3 fish
+ * caught" with the banking countdown (the weir is working); a FULL net
+ * reads "haul it" (the storage is finite — the source is not).
+ */
+export const netLine = (net: FishingNetView): string => {
+    const banked = `${net.stored}/${net.cap} fish caught`;
+    if (net.stored >= net.cap) {
+        return `fishing net · ${banked} · haul it`;
+    }
+    return `fishing net · ${banked} · next in ${Math.max(0, net.minutesToNext)} min`;
 };
 
 // ── The scale view slice ─────────────────────────────────────────────────────
@@ -1046,9 +1107,22 @@ export const treeIconOpacity = (treeUnits: number, subGridCells: number): number
 const dominantMemo = new WeakMap<object, { stamp: string; key: string | undefined }>();
 
 /** The memo stamp — the fingerprintOf mirror (keep in step with
- * plugins/terrain/islandTerrain.ts fingerprintOf: same fields, same order). */
-const dominantStamp = (cell: TerrainCell): string =>
-    `${TILE_RESOURCES.map((resource) => cell.resources[resource] ?? 0).join(',')}|${cell.height}|${cell.waterLevel}|${cell.biome}|${cell.voxels.join('+')}|${cell.carving ? cell.carving.rock.join(';') : 'none'}`;
+ * plugins/terrain/islandTerrain.ts fingerprintOf: same fields, same order —
+ * R1's EDGE WEAVE added the EIGHT NEIGHBORS' water-class fragments last,
+ * because the blend reads them and a cached fold must never outlive the
+ * neighborhood it read). */
+const dominantStamp = (cell: TerrainCell, canvas: Pick<Canvas, 'width' | 'height' | 'cells'>): string =>
+    `${TILE_RESOURCES.map((resource) => cell.resources[resource] ?? 0).join(',')}|${cell.height}|${cell.waterLevel}|${cell.biome}|${cell.voxels.join('+')}|${cell.carving ? cell.carving.rock.join(';') : 'none'}|nb(${NEIGHBOR_OFFSETS.map((offset) => {
+        const halfX = (canvas.width - 1) / 2;
+        const halfY = (canvas.height - 1) / 2;
+        const nx = cell.x + offset.dx;
+        const ny = cell.y + offset.dy;
+        if (ny < -halfY || ny > halfY || nx < -halfX || nx > halfX) {
+            return 'rim';
+        }
+        const neighbor = canvas.cells[(ny + halfY) * canvas.width + (nx + halfX)];
+        return neighbor ? `${neighbor.biome}${neighbor.passable ? 1 : 0}` : 'rim';
+    }).join(',')})`;
 
 /**
  * The intermediate-node cache, one Map per terrain plugin INSTANCE (a
@@ -1099,6 +1173,9 @@ const foldDominant = (
     cell: TerrainCell,
     cache: Map<string, string | null>,
     sizeKey: string,
+    // The grid the cell sits in (its parent's grid) — the stamp reads the
+    // cell's EIGHT in-grid neighbors off it (R1's blend inputs)
+    canvas: Pick<Canvas, 'width' | 'height' | 'cells'>,
 ): string | undefined => {
     // The children of a cell AT the generated depth are leaves — their
     // surface keys histogram EXACTLY without materializing the grid (the
@@ -1124,7 +1201,7 @@ const foldDominant = (
     let bestCount = 0;
     children.cells.forEach((child) => {
         const key =
-            dominantChild(island, [...path, { x: child.x, y: child.y }], child, cache, sizeKey) ??
+            dominantChild(island, [...path, { x: child.x, y: child.y }], child, cache, sizeKey, children) ??
             tileSurfaceKey(child);
         if (key === undefined) {
             return;
@@ -1150,16 +1227,18 @@ const dominantChild = (
     child: TerrainCell,
     cache: Map<string, string | null>,
     sizeKey: string,
+    // The grid the child sits in (the caller's fold iterates it)
+    canvas: Pick<Canvas, 'width' | 'height' | 'cells'>,
 ): string | undefined => {
     if (childPath.length > island.terrain.depth()) {
         return undefined;
     }
-    const cacheKey = `${sizeKey}|${tilePathKey(childPath)}|${dominantStamp(child)}`;
+    const cacheKey = `${sizeKey}|${tilePathKey(childPath)}|${dominantStamp(child, canvas)}`;
     const hit = cache.get(cacheKey);
     if (hit !== undefined) {
         return hit ?? undefined;
     }
-    const key = foldDominant(island, childPath, child, cache, sizeKey);
+    const key = foldDominant(island, childPath, child, cache, sizeKey, canvas);
     cache.set(cacheKey, key ?? null);
     // FIFO eviction — the freshly inserted entry sorts last, the oldest
     // answers drop first (bounded memory; a miss only recomputes)
@@ -1190,7 +1269,15 @@ export const dominantVisibleType = (
     if (!cell) {
         return undefined;
     }
-    const stamp = dominantStamp(cell);
+    // The stamp reads the cell's EIGHT in-grid neighbors off the grid the
+    // cell sits in (its parent's grid — the root canvas for a length-1
+    // path); R1's blend inputs ride it exactly as the terrain plugin's own
+    // fingerprint does (the mirror rule)
+    const canvas = island.terrain.canvasFor(path.slice(0, -1));
+    if (!canvas) {
+        return tileSurfaceKey(cell);
+    }
+    const stamp = dominantStamp(cell, canvas);
     const cached = dominantMemo.get(cell);
     if (cached && cached.stamp === stamp) {
         return cached.key;
@@ -1205,6 +1292,7 @@ export const dominantVisibleType = (
         cell,
         dominantCacheFor(island.terrain),
         `${size.width}x${size.height}`,
+        canvas,
     );
     dominantMemo.set(cell, { stamp, key });
     return key;

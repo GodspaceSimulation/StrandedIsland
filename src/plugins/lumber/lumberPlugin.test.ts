@@ -122,23 +122,25 @@ describe('lumberPlugin', () => {
         }
         // The chop completed at minute 16 (fifteen beats): one wood off a
         // tree's POOL into the bag and the job is GONE (claimed). The SOURCE
-        // tree was the tree on Ael's fine spot — a pool-1 sapling, so the
-        // cut FELS it (the mirror drops 425 → 424). The wetland shore's
+        // tree was the tree on Ael's fine spot — a pool-3 sapling (R1's
+        // weave reseeded the stand's positions), so the cut FELS it (the
+        // mirror drops 412 → 411). The wetland shore's
         // water stands beside the grove (water:2)
-        expect(inventory.of('a')).toEqual({ wood: 1 });
+        expect(inventory.of('a')).toEqual({ wood: 3 });
         expect(tasks.tileWork.get('tile:-7,0:chop')).toBeUndefined();
         // R4/R7: the (−7,0) column is a meadow shore — the finite stone is
         // gone (stone stands only on the highland rock sites); the tree
-        // mirror keeps its felled 424 band. The enriched abundance seeds
-        // berry 4 + mushroom 3 + the standing bush; the minute-15 mushroom
-        // pulse adds the fourth mushroom (the berry pulse at 20 has not
-        // fired yet at minute 16)
+        // mirror keeps its felled 411 band. The enriched abundance seeds
+        // mushroom 3 + the standing bush; the minute-15 mushroom pulse adds
+        // the fourth mushroom. T4 — NO loose berries: the bush's lazy fruit
+        // batch hangs them off-stock (nobody plucked here — the batch waits
+        // at its full 3)
         // R4-INTEGRATION — the river generation shifted the survey stream:
         // this grove cell now MISSES the 0.6 vine draw (the vine key is
         // simply absent at minute 16 — the first re-hang pulse lands at
         // minute 30, after this read)
-        expect(inventory.cellStock(-7, 0)).toEqual({ dirt: 1, grass: 1, tree: 424, berry: 4, mushroom: 4, bush: 1, water: 2 });
-        expect(world.cellAt(-7, 0)?.resources).toEqual({ dirt: 1, grass: 1, tree: 424 });
+        expect(inventory.cellStock(-7, 0)).toEqual({ dirt: 1, grass: 1, tree: 411, mushroom: 4, bush: 1, water: 2 });
+        expect(world.cellAt(-7, 0)?.resources).toEqual({ dirt: 1, grass: 1, tree: 411 });
         // The felling is silent — a solo beat, not a story between entities
         expect(world.events.log().map((event) => event.kind)).toEqual(['spawn']);
         // Wooded up, the lumber gate fails — the actor fine-wanders on
@@ -148,12 +150,13 @@ describe('lumberPlugin', () => {
     it('the wood rack re-arms when the wood is spent: chops pool the same tree down', () => {
         const { world, inventory, tasks, forest } = buildStack();
         spawn(world, 'a', 'Ael', -7, 0);
-        // The seeded stand's standing wood at minute 0 (captured reference)
-        expect(forest.standOf({ x: -7, y: 0 })).toEqual({ trees: 425, wood: 1688 });
+        // The seeded stand's standing wood at minute 0 (captured reference;
+        // R1's water seams refused the river-edge pool spots)
+        expect(forest.standOf({ x: -7, y: 0 })).toEqual({ trees: 412, wood: 1631 });
         for (let index = 0; index < 16; index++) {
             world.step();
         }
-        expect(inventory.of('a')).toEqual({ wood: 1 });
+        expect(inventory.of('a')).toEqual({ wood: 3 });
         // The wood leaves the bag (a trade or build spent it) — the gate
         // re-opens on the next planning round and a FRESH job opens (the
         // old one was claimed away)
@@ -164,15 +167,14 @@ describe('lumberPlugin', () => {
         for (let index = 0; index < 15; index++) {
             world.step();
         }
-        // The second chop cut the stand's next tree — the first cut felled a
-        // pool-1 sapling (425 → 424, one wood), the second stands; R2's
-        // 3-wood payout took three units off the standing tree, so the
-        // standing wood dropped by exactly the four cut units (1688 → 1684)
-        // and the default biology adds nothing in 31 world minutes (real-year
-        // pace)
-        expect(inventory.of('a')).toEqual({ wood: 3 });
-        expect(inventory.cellStock(-7, 0).tree).toBe(424);
-        expect(forest.standOf({ x: -7, y: 0 })).toEqual({ trees: 424, wood: 1684 });
+        // The second chop cut the stand's next tree — the first cut felled
+        // a pool-3 sapling (412 → 411, three wood), the second a pool-1
+        // sapling (411 → 410, one wood); the standing wood dropped by
+        // exactly the four cut units (1631 → 1627) and the default biology
+        // adds nothing in 31 world minutes (real-year pace)
+        expect(inventory.of('a')).toEqual({ wood: 1 });
+        expect(inventory.cellStock(-7, 0).tree).toBe(410);
+        expect(forest.standOf({ x: -7, y: 0 })).toEqual({ trees: 410, wood: 1627 });
     });
 
     it('R6: the job PERSISTS across actors — a dead chopper leaves its minutes standing', () => {
@@ -225,12 +227,14 @@ describe('lumberPlugin', () => {
         }
         expect(tasks.tileWork.get('tile:-7,0:chop')?.progress).toBe(14);
         world.step();
-        // Exactly ONE wood exists across both bags — the atomic claim pays
-        // the finisher only. The claimed job is gone; the job that stands
-        // now is Bram's FRESH open (progress 0, the same 15-unit demand) —
-        // the finished work was never double-paid
+        // Exactly the finisher's ONE payout stands across both bags — the
+        // atomic claim pays the finisher only (R1's weave reseeded the
+        // stand, so the source tree at Ael's spot now holds a pool-3
+        // sapling — the whole-pool claim pays 3). The claimed job is gone;
+        // the job that stands now is Bram's FRESH open (progress 0, the
+        // same 15-unit demand) — the finished work was never double-paid
         const wood = (inventory.of('a').wood ?? 0) + (inventory.of('b').wood ?? 0);
-        expect(wood).toBe(1);
+        expect(wood).toBe(3);
         expect(tasks.tileWork.get('tile:-7,0:chop')).toEqual({
             key: 'tile:-7,0:chop',
             kind: 'chop',
@@ -267,10 +271,12 @@ describe('lumberPlugin', () => {
         // the grove's tree mirror drops to 424 (T2's densified pure stand;
         // the chop cut the last TWO pool wood off a pool-2 tree — R2's payout
         // is up to three, but this tree only held two, and emptying the pool
-        // FELL it: 425 → 424; the enriched R7 stocks (seeded berry 4 +
-        // mushroom 3) regrow on their rhythms — the minute-15 mushroom and
-        // minute-20 berry pulses add a unit each; this grove cell missed the
-        // vine draw; R4: the meadow is no stone-bearing)
+        // FELL it: 425 → 424; the enriched R7 stocks (seeded mushroom 3)
+        // regrow on their rhythms — the minute-15 mushroom pulse adds a
+        // unit; this grove cell missed the vine draw; R4: the meadow is no
+        // stone-bearing). T4 — NO loose berries: the berry and the standing
+        // bush hang off-stock (the lazy batch — the seeded bush's fruit
+        // batch waits untouched)
         // R4-INTEGRATION — the river generation shifted the survey stream:
         // this grove cell now HITS the 0.6 vine draw — the minute-40 read
         // carries vine 2 (the seeded unit plus the minute-30 re-hang pulse)
@@ -278,7 +284,7 @@ describe('lumberPlugin', () => {
             world.step();
         }
         expect(inventory.of('a')).toEqual({ wood: 2 });
-        expect(inventory.cellStock(1, 5)).toEqual({ dirt: 1, grass: 1, tree: 424, berry: 5, mushroom: 4, vine: 2 });
+        expect(inventory.cellStock(1, 5)).toEqual({ dirt: 1, grass: 1, tree: 424, mushroom: 4, vine: 2 });
         expect(world.cellAt(1, 5)?.biome).toBe('forest');
     });
 
@@ -340,8 +346,9 @@ describe('lumberPlugin', () => {
             tool.world.step();
         }
         // The axe stays in the bag (it is a tool, not a harvest) — the bag
-        // holds the axe AND the claimed wood
-        expect(tool.inventory.of('a')).toEqual({ axe: 1, wood: 1 });
+        // holds the axe AND the claimed wood (the fine-spot tree's pool-3
+        // payout — R1's weave reseeded the stand)
+        expect(tool.inventory.of('a')).toEqual({ axe: 1, wood: 3 });
         expect(tool.tasks.tileWork.get('tile:-7,0:chop')).toBeUndefined();
     });
 
@@ -385,12 +392,13 @@ describe('lumberPlugin — R3 the axe wears, breaks and stays honest through the
         // The fresh acquisition reads full
         expect(axeOf(world, inventory)).toEqual({ tool: 'axe', health: 100, maxHealth: 100, damage: 0 });
         // The first chop: the job opens at the axe's halved 8 units and the
-        // payout lands (the fine-spot tree is a pool-1 sapling — one wood)
+        // payout lands (the fine-spot tree is a pool-3 sapling — three wood,
+        // R1's weave reseeded the stand)
         world.step();
         for (let index = 0; index < 8; index++) {
             world.step();
         }
-        expect(inventory.of('a').wood ?? 0).toBe(1);
+        expect(inventory.of('a').wood ?? 0).toBe(3);
         // THE WEAR — one successful payout = toolWearPerUse('axe','chop') = 5
         expect(axeOf(world, inventory)).toEqual({ tool: 'axe', health: 95, maxHealth: 100, damage: 5 });
         // The rack refills: a second chop (the wood leaves, the gate

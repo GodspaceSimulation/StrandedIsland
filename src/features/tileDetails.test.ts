@@ -3,23 +3,28 @@
 // All expectations come from the deterministic seed-7 island (default 25×17,
 // centered coordinates — see scenario/island.test.ts). The cast comes ashore
 // at the island edge (shipwreck rule):
-//   (−11,0)   sand tile (beach)   h3  voxels [stone, dirt, sand]   ground supply
-//             {stone, dirt, sand} ×∞  stock {stone:1, dirt:1, sand:1, coconut:2}  Ael stands here
+//   (−11,0)   sand tile (beach)   h3  voxels [stone, dirt, sand]  ground supply
+//             {dirt, sand} ×∞  stock {coconut:2, shell:1, dirt:1, sand:1}
+//             Ael stands here (R4: the meadow/beach stone is gone — the
+//             finite rock stands only on the highland sites)
 //   (−4,−7)   sand tile (beach)   h3  ground supply + shell draw
-//   (−12,−8)  shallows           h2  voxels [dirt, sand, water]  deposits {}         stock {fish:1}
+//   (−12,−8)  shallows           h2  voxels [dirt, sand, water]  deposits {}
+//             stock {} — T4: NO fish shoal; the water is an UNLIMITED source
+//             (the fishing tools + the constructed nets work it), marked a
+//             fishing water instead of a stock
 //   (0,0)     stone tile (highland) h7  voxels [stone ×5, dirt, stone]  supply
 //             {stone:1, dirt:1}  stock {stone:1, dirt:1}  Kiki flies at z 2
 //   (1,−2)    tree tile (meadow with its localized ingress) h5  voxels
-//             [stone ×3, dirt, grass]  supply
-//             {stone:1, dirt:1, grass:1, tree:10}  stock
-//             {tree:10, stone:1, dirt:1, grass:1, berry:3} — the meadow
-//             beside the woods carries its 10-spot edge fringe (the
-//             neighborhood model's localized tree ingress) — the 0.85-era
-//             (1,−4) meadow became a lake at the lowered 0.8 threshold
-//   (−7,0)    tree tile (forest) h5  voxels [stone ×3, dirt, grass, forest]
-//             supply {stone:1, dirt:1, grass:1} + the neighborhood-counted
-//             425-tree mirror — the persistent fine-scale stand
-//             (plugins/forest)
+//             [stone ×3, dirt, grass]  supply {dirt:1, grass:1}  stock
+//             {tree:11, dirt:1, grass:1} — T4: NO loose berries (the berry
+//             hangs on the standing bush's lazy fruit batch; this meadow
+//             carries no bush) — the 0.85-era (1,−4) meadow became a lake
+//             at the lowered 0.8 threshold
+//   (−7,0)    tree tile (forest) h5  voxels [dirt, grass, forest]
+//             supply {dirt:1, grass:1} + the neighborhood-counted 412-tree
+//             mirror — the persistent fine-scale stand (plugins/forest;
+//             R4: no stone, R1's water seams refuse the river-edge pool
+//             spots) + the standing bush's lazy batch + the mushroom ring
 //   (−5,3)    iron tile (lode — on the 37×25 reference board; the smaller
 //             25×17 default keeps every vein sample below the threshold)
 //             h7  supply {stone:1, dirt:1, iron:1}  stock {stone:1, dirt:1, iron:1, flint:1}
@@ -187,19 +192,21 @@ describe('occupantLine', () => {
 
 describe('tileGround', () => {
     it('generalizes the island-view stock into its item categories', () => {
-        // Sea: the shoal seeds two fish → Foods ×2 (R5 abundance)
-        expect(tileGround(island, [{ x: -12, y: -8 }])).toEqual([
-            { category: 'food', label: 'Foods', count: 2 },
-        ]);
-        // The meadow (1,−2): 3 berries (food — the abundance tuning) + the
+        // T4 — the sea reads EMPTY: no loose fish exists anywhere (the water
+        // is an UNLIMITED source — the fishing tools and the constructed
+        // nets draw it — so no tile carries a fish count to indicate; the
+        // fishing-waters enumeration and the net cards carry the indication
+        // instead)
+        expect(tileGround(island, [{ x: -12, y: -8 }])).toEqual([]);
+        // The meadow (1,−2): NO loose berries (the berry hangs on the lazy
+        // bush batch — and this meadow carries no bush at all) — only the
         // ground supply (dirt, grass — R4: the stone that the old endless
         // ground supply buried under the meadow stands only on the highland
-        // rock sites) + its localized 14-tree ingress fringe (T2's densified
-        // counts; each tree a material unit) — sixteen materials in all; the
-        // categories list in ITEM_KINDS order (food before material)
+        // rock sites) + its localized 11-tree ingress fringe (R1's EDGE
+        // WEAVE: the seam meander's meadow side; each tree a material unit)
+        // — thirteen materials in all
         expect(tileGround(island, [{ x: 1, y: -2 }])).toEqual([
-            { category: 'food', label: 'Foods', count: 3 },
-            { category: 'material', label: 'Materials', count: 16 },
+            { category: 'material', label: 'Materials', count: 13 },
         ]);
         // Ael's beach: TWO coconuts (food — the abundance tuning) + the
         // ground supply — shell, sand and dirt (three materials; R4: the
@@ -213,28 +220,32 @@ describe('tileGround', () => {
     });
 
     it('keeps the category generalization exact while the stock moves', () => {
-        // The berry stock is live — emptying it drops the Foods category
-        // entirely (zero categories drop out of the list); the ingress
-        // fringe's fourteen tree units (T2) plus the gravel-excluded ground
-        // supply keep the meadow's materials at sixteen
-        const stock = island.inventory.cellStock(1, -2);
-        const before = stock.berry ?? 0;
-        stock.berry = 0;
-        expect(tileGround(island, [{ x: 1, y: -2 }])).toEqual([
-            { category: 'material', label: 'Materials', count: 16 },
+        // The coconut stock is live — emptying it drops the Foods category
+        // entirely (zero categories drop out of the list); the beach's
+        // shell + gravel-excluded ground supply keep the materials at three
+        const stock = island.inventory.cellStock(-11, 0);
+        const before = stock.coconut ?? 0;
+        stock.coconut = 0;
+        expect(tileGround(island, [{ x: -11, y: 0 }])).toEqual([
+            { category: 'material', label: 'Materials', count: 3 },
         ]);
-        stock.berry = before;
+        stock.coconut = before;
     });
 
     it('scatters the parent ground across the parent sub-grid at scale 1', () => {
         // Each non-resource unit lands on ONE seeded subtile of the parent
         // tile's 425-tile sub-grid (pinned by the world seed):
         //   coconuts on (−11,0) → subtiles (−11,5) and (7,−4)
-        //   fish on (−12,−8) → subtile (9,5)
-        //   berries on (1,−2) → subtiles (1,−3), (11,0) and (2,8)
+        //   the shell draw on (−11,0) → subtile (−6,6)
+        //   mushrooms on the woods (0,5) → subtiles (−4,0), (−2,−4), (−3,−8)
+        //   the vine draw on (0,5) → subtile (0,1)
         // Tile-resource stock (the mirrors — ground supply, trees) never
         // scatters — those units stand as the subtile deposits the terrain
-        // distributed (trees at their persistent stand positions)
+        // distributed (trees at their persistent stand positions).
+        // T4 — NO fish and NO loose berries scatter: the sea stocks nothing
+        // (the water is an unlimited source) and the meadow's berries hang
+        // on the lazy bush batch (never loose stock) — the shallows' and
+        // the bare meadow's ground derivations are EMPTY at every zoom
         expect(tileGround(island, [{ x: -11, y: 0 }, { x: -11, y: 5 }])).toEqual([
             { item: 'coconut', count: 1 },
         ]);
@@ -242,18 +253,23 @@ describe('tileGround', () => {
             { item: 'coconut', count: 1 },
         ]);
         expect(tileGround(island, [{ x: -11, y: 0 }, { x: 0, y: 0 }])).toEqual([]);
-        expect(tileGround(island, [{ x: -12, y: -8 }, { x: 9, y: 5 }])).toEqual([
-            { item: 'fish', count: 1 },
+        expect(tileGround(island, [{ x: -11, y: 0 }, { x: -6, y: 6 }])).toEqual([
+            { item: 'shell', count: 1 },
         ]);
-        expect(tileGround(island, [{ x: 1, y: -2 }, { x: 1, y: -3 }])).toEqual([
-            { item: 'berry', count: 1 },
+        expect(tileGround(island, [{ x: 0, y: 5 }, { x: -4, y: 0 }])).toEqual([
+            { item: 'mushroom', count: 1 },
         ]);
-        expect(tileGround(island, [{ x: 1, y: -2 }, { x: 11, y: 0 }])).toEqual([
-            { item: 'berry', count: 1 },
+        expect(tileGround(island, [{ x: 0, y: 5 }, { x: -2, y: -4 }])).toEqual([
+            { item: 'mushroom', count: 1 },
         ]);
-        expect(tileGround(island, [{ x: 1, y: -2 }, { x: 2, y: 8 }])).toEqual([
-            { item: 'berry', count: 1 },
+        expect(tileGround(island, [{ x: 0, y: 5 }, { x: -3, y: -8 }])).toEqual([
+            { item: 'mushroom', count: 1 },
         ]);
+        expect(tileGround(island, [{ x: 0, y: 5 }, { x: 0, y: 1 }])).toEqual([
+            { item: 'vine', count: 1 },
+        ]);
+        expect(tileGround(island, [{ x: -12, y: -8 }, { x: 9, y: 5 }])).toEqual([]);
+        expect(tileGround(island, [{ x: 1, y: -2 }, { x: 1, y: -3 }])).toEqual([]);
     });
 
     it('reflects gathering at the island view in every zoomed view', () => {
@@ -281,7 +297,7 @@ describe('tileResources', () => {
         // densified finite biological stand), in TILE_RESOURCES order
         // (tree first)
         expect(tileResources(island.world.cellAt(1, -2)?.resources)).toEqual([
-            { resource: 'tree', count: 14, unlimited: false },
+            { resource: 'tree', count: 11, unlimited: false },
             { resource: 'dirt', count: 1, unlimited: true },
             { resource: 'grass', count: 1, unlimited: true },
         ]);
@@ -289,7 +305,7 @@ describe('tileResources', () => {
         // neighborhood-counted 425-tree mirror) beside the ground supply —
         // TILE_RESOURCES order (tree first); R4: no stone line
         expect(tileResources(island.world.cellAt(-7, 0)?.resources)).toEqual([
-            { resource: 'tree', count: 425, unlimited: false },
+            { resource: 'tree', count: 412, unlimited: false },
             { resource: 'dirt', count: 1, unlimited: true },
             { resource: 'grass', count: 1, unlimited: true },
         ]);
@@ -311,29 +327,30 @@ describe('tileResources', () => {
 describe('tileForest', () => {
     it('summarizes a forest tile\u2019s stand and reads a fine spot\u2019s tree card', () => {
         // The island view: the seeded stand of the woods (−7,0) — its
-        // neighborhood-counted 425 standing trees, 1688 wood across their
-        // pools (captured at the 0.8 threshold)
-        expect(tileForest(island, [{ x: -7, y: 0 }])).toEqual({ trees: 425, wood: 1688 });
+        // neighborhood-counted coverage clamps to the stand's POOL (R1's
+        // water seams refuse the 13 spots its river edge waterline claims —
+        // no tree stands on water): 412 standing trees, 1631 wood
+        expect(tileForest(island, [{ x: -7, y: 0 }])).toEqual({ trees: 412, wood: 1631 });
         // An INGRESS MEADOW carries its localized fringe as a real stand —
-        // the same summary shape the woods read (T2's densified fringe:
-        // 14 trees, 61 wood across their pools)
-        expect(tileForest(island, [{ x: 1, y: -2 }])).toEqual({ trees: 14, wood: 61 });
+        // the same summary shape the woods read (R1's seam meander:
+        // 11 trees, 51 wood across their pools)
+        expect(tileForest(island, [{ x: 1, y: -2 }])).toEqual({ trees: 11, wood: 51 });
         // A BARE meadow (no forest neighbor) carries no forest layer
         expect(tileForest(island, [{ x: 0, y: -3 }])).toBeUndefined();
         expect(tileForest(island, [{ x: -11, y: 0 }])).toBeUndefined();
         // Scale 0: the tree standing exactly on a treed fine spot — its
         // card (wood pool, age, maturity). The stand's first seeded
-        // position (−1,6) holds a captured pool-4 tree
-        const card = tileForest(island, [{ x: -7, y: 0 }, { x: -1, y: 6 }]);
+        // position (3,6) holds a captured pool-5 tree
+        const card = tileForest(island, [{ x: -7, y: 0 }, { x: 3, y: 6 }]);
         expect(card).toEqual({
             trees: 1,
-            wood: 4,
-            tree: { wood: 4, ageMinutes: 2008964, mature: false },
+            wood: 5,
+            tree: { wood: 5, ageMinutes: 2541202, mature: false },
         });
         // A bare fine cell of a wood carries no card — the first fine spot
         // the stand does NOT hold (deterministic row-major probe). The
-        // (−7,0) stand is NOW packed (425 trees fill all 425 sub-grid cells
-        // at the 0.8 density), so the probe uses the (7,3) stand (361 trees
+        // (−7,0) stand is nearly packed (412 trees fill all but the 13
+        // water spots), so the probe uses the (7,3) stand (361 trees
         // at T2's densified edge — it has bare cells; its first bare spot
         // is the sub-grid corner)
         const stand = island.terrain.forestOf(7, 3)!;
@@ -349,7 +366,7 @@ describe('tileForest', () => {
         expect(bareSpot).toEqual({ x: -12, y: -8 });
         expect(tileForest(island, [{ x: 7, y: 3 }, bareSpot!])).toBeUndefined();
         // Deeper paths carry nothing
-        expect(tileForest(island, [{ x: -7, y: 0 }, { x: -1, y: 6 }, { x: 0, y: 0 }])).toBeUndefined();
+        expect(tileForest(island, [{ x: -7, y: 0 }, { x: 3, y: 6 }, { x: 0, y: 0 }])).toBeUndefined();
     });
 });
 
@@ -375,28 +392,28 @@ describe('forest display lines (forestStandLine / forestTreeLine)', () => {
         // The seed-7 stands the tileForest block pins above — their human
         // reads, captured against the deterministic island
         expect(forestStandLine(tileForest(island, [{ x: -7, y: 0 }])!)).toBe(
-            '425 trees · 1688 wood standing',
+            '412 trees · 1631 wood standing',
         );
-        // T2's densified ingress fringe (and the densified (4,−5) edge
+        // R1's seam-meandered ingress fringe (and the densified (4,−5) edge
         // band that App.test pins on the canvas)
         expect(forestStandLine(tileForest(island, [{ x: 1, y: -2 }])!)).toBe(
-            '14 trees · 61 wood standing',
+            '11 trees · 51 wood standing',
         );
         expect(forestStandLine(tileForest(island, [{ x: 4, y: -5 }])!)).toBe(
-            '383 trees · 1518 wood standing',
+            '383 trees · 1522 wood standing',
         );
     });
 
     it('the tree card adds only age and maturity — never repeats the standing wood', () => {
         // The pinned card of the (−7,0) stand (tileForest block above):
-        // wood 4, ageMinutes 2008964 → 3.8 y, not mature
+        // wood 5, ageMinutes 2541202 → 4.8 y, not mature
         expect(
             forestTreeLine({
                 trees: 1,
-                wood: 4,
-                tree: { wood: 4, ageMinutes: 2008964, mature: false },
+                wood: 5,
+                tree: { wood: 5, ageMinutes: 2541202, mature: false },
             }),
-        ).toBe(' · age 3.8 y · growing');
+        ).toBe(' · age 4.8 y · growing');
         // A mature card: the full pool of 8 at exactly eight island years
         // (8 × 1440 × 365 minutes) reads "8 y · mature"
         expect(
@@ -474,7 +491,7 @@ describe('tileSummary', () => {
         });
     });
 
-    it('assembles a submerged shallows column with its fish stock', () => {
+    it('assembles a submerged shallows column — the unlimited water source reads bare (T4)', () => {
         expect(tileSummary(island, [{ x: -12, y: -8 }])).toEqual({
             path: [{ x: -12, y: -8 }],
             x: -12,
@@ -486,7 +503,12 @@ describe('tileSummary', () => {
             passable: false,
             voxels: ['dirt', 'sand', 'water'],
             resources: [],
-            ground: [{ category: 'food', label: 'Foods', count: 2 }],
+            // T4 — NO fish stock: the water is the UNLIMITED source (the
+            // fishing tools + the constructed nets work it) — no tile
+            // carries a fish count to indicate; the ground derivation
+            // reads EMPTY (the fishing-waters enumeration and the fishing
+            // plugin's net card carry the indication instead)
+            ground: [],
             occupants: [],
             structures: [],
             work: [],
@@ -499,18 +521,19 @@ describe('tileSummary', () => {
         expect(summary?.surface).toBe('tree');
         // R4: the woodland column carries no stone line (the finite rock
         // stands only on the highland sites) — the ground supply reads
-        // dirt + grass
+        // dirt + grass; the deposit mirrors the stand's pool (R1's water
+        // seams refuse the 13 river-edge spots)
         expect(summary?.resources).toEqual([
-            { resource: 'tree', count: 425, unlimited: false },
+            { resource: 'tree', count: 412, unlimited: false },
             { resource: 'dirt', count: 1, unlimited: true },
             { resource: 'grass', count: 1, unlimited: true },
         ]);
         // THE FOREST LAYER — the stand summary (captured at minute 0 at the
-        // 0.8 threshold)
-        expect(summary?.forest).toEqual({ trees: 425, wood: 1688 });
-        // An INGRESS meadow rides its fringe's layer (T2's densified
-        // fringe); a bare meadow carries no forest layer at all
-        expect(tileSummary(island, [{ x: 1, y: -2 }])?.forest).toEqual({ trees: 14, wood: 61 });
+        // 0.8 threshold, the water-refused pool clamped in)
+        expect(summary?.forest).toEqual({ trees: 412, wood: 1631 });
+        // An INGRESS meadow rides its fringe's layer (R1's seam meander);
+        // a bare meadow carries no forest layer at all
+        expect(tileSummary(island, [{ x: 1, y: -2 }])?.forest).toEqual({ trees: 11, wood: 51 });
         expect(tileSummary(island, [{ x: 0, y: -3 }])?.forest).toBeUndefined();
     });
 
@@ -636,45 +659,47 @@ describe('scaleView', () => {
 
     it('keeps the canvas objects and the inspector lists in exact agreement', () => {
         // Every ground unit the slice draws lands where the scale-1 Tile
-        // Inspector's derivation counts it — the berry subtiles of the
-        // meadow hold exactly the berries the board shows there
-        const slice = scaleView(island, [{ x: 1, y: -2 }]);
-        const berries = slice?.coordinates.all().filter((entry) => entry.type === 'berry');
-        expect(berries?.map((entry) => [entry.position.x, entry.position.y])).toEqual([
-            [1, -3],
-            [11, 0],
-            [2, 8],
+        // Inspector's derivation counts it — the mushroom subtiles of the
+        // woods hold exactly the mushrooms the board shows there (T4 — the
+        // meadow's berries are gone; the woods' seeded mushroom ring is the
+        // food the scatter pins now)
+        const slice = scaleView(island, [{ x: 0, y: 5 }]);
+        const mushrooms = slice?.coordinates.all().filter((entry) => entry.type === 'mushroom');
+        expect(mushrooms?.map((entry) => [entry.position.x, entry.position.y])).toEqual([
+            [-4, 0],
+            [-2, -4],
+            [-3, -8],
         ]);
-        expect(tileGround(island, [{ x: 1, y: -2 }, { x: 1, y: -3 }])).toEqual([
-            { item: 'berry', count: 1 },
+        expect(tileGround(island, [{ x: 0, y: 5 }, { x: -4, y: 0 }])).toEqual([
+            { item: 'mushroom', count: 1 },
         ]);
-        expect(tileGround(island, [{ x: 1, y: -2 }, { x: 11, y: 0 }])).toEqual([
-            { item: 'berry', count: 1 },
+        expect(tileGround(island, [{ x: 0, y: 5 }, { x: -2, y: -4 }])).toEqual([
+            { item: 'mushroom', count: 1 },
         ]);
-        expect(tileGround(island, [{ x: 1, y: -2 }, { x: 2, y: 8 }])).toEqual([
-            { item: 'berry', count: 1 },
+        expect(tileGround(island, [{ x: 0, y: 5 }, { x: -3, y: -8 }])).toEqual([
+            { item: 'mushroom', count: 1 },
         ]);
         // …and subtile (0,0) holds nothing — the inspector and board agree
-        expect(tileGround(island, [{ x: 1, y: -2 }, { x: 0, y: 0 }])).toEqual([]);
+        expect(tileGround(island, [{ x: 0, y: 5 }, { x: 0, y: 0 }])).toEqual([]);
     });
 
     it('scatters deeper views consistently with the inspector recursion', () => {
-        // A depth-2 island: the sea tile's sub-grid opens again — the fish
-        // unit that landed at (9,5) at scale 1 is the only item entering
-        // that board, scattered once more inside it
+        // A depth-2 island: the woods tile's sub-grid opens again — the
+        // mushroom unit that landed at (−4,0) at scale 1 enters that
+        // board, scattered once more inside it
         const deep = createIslandWorld({ seed: 7, terrain: { subtiles: 2 } });
-        const slice = scaleView(deep, [{ x: -12, y: -8 }, { x: 9, y: 5 }]);
-        const fish = slice?.coordinates.all().filter((entry) => entry.type === 'fish');
-        expect(fish?.length).toBe(1);
-        const spot = (fish as Array<{ position: { x: number; y: number } }>)[0].position;
+        const slice = scaleView(deep, [{ x: 0, y: 5 }, { x: -4, y: 0 }]);
+        const mushrooms = slice?.coordinates.all().filter((entry) => entry.type === 'mushroom');
+        expect(mushrooms?.length).toBe(1);
+        const spot = (mushrooms as Array<{ position: { x: number; y: number } }>)[0].position;
         // The board object and the inspector recursion agree exactly: the
         // unit stands at the subtile the derivation counts it in
-        expect(tileGround(deep, [{ x: -12, y: -8 }, { x: 9, y: 5 }, { x: spot.x, y: spot.y }])).toEqual([
-            { item: 'fish', count: 1 },
+        expect(tileGround(deep, [{ x: 0, y: 5 }, { x: -4, y: 0 }, { x: spot.x, y: spot.y }])).toEqual([
+            { item: 'mushroom', count: 1 },
         ]);
         // Any other subtile of that board is bare
-        expect(tileGround(deep, [{ x: -12, y: -8 }, { x: 9, y: 5 }, { x: 0, y: 0 }])).toEqual(
-            spot.x === 0 && spot.y === 0 ? [{ item: 'fish', count: 1 }] : [],
+        expect(tileGround(deep, [{ x: 0, y: 5 }, { x: -4, y: 0 }, { x: 0, y: 0 }])).toEqual(
+            spot.x === 0 && spot.y === 0 ? [{ item: 'mushroom', count: 1 }] : [],
         );
     });
 
@@ -894,7 +919,13 @@ describe('dominantVisibleType — the depth-2 fold is exact and invalidates (R6)
                     stubPath.length === 1 && stubPath[0].x === 0 && stubPath[0].y === 0
                         ? (cell as never)
                         : undefined,
-                canvasFor: () => undefined,
+                // R1 — the fold reads the cell's grid for the stamp's
+                // neighbor fragment; the stub answers an empty 1×1 canvas
+                // (the neighbors read `rim`, the fold runs)
+                canvasFor: (stubPath: Array<{ x: number; y: number }>) =>
+                    stubPath.length === 0
+                        ? ({ width: 1, height: 1, cells: [cell] } as never)
+                        : undefined,
                 surfaceKeyCounts: (stubPath: Array<{ x: number; y: number }>) =>
                     stubPath.length === 1 ? counts : undefined,
             },

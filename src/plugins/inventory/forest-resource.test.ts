@@ -6,26 +6,39 @@
 // integration.
 //
 // WHAT R7 CHANGED (the decisions these tests pin exactly):
-//   BIOME_STOCKS.forest   berry 2 → 4, mushroom 2 → 3 (the woods are the
-//                         island's larder — a surveyed forest reads FILLED
-//                         with berries and more from the first minute)
 //   VINE_CHANCE           0.35 → 0.6 (the woods hang vines thick)
 //   BUSH_CHANCE           split per biome: meadow stays 0.3, forest 0.6
 //                         (the forest undergrowth is the standing berry
 //                         reserve; the hash fold is unchanged so the raise
 //                         only ADDS forest bushes — 0.3 ⊂ 0.6)
-//   REGROW_CAPS           berry 5 → 6, mushroom 4 → 5, vine 2 → 3 — the
-//                         caps sit a clear step ABOVE the seeded abundance
-//                         so a picked forest refills past its start
+//   REGROW_CAPS           mushroom 4 → 5, vine 2 → 3 — the caps sit a clear
+//                         step ABOVE the seeded abundance so a picked forest
+//                         refills past its start
 // WHAT R7 PRESERVED (the depletion/regrowth ecosystem):
-//   REGROW_RHYTHM         every clock untouched (berry 30/20, mushroom
-//                         40/15, vine 80/30, …) — only the ceilings moved
+//   REGROW_RHYTHM         every remaining clock untouched (mushroom 40/15,
+//                         vine 80/30, …)
 //   finite minerals       stone/iron/shell/flint have NO cap and NO rhythm
 //                         — depleted sources regrow ONLY where the survey
 //                         seeded them (the eligibility registry, pinned in
 //                         inventoryPlugin.test.ts); the TREE has no stock
 //                         rhythm either (the forest ecology owns it)
-//   meadow / beach        seeding exactly as tuned before
+//   beach                 seeding exactly as tuned before
+//
+// WHAT T4 CHANGED (the ecology request — the decisions these tests now pin):
+//   BIOME_STOCKS          the AMBIENT LOOSE BERRIES are GONE: the meadow
+//                         stocks nothing loose, the forest keeps only its
+//                         mushroom ring — berries are BUSH AND FARM produce
+//                         (the bushes' lazy fruit batches + the farming
+//                         plugin's clock-driven plots; "Berries shouldn't
+//                         appear on the ground randomly, but in bushes")
+//   REGROW_CAPS/RHYTHM    berry, fish and bush LEFT the tables: no loose
+//                         berry pool exists to regrow, the water is an
+//                         UNLIMITED fish source (the fishing tools + the
+//                         constructed nets draw it forever — the source is
+//                         never a drawn-down stock), and the `bush` stock
+//                         key IS the standing plant (a constant one — the
+//                         BERRIES it bears regrow lazily per plant through
+//                         BUSH_BERRY_CAP / BUSH_RIPEN_MINUTES)
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -35,57 +48,76 @@ import {
     VINE_CHANCE_PER_FOREST_CELL,
     BUSH_CHANCE_PER_MEADOW_CELL,
     BUSH_CHANCE_PER_FOREST_CELL,
+    BUSH_BERRY_CAP,
+    BUSH_RIPEN_MINUTES,
     bushHash,
     bushAt,
 } from './inventoryPlugin';
 
-describe('R7 — the forest resource profile', () => {
-    it('seeds the forest as the island\'s larder — berry 4 + mushroom 3 per wood', () => {
-        // The EXACT living-stock seeding map, biome by biome: the forest is
-        // enriched, the meadow (3 berries) and beach (2 coconuts) stay
-        // exactly as tuned (no biome topology or non-forest changes)
+describe('R7/T4 — the forest resource profile', () => {
+    it('seeds NO ambient loose berries — the bushes bear them (T4)', () => {
+        // The EXACT living-stock seeding map, biome by biome: the meadow
+        // stocks NOTHING loose (T4 — the loose berry seeding left; the
+        // deterministic bush hash seeds the standing plants the berries
+        // hang on), the forest keeps its mushroom ring, the beach keeps
+        // its coconuts exactly as tuned.
         expect(BIOME_STOCKS).toEqual({
-            meadow: { berry: 3 },
-            forest: { berry: 4, mushroom: 3 },
+            meadow: {},
+            forest: { mushroom: 3 },
             beach: { coconut: 2 },
         });
-        // The berry seeds BEFORE the mushroom in the forest stock's
-        // insertion order — the hunger gather still picks the berry first
-        expect(Object.keys(BIOME_STOCKS.forest)).toEqual(['berry', 'mushroom']);
+        // No berry entry survives anywhere in the seeding map
+        Object.values(BIOME_STOCKS).forEach((stock) => {
+            expect(stock.berry).toBeUndefined();
+        });
     });
 
     it('raises the regrowth caps to match the enriched seeding', () => {
-        // R7 ceilings: berry 6 (above the forest's seeded 4), mushroom 5
-        // (above the seeded 3), vine 3 (the denser 0.6-chance map re-hangs
-        // richer per cell). The non-forest ceilings stay as tuned.
-        expect(REGROW_CAPS.berry).toBe(6);
+        // R7 ceilings: mushroom 5 (above the seeded 3), vine 3 (the denser
+        // 0.6-chance map re-hangs richer per cell). The non-forest ceilings
+        // stay as tuned.
         expect(REGROW_CAPS.mushroom).toBe(5);
         expect(REGROW_CAPS.vine).toBe(3);
-        expect(REGROW_CAPS.bush).toBe(3);
         expect(REGROW_CAPS.coconut).toBe(3);
-        expect(REGROW_CAPS.fish).toBe(3);
         expect(REGROW_CAPS.seaweed).toBe(2);
         expect(REGROW_CAPS.water).toBe(2);
         expect(REGROW_CAPS.frond).toBe(1);
+        // T4 — berry, fish and bush left the table (see the header)
+        expect(REGROW_CAPS.berry).toBeUndefined();
+        expect(REGROW_CAPS.fish).toBeUndefined();
+        expect(REGROW_CAPS.bush).toBeUndefined();
     });
 
     it('keeps the regrowth rhythms exactly as tuned — only the ceilings moved', () => {
         // The depletion/regrowth ECOSYSTEM clock is untouched by R7: every
-        // item fires on its original staggered world-minute rhythm.
+        // remaining item fires on its original staggered world-minute
+        // rhythm. T4 — the berry (no loose pool to regrow) and fish (the
+        // unlimited water source is never a stock) rhythms LEFT the table.
         expect(REGROW_RHYTHM).toEqual({
-            berry: { every: 30, offset: 20 },
-            fish: { every: 40, offset: 0 },
             coconut: { every: 60, offset: 10 },
             mushroom: { every: 40, offset: 15 },
             seaweed: { every: 50, offset: 25 },
             vine: { every: 80, offset: 30 },
         });
-        // The berry BUSH is a permanent plant, not a loose stock — it is
-        // deliberately absent from the generic rhythm table (the dedicated
-        // BUSH_RHYTHM pass over the bushCells registry refills it), and the
-        // frond shed keys off the TREE stock, not the frond key.
+        expect(REGROW_RHYTHM.berry).toBeUndefined();
+        expect(REGROW_RHYTHM.fish).toBeUndefined();
+        // The berry BUSH is a permanent plant, not a loose stock — its
+        // berries regrow through the lazy per-bush fruit record (the
+        // exported batch tuning below), and the frond shed keys off the
+        // TREE stock, not the frond key.
         expect(REGROW_RHYTHM.bush).toBeUndefined();
         expect(REGROW_RHYTHM.frond).toBeUndefined();
+    });
+
+    it('pins the bush fruit batch — the lazy ripening the plants obey (T4)', () => {
+        // The standing bush carries BUSH_BERRY_CAP berries and ripens one
+        // every BUSH_RIPEN_MINUTES world minutes after a pluck (a
+        // plucked-bare bush refills its batch over cap × interval — 180
+        // minutes, near the old 40-minute-rhythm refill pace but keyed to
+        // the PLANT, so the bush stays visible and inspectable whatever
+        // its fruit count)
+        expect(BUSH_BERRY_CAP).toBe(3);
+        expect(BUSH_RIPEN_MINUTES).toBe(60);
     });
 
     it('keeps the finite minerals finite — no cap, no rhythm, no regrowth', () => {

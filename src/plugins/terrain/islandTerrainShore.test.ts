@@ -13,8 +13,11 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+    BLEND_FEATHER_CHANCE,
+    BLEND_MAX_PUSH,
     SHORE_DEEP_LAYERS,
     SHORE_WATER_CAP,
+    edgeMask,
     fineWaterColumn,
     islandTerrainPlugin,
     shoreMask,
@@ -65,12 +68,29 @@ const grid = (
 const beachParent = (waterLevel = 3): TerrainCell => column('beach', true, waterLevel);
 
 describe('islandTerrain — the scale-0 shore mask (R1)', () => {
-    it('carries the documented cap and deep-layer constants', () => {
+    it('carries the documented cap and deep-layer constants (and the weave\'s own tuning)', () => {
         // The land-majority cap: a shore never drowns more than 40% of its
         // interior; a deep waterline reaches two layers (the waterline plus
-        // the wave-gated shallows tongue)
+        // the wave-gated shallows tongue). R1's EDGE WEAVE tuning: the seam
+        // push caps at two fine cells, the feather wisps stay sparse
         expect(SHORE_WATER_CAP).toBe(0.4);
         expect(SHORE_DEEP_LAYERS).toBe(2);
+        expect(BLEND_MAX_PUSH).toBe(2);
+        expect(BLEND_FEATHER_CHANCE).toBe(0.05);
+    });
+
+    it('lays a fresh river waterline against a river ford (R1 EDGE WEAVE: the ford is water)', () => {
+        const parent = beachParent();
+        const canvas = grid([{ x: 0, y: 1, cell: column('river', true) }], 7, 5, parent);
+        const mask = shoreMask(parent, 'p', canvas, 7);
+        const expected = new Map<string, ShoreWater>();
+        for (let x = -3; x <= 3; x++) {
+            expected.set(`${x},2`, { depth: 1, basin: 'river' });
+        }
+        expect(mask).toEqual(expected);
+        // The ford itself stays PASSABLE water (the ford's semantics are
+        // untouched — the waterline lives on the beach side only; the
+        // fixture's river column is passable by construction)
     });
 
     it('opens a FULL one-voxel waterline row toward a cardinal shallows neighbor', () => {
@@ -277,7 +297,7 @@ describe('islandTerrain — the R1 shore agreement on the generated island', () 
         return [...counts.values()];
     };
 
-    it('materializes every masked shore spot as real water and keeps every unmasked cell inherited', () => {
+    it('materializes every masked shore spot as real water and keeps every unblended cell inherited', () => {
         const plugin = islandTerrainPlugin();
         const world = createWorld({ seed: 7, plugins: [plugin] });
         const canvas = world.canvas as Canvas;
@@ -287,41 +307,53 @@ describe('islandTerrain — the R1 shore agreement on the generated island', () 
             if (parent.biome !== 'beach' || !parent.passable) {
                 return;
             }
-            // Only tiles that actually face water carry a mask
+            // Only tiles that actually face water carry a mask — the RIVER
+            // ford counts (it is passable water: the EDGE WEAVE lays the
+            // fresh waterline against it)
             const facesWater = NEIGHBOR_OFFSETS.some((offset) => {
                 const neighbor = world.cellAt(parent.x + offset.dx, parent.y + offset.dy);
-                return neighbor !== undefined && !neighbor.passable;
+                return neighbor !== undefined && (!neighbor.passable || neighbor.biome === 'river');
             });
             const path: TilePath = [{ x: parent.x, y: parent.y }];
-            const mask = shoreMask(parent, tilePathKey(path), canvas, 7);
+            // THE COMBINED PLAN: the shore's waterline (river fords included)
+            // plus the EDGE WEAVE's neighbor-surface looks — the same
+            // edgeMask the materializer and the histogram read
+            const plan = edgeMask(parent, path, canvas, 7);
+            const shoreWater = shoreMask(parent, tilePathKey(path), canvas, 7);
             if (!facesWater) {
                 // An inland sand flat shapes nothing
-                expect(mask.size).toBe(0);
+                expect(plan.water.size).toBe(0);
+                expect(shoreWater.size).toBe(0);
                 return;
             }
             shores = shores + 1;
             // THE LAND-MAJORITY CAP — the coarse tile keeps its sand look
-            expect(mask.size).toBeLessThanOrEqual(cap);
+            expect(plan.water.size).toBeLessThanOrEqual(cap);
             const sub = plugin.canvasFor(path);
             if (!sub) {
                 throw new Error(`no sub-grid for the beach tile ${parent.x},${parent.y}`);
             }
-            const halfX = (sub.width - 1) / 2;
-            const halfY = (sub.height - 1) / 2;
             sub.cells.forEach((fine) => {
-                const spot = mask.get(`${fine.x},${fine.y}`);
-                if (spot) {
+                const spot = `${fine.x},${fine.y}`;
+                const water = plan.water.get(spot);
+                const look = plan.land.get(spot);
+                if (water) {
                     // The masked spot is REAL water: impassable,
                     // deposit-free, the exact sea-shaped column
                     expect(fine.passable).toBe(false);
                     expect(fine.resources).toEqual({});
-                    expect(fineWaterColumn(parent.waterLevel, spot)).toEqual({
+                    expect(fineWaterColumn(parent.waterLevel, water)).toEqual({
                         voxels: fine.voxels,
                         height: fine.height,
                         biome: fine.biome,
                     });
+                } else if (look) {
+                    // The blend spot carries the neighbor's surface
+                    const wantedBiome =
+                        look === 'grass' ? 'meadow' : look === 'forest' ? 'forest' : look === 'sand' ? 'beach' : 'highland';
+                    expect(fine.biome).toBe(wantedBiome);
                 } else {
-                    // The unmasked cell inherits its parent exactly
+                    // The unblended cell inherits its parent exactly
                     expect(fine.passable).toBe(parent.passable);
                     expect(fine.biome).toBe(parent.biome);
                 }
@@ -355,26 +387,122 @@ describe('islandTerrain — the R1 shore agreement on the generated island', () 
         });
     });
 
-    it('never shapes a non-beach parent — woods, meadows and rock zoom pure', () => {
+    it('R2 — sea and basins zoom 100% pure; the river zooms into its banks (T3)', { timeout: 30_000 }, () => {
         const plugin = islandTerrainPlugin();
         const world = createWorld({ seed: 7, plugins: [plugin] });
-        const control = (spot: { x: number; y: number }) => {
-            const parent = world.cellAt(spot.x, spot.y);
-            if (!parent || !parent.passable) {
+        const canvas = world.canvas as Canvas;
+        // The fresh basins and the sea: their zoomed interiors are 100% the
+        // parent's own water. T3 carves the RIVER out — its passable ford
+        // zooms into the living riverbank: the organic water body ringed by
+        // synthesized dry banks (islandTerrainRiver.test.ts owns the exact
+        // band, connectivity and bank-column pins)
+        canvas.cells.forEach((parent) => {
+            const isWater =
+                !parent.passable ||
+                parent.biome === 'ocean' ||
+                parent.biome === 'shallows';
+            if (!isWater) {
                 return;
             }
-            const sub = plugin.canvasFor([spot]);
+            const sub = plugin.canvasFor([{ x: parent.x, y: parent.y }]);
             if (!sub) {
-                throw new Error('no sub-grid');
+                throw new Error(`no sub-grid for ${parent.x},${parent.y}`);
             }
             sub.cells.forEach((fine) => {
-                expect(fine.passable).toBe(parent.passable);
                 expect(fine.biome).toBe(parent.biome);
+                expect(fine.passable).toBe(parent.passable);
+                // No finite deposit (tree, stone, iron) ever lands on water
+                expect(fine.resources.tree ?? 0).toBe(0);
+                expect(fine.resources.stone ?? 0).toBe(0);
+                expect(fine.resources.iron ?? 0).toBe(0);
             });
-        };
-        // A forest interior, a highland peak, an inland meadow
-        control({ x: 0, y: 0 });
-        control({ x: 1, y: -2 });
-        control({ x: -1, y: -1 });
+        });
+        // THE RIVER (T3): the ford's zoom keeps the water the majority river
+        // — passable fresh water with a water top — while every bank is dry
+        // raised ground with no water voxel and no finite stock
+        canvas.cells
+            .filter((cell) => cell.biome === 'river')
+            .forEach((cell) => {
+                const sub = plugin.canvasFor([{ x: cell.x, y: cell.y }])!;
+                let waterFine = 0;
+                sub.cells.forEach((fine) => {
+                    expect(fine.resources.tree ?? 0).toBe(0);
+                    expect(fine.resources.stone ?? 0).toBe(0);
+                    expect(fine.resources.iron ?? 0).toBe(0);
+                    if (fine.biome === 'river') {
+                        waterFine = waterFine + 1;
+                        expect(fine.passable).toBe(true);
+                        expect(fine.voxels[fine.voxels.length - 1]).toBe('water');
+                    } else {
+                        expect(['beach', 'meadow']).toContain(fine.biome);
+                        expect(fine.passable).toBe(true);
+                        expect(fine.voxels.includes('water')).toBe(false);
+                    }
+                });
+                // The 60–70% water band — the zoomed river is still the river
+                expect(waterFine / sub.cells.length).toBeGreaterThanOrEqual(0.6);
+                expect(waterFine / sub.cells.length).toBeLessThanOrEqual(0.7);
+            });
+    });
+
+    it('the EDGE WEAVE blends every land parent toward its differing neighbors (the mask is the truth)', () => {
+        const plugin = islandTerrainPlugin();
+        const world = createWorld({ seed: 7, plugins: [plugin] });
+        const canvas = world.canvas as Canvas;
+        let blended = 0;
+        canvas.cells.forEach((parent) => {
+            if (parent.biome === 'beach' || !parent.passable) {
+                // The beach's shore is the first test's contract; water
+                // parents blend nothing (the R2 test above)
+                return;
+            }
+            const path: TilePath = [{ x: parent.x, y: parent.y }];
+            const mask = edgeMask(parent, path, canvas, 7);
+            if (mask.water.size === 0 && mask.land.size === 0) {
+                return;
+            }
+            blended = blended + 1;
+            const sub = plugin.canvasFor(path)!;
+            sub.cells.forEach((fine) => {
+                const spot = `${fine.x},${fine.y}`;
+                const water = mask.water.get(spot);
+                const look = mask.land.get(spot);
+                if (water) {
+                    // The water spot is REAL water — the sea-shaped column
+                    expect(fine.passable).toBe(false);
+                    expect(fine.resources).toEqual({});
+                    expect(fineWaterColumn(parent.waterLevel, water)).toEqual({
+                        voxels: fine.voxels,
+                        height: fine.height,
+                        biome: fine.biome,
+                    });
+                } else if (look) {
+                    // The blend spot carries the neighbor's surface: the
+                    // borrowed look's biome + its top voxel, still passable
+                    expect(fine.passable).toBe(parent.passable);
+                    const wantedBiome =
+                        look === 'grass' ? 'meadow' : look === 'forest' ? 'forest' : look === 'sand' ? 'beach' : 'highland';
+                    expect(fine.biome).toBe(wantedBiome);
+                    const wantedVoxel =
+                        look === 'grass' ? 'grass' : look === 'forest' ? 'forest' : look === 'sand' ? 'sand' : 'gravel';
+                    expect(fine.voxels[fine.voxels.length - 1]).toBe(wantedVoxel);
+                    // No finite deposit is CLONED onto a neighboring-biome
+                    // cell (R2) — the rock look carries no stone at all
+                    if (look === 'rock') {
+                        expect(fine.resources.stone ?? 0).toBe(0);
+                        expect(fine.resources.dirt ?? 0).toBe(0);
+                        expect(fine.resources.grass ?? 0).toBe(0);
+                        expect(fine.resources.sand ?? 0).toBe(0);
+                    }
+                } else {
+                    // The unblended cell inherits its parent exactly
+                    expect(fine.passable).toBe(parent.passable);
+                    expect(fine.biome).toBe(parent.biome);
+                }
+            });
+        });
+        // The seed-7 island actually carries woven edges — the regression
+        // is not vacuous
+        expect(blended).toBeGreaterThan(0);
     });
 });

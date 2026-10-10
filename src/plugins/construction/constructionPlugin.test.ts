@@ -128,6 +128,25 @@ const handBuild = (
        Array.from(handle.world.actors.keys())
            .filter((id) => id !== worker.id)
            .forEach((id) => handle.world.despawn(id));
+       // THE TOOL GUARD — the despawn-to-one erases the OTHER castaways'
+       // bags, and if the crew's axe/hammer rode in one of them the
+       // construction plugin's owed-tool demand (toolRawOf → the materials
+       // rung) resurrects: every idle minute plans a 'seeks stone'/'seeks
+       // wood' trek that walks the sole worker OFF the hand-build footprint
+       // (the effect's atSite revalidation then rejects every queued build
+       // minute — the march probe: work frozen at 1 with the head task
+       // 'materials:move:seeks stone'). Top the survivor's kit up to ONE
+       // axe + ONE hammer — only what the bag lacks (the durability
+       // fixtures' benchKit already counts exact tool stacks: a blind
+       // second hammer would break the wear/break arithmetic) — so
+       // crewHasTool stays true and the owed-tool demand stays closed.
+       // This fixture owns the staging/work mechanics, not the tool economy.
+       if ((handle.inventory.of(worker.id).axe ?? 0) < 1) {
+           handle.inventory.spawnKit(worker.id, { axe: 1 });
+       }
+       if ((handle.inventory.of(worker.id).hammer ?? 0) < 1) {
+           handle.inventory.spawnKit(worker.id, { hammer: 1 });
+       }
         // THE THREATS GO EVERY MINUTE - the flee rung (60) outranks the
         // deliver shell (24): a prowling boar or a shark swimming past the
         // raft beach churns the hand-queued minutes and walks the worker
@@ -301,6 +320,10 @@ describe('constructionPlugin — the shared registries', () => {
             // above hunger (a ripe plot beats foraging), plant below the
             // build rungs
             { id: 'farm-harvest', priority: 41 },
+            // T4 — the fishing bridge rides the same 41 slot (registration
+            // order puts it after farm-harvest): the hungry hand hauls a
+            // ripe net or crafts its spear/rod before the hunger rung
+            { id: 'fishing-bridge', priority: 41 },
             { id: 'hunger', priority: 40 },
             { id: 'roost', priority: 33 },
             { id: 'sleep', priority: 30 },
@@ -351,6 +374,10 @@ describe('constructionPlugin — the shared registries', () => {
         { id: 'mend', priority: 14 },
         // R5 — the farm plant/plant-tending rung sits above lumber (10)
         { id: 'farm', priority: 12 },
+        // T4 — the fishing stewardship rung: haul a ripe net underfoot, rig
+        // one on eligible shore ground with the materials in hand, trek to
+        // a ripe one — above lumber (10), below the build rungs
+        { id: 'fishing', priority: 11 },
         { id: 'lumber', priority: 10 },
             { id: 'wander', priority: 0 },
         ]);

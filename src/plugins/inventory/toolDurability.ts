@@ -53,10 +53,17 @@
 
 import { inventoryRemove, type Inventory } from './inventory';
 
-/** Full health per tool — the crafted equipment's material stamina. */
+/** Full health per tool — the crafted equipment's material stamina.
+ * T4 — the FISHING GEAR joins the ledger: a spear (a flint-tipped shaft)
+ * spends 60 health over its life, a rod (a stick with a line) 90. The
+ * canonical bag rule, the wear-at-use rule and the atomic break below are
+ * exactly the axe/hammer contract — the fishing catch charges the SAME
+ * service through `useTool(world, holder, tool, 'fish', bag)`. */
 export const TOOL_MAX_HEALTH: Record<string, number> = {
     axe: 100,
     hammer: 100,
+    spear: 60,
+    rod: 90,
 };
 
 /** The default stamina of an unlisted tool (an unknown durable is sturdy). */
@@ -72,6 +79,11 @@ export const toolMaxHealth = (toolId: string): number => TOOL_MAX_HEALTH[toolId]
  *          finish a shared tile chop job and pay wood: 5 health per tree;
  *   hammer — 'build' (the construction rung commits one site work-minute):
  *          1 health per build minute;
+ *   spear — 'fish' (the inventory plugin's shore catch, a successful
+ *          landing): 2 health per fish — 30 fish wear a fresh spear out
+ *          (60/2), so the spear is the cheap fast tool that runs out;
+ *   rod   — 'fish' (the same catch): 1 health per fish — 90 fish per rod,
+ *          the patient tool that outlasts the spear;
  *   anything else (including idle and non-tool wear kinds) costs nothing —
  *   tools never wear on the clock.
  */
@@ -80,6 +92,14 @@ export const toolWearPerUse = (toolId: string, taskKind: string): number => {
         return 5;
     }
     if (toolId === 'hammer' && taskKind === 'build') {
+        return 1;
+    }
+    // T4 — the fishing gear wears on the SUCCESSFUL catch (a fish actually
+    // landed), never on the failed cast or the walk to the shore
+    if (toolId === 'spear' && taskKind === 'fish') {
+        return 2;
+    }
+    if (toolId === 'rod' && taskKind === 'fish') {
         return 1;
     }
     return 0;

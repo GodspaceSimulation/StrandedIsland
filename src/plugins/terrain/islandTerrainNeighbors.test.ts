@@ -1,5 +1,5 @@
 // Tests for the NEIGHBORHOOD RESOURCE MODEL (plugins/terrain/islandTerrain.ts
-// generation pass 2) — the focused controlled-neighborhood regression pins.
+// generation passes 2–3) — the focused controlled-neighborhood regression pins.
 //
 // The model: resources generated within a tile depend on ALL EIGHT of its
 // neighbors (NEIGHBOR_OFFSETS — 4 cardinals + 4 diagonals), cardinals
@@ -10,26 +10,29 @@
 //                       stand, fewer forest neighbors land lower;
 //   meadow neighbor   — R1's GRASSLAND≡FOREST EQUIVALENCE: a meadow edge
 //                       feeds the FOREST on the gain side at the identical
-//                       0.1 / 0.05 ladder (forestCoverageOf's 3rd argument),
+//                       0.1 / 0.05 ladder (forestCoverageOf's 3rd argument);
 //                       MEADOW tiles beside woods ALSO gain their own
 //                       LOCALIZED TREE INGRESS along each shared forest edge
-//                       (meadowIngressSpots — 6 spots per cardinal edge, 2
-//                       per diagonal corner, every shared edge served, spots
-//                       closest to THAT edge first);
+//                       (meadowIngressSpots — R1's EDGE WEAVE: the MEADOW
+//                       side of the shared SEAM's seeded meander — the wood
+//                       grows clearings exactly where the meadow does not
+//                       grow trees — coherent, never a fixed strip);
 //   highland neighbor — coverage penalty (ROCK_NEIGHBOR_* — the same 0.1 /
 //                       0.05 ladder) AND a rock-spillover band carved along
-//                       the shared edge (rockSpillSpots — checkerboard
-//                       halved); the zoomed interior crowns the band's fine
-//                       cells with a boulder and no tree stands on one;
-//   beach / water     — contribute nothing.
+//                       the shared edge (rockSpillSpots — R1's EDGE WEAVE:
+//                       the forest side of the shared SEAM's meander, no
+//                       longer a checkerboard); the zoomed interior crowns
+//                       the band's fine cells with a boulder and no tree
+//                       stands on one;
+//   beach / water     — contribute nothing to the coverage (the waterline
+//                       seams are the edge weave's own treatment).
 //
 // The pure helpers (neighborhoodOf / forestCoverageOf / rockSpillSpots /
-// meadowIngressSpots) are pinned on SYNTHETIC canvases with hand-placed
-// biomes — fully controlled neighborhoods; the generateIsland integration
-// pins sweep the whole seed-7 reference board (every forest and meadow)
-// against the same pure math, plus the stand/subgrid/carve/cache fallout.
-// Every expected value below was captured from a reference run — the model
-// is a pure function of the finished biome map (no random draws).
+// meadowIngressSpots / seamSpots) are pinned on SYNTHETIC canvases with
+// hand-placed biomes — fully controlled neighborhoods; the generateIsland
+// integration pins sweep the whole seed-7 reference board (every forest and
+// meadow) against the same pure math, plus the stand/subgrid/carve/cache
+// fallout. Every expected value below was captured from a reference run.
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -39,18 +42,18 @@ import {
     forestCoverageOf,
     rockSpillSpots,
     meadowIngressSpots,
+    seamSpots,
+    edgeMask,
     FOREST_COVERAGE,
     FOREST_NEIGHBOR_CARDINAL,
     FOREST_NEIGHBOR_DIAGONAL,
     ROCK_NEIGHBOR_CARDINAL,
     ROCK_NEIGHBOR_DIAGONAL,
-    MEADOW_INGRESS_CARDINAL,
-    MEADOW_INGRESS_DIAGONAL,
     type Neighborhood,
     type Offset,
 } from './islandTerrain';
 import { createWorld } from '../../engine/world';
-import { NEIGHBOR_OFFSETS } from '@godspace/core';
+import { NEIGHBOR_OFFSETS, randomKeyed, tilePathKey } from '@godspace/core';
 import type { Biome, Canvas, TerrainCell } from '../../engine/types';
 
 // ── Synthetic canvas helper — hand-placed biomes, fully controlled ──────────
@@ -92,16 +95,14 @@ const OFFSETS = NEIGHBOR_OFFSETS as ReadonlyArray<Offset>;
 
 describe('the neighborhood weights (constants)', () => {
     it('cardinals weigh double the diagonals, on both the gain and the penalty side', () => {
-        // T2 densified the resources: the isolated base rose to 60% and the
-        // meadow ingress fringe thickened (8 per cardinal edge, 3 per
-        // diagonal corner) — the neighbor weights themselves are untouched
+        // T2 densified the resources: the isolated base rose to 60% — the
+        // neighbor weights themselves are untouched. R1 retired the fixed
+        // ingress quotas (the fringe is the seam meander now)
         expect(FOREST_COVERAGE).toBe(0.6);
         expect(FOREST_NEIGHBOR_CARDINAL).toBe(0.1);
         expect(FOREST_NEIGHBOR_DIAGONAL).toBe(0.05);
         expect(ROCK_NEIGHBOR_CARDINAL).toBe(0.1);
         expect(ROCK_NEIGHBOR_DIAGONAL).toBe(0.05);
-        expect(MEADOW_INGRESS_CARDINAL).toBe(8);
-        expect(MEADOW_INGRESS_DIAGONAL).toBe(3);
     });
 });
 
@@ -241,96 +242,163 @@ describe('forestCoverageOf (cardinal vs diagonal arithmetic)', () => {
     });
 });
 
-describe('rockSpillSpots (the spillover band)', () => {
-    it('a cardinal highland spills one checkerboard-halved fine row/column along the shared edge', () => {
-        // 7×5 board (half 3/2): the north edge row y=−2 keeps its even
-        // (x+y)-parity spots only — scree scatters, never walls
-        expect(rockSpillSpots(7, 5, [{ dx: 0, dy: -1 }])).toEqual(['-2,-2', '0,-2', '2,-2']);
-        // The south edge row y=+2 — the same parity half
-        expect(rockSpillSpots(7, 5, [{ dx: 0, dy: 1 }])).toEqual(['-2,2', '0,2', '2,2']);
-        // The east edge column x=+3
-        expect(rockSpillSpots(7, 5, [{ dx: 1, dy: 0 }])).toEqual(['3,-1', '3,1']);
-        // Both edges combined — the union, row-major
-        expect(rockSpillSpots(7, 5, [{ dx: 0, dy: -1 }, { dx: 0, dy: 1 }])).toEqual([
-            '-2,-2', '0,-2', '2,-2', '-2,2', '0,2', '2,2',
+describe('rockSpillSpots (the spillover band — R1 EDGE WEAVE)', () => {
+    // The band is the FOREST side of each shared highland SEAM: the seeded
+    // meander (seamSpots) decides where the scree runs — captured lists. The
+    // canonical stream is `seam:<low>~<high>`; the fixture tile sits at the
+    // origin (0,0), the highland neighbor one step over.
+    const origin = { x: 0, y: 0 };
+    const seed = 7;
+
+    it('a cardinal highland spills a WAVY band along the shared edge — contiguous runs, no checkerboard', () => {
+        // 7×5 board (half 3/2), forest at (0,0): the north seam's meander
+        // pushes into the tile for five of the seven positions, two of them
+        // TWO cells deep (the second row y=−1) — a coherent run, never the
+        // old even-parity half of the edge row
+        expect(rockSpillSpots(7, 5, seed, origin, [{ dx: 0, dy: -1 }])).toEqual([
+            '-2,-2', '-1,-2', '0,-2', '-1,-1', '0,-1',
+        ]);
+        // The south seam pushed the OTHER way (the highland keeps its own
+        // side): two shallow spots on the south edge
+        expect(rockSpillSpots(7, 5, seed, origin, [{ dx: 0, dy: 1 }])).toEqual(['-2,2', '-1,2']);
+        // The east seam: two lone spots on the east column
+        expect(rockSpillSpots(7, 5, seed, origin, [{ dx: 1, dy: 0 }])).toEqual(['3,-2', '3,2']);
+        // The west seam: two spots on the west column
+        expect(rockSpillSpots(7, 5, seed, origin, [{ dx: -1, dy: 0 }])).toEqual(['-3,-1', '-3,0']);
+        // Both north+south combined — the union, row-major
+        expect(rockSpillSpots(7, 5, seed, origin, [{ dx: 0, dy: -1 }, { dx: 0, dy: 1 }])).toEqual([
+            '-2,-2', '-1,-2', '0,-2', '-1,-1', '0,-1', '-2,2', '-1,2',
         ]);
     });
 
-    it('a diagonal highland spills the corner wedge (the corner cell plus its two flanks)', () => {
-        // SE corner (3,2): the corner itself is odd-parity (bare), its two
-        // flanks (3,1) and (2,2) carry even parity — row-major order
-        expect(rockSpillSpots(7, 5, [{ dx: 1, dy: 1 }])).toEqual(['3,1', '2,2']);
-        // NW corner (−3,−2): the corner is odd-parity, the flanks (−2,−2)
-        // and (−3,−1) even — row-major
-        expect(rockSpillSpots(7, 5, [{ dx: -1, dy: -1 }])).toEqual(['-2,-2', '-3,-1']);
+    it('a diagonal highland spills the corner wedge (the corner cell, flanks when the push runs deep)', () => {
+        // SE corner (3,2): the meander pushed INTO the tile — the corner
+        // alone (the flank roll held the flanks back)
+        expect(rockSpillSpots(7, 5, seed, origin, [{ dx: 1, dy: 1 }])).toEqual(['3,2']);
+        // NW corner: the push favored the HIGHLAND side — the tile keeps
+        // bare woods at that corner
+        expect(rockSpillSpots(7, 5, seed, origin, [{ dx: -1, dy: -1 }])).toEqual([]);
     });
 
     it('the 25×17 board carves the exact bands generation stamps (the reference carves)', () => {
-        // The seed-7 default island's six carved tiles — captured; (2,0)
-        // and (2,1) sit beside TWO highlands (the west highland column's
-        // full checkerboard band plus the diagonal corner)
-        expect(rockSpillSpots(25, 17, [{ dx: -1, dy: 0 }])).toEqual([
-            '-12,-8', '-12,-6', '-12,-4', '-12,-2', '-12,0', '-12,2', '-12,4', '-12,6', '-12,8',
+        // The seed-7 default island's carved tiles — captured; (2,0)'s west
+        // highland band is one contiguous wavy run of six (the old
+        // checkerboard's nine scattered spots are gone)
+        expect(rockSpillSpots(25, 17, 7, { x: 2, y: 0 }, [{ dx: -1, dy: 0 }])).toEqual([
+            '-12,-3', '-12,-2', '-12,-1', '-12,0', '-12,1', '-12,2',
         ]);
-        expect(rockSpillSpots(25, 17, [{ dx: -1, dy: -1 }])).toEqual(['-12,-8']);
-        expect(rockSpillSpots(25, 17, [{ dx: -1, dy: 1 }])).toEqual(['-12,8']);
+        // The diagonal corners of (2,0): both pushes favored the highland
+        expect(rockSpillSpots(25, 17, 7, { x: 2, y: 0 }, [{ dx: -1, dy: -1 }])).toEqual([]);
+        expect(rockSpillSpots(25, 17, 7, { x: 2, y: 0 }, [{ dx: -1, dy: 1 }])).toEqual([]);
+    });
+
+    it('the band is seeded and spatially coherent — reproducible, seed-varying, never a fixed parity stripe', () => {
+        // Reproducible: the same inputs return an equal (fresh) list
+        const first = rockSpillSpots(7, 5, seed, origin, [{ dx: 1, dy: 1 }]);
+        expect(rockSpillSpots(7, 5, seed, origin, [{ dx: 1, dy: 1 }])).toEqual(first);
+        expect(first).not.toBe(rockSpillSpots(7, 5, seed, origin, [{ dx: 1, dy: 1 }]));
+        // Seed-varying: a different seed draws a different band somewhere
+        // across the four cardinal edges (the meander's phase/cycles/push
+        // all re-derive)
+        const varied = [1, 2, 3, 4, 5].some((other) =>
+            [0, 1, 2, 3].some((direction) => {
+                const offset = [
+                    { dx: 0, dy: -1 }, { dx: 1, dy: 0 }, { dx: 0, dy: 1 }, { dx: -1, dy: 0 },
+                ][direction];
+                return JSON.stringify(rockSpillSpots(25, 17, other, origin, [offset]))
+                    !== JSON.stringify(rockSpillSpots(25, 17, seed, origin, [offset]));
+            }),
+        );
+        expect(varied).toBe(true);
+        // SPATIALLY COHERENT — the band is a run, never the checkerboard's
+        // alternating stripe: the checkerboard's parity rule never puts two
+        // EDGE-ADJACENT fine cells in the band, while the meander's runs
+        // always touch somewhere on every band of two or more spots
+        [1, 2, 3, 4, 5, 7].forEach((bandSeed) => {
+            const band = rockSpillSpots(25, 17, bandSeed, { x: 0, y: 0 }, [{ dx: -1, dy: 0 }]);
+            if (band.length < 2) {
+                return;
+            }
+            const edgeYs = band
+                .filter((key) => Number(key.split(',')[0]) === -12)
+                .map((key) => Number(key.split(',')[1]))
+                .sort((left, right) => left - right);
+            const touches = edgeYs.some((y, index) => index > 0 && y - edgeYs[index - 1] === 1);
+            expect(touches, `seed ${bandSeed} band ${JSON.stringify(band)} must run, not alternate`).toBe(true);
+        });
     });
 
     it('no rocky neighbors carve nothing; the output is row-major and pure', () => {
-        expect(rockSpillSpots(7, 5, [])).toEqual([]);
-        // Pure: the same inputs return an equal (fresh) list every call
-        const first = rockSpillSpots(7, 5, [{ dx: 1, dy: 1 }]);
-        expect(rockSpillSpots(7, 5, [{ dx: 1, dy: 1 }])).toEqual(first);
-        expect(first).not.toBe(rockSpillSpots(7, 5, [{ dx: 1, dy: 1 }]));
+        expect(rockSpillSpots(7, 5, seed, origin, [])).toEqual([]);
+    });
+
+    it('the seam both tiles derive is the SAME meander (the composite boundary is one curve)', () => {
+        // The forest (selfKey A) and the highland (otherKey B) derive the
+        // identical stream — neither side may claim the same fine cell, and
+        // both sides convert somewhere (captured seed-7 east seam)
+        const forestKey = tilePathKey([{ x: 0, y: 0 }]);
+        const highlandKey = tilePathKey([{ x: 1, y: 0 }]);
+        const forestSide = seamSpots(7, 5, seed, forestKey, highlandKey, { dx: 1, dy: 0 });
+        const highlandSide = seamSpots(7, 5, seed, highlandKey, forestKey, { dx: -1, dy: 0 });
+        forestSide.forEach((_reach, key) => {
+            expect(highlandSide.has(key)).toBe(false);
+        });
+        expect([...forestSide.entries()]).toEqual([['3,-2', 1], ['3,2', 1]]);
+        expect([...highlandSide.entries()]).toEqual([['-3,0', 1]]);
     });
 });
 
-describe('meadowIngressSpots (the localized tree ingress)', () => {
-    it('a cardinal forest edge claims its 8 closest fine cells along THAT shared edge', () => {
-        // 7×5 board, forest to the EAST: T2's densified fringe — the edge
-        // column (x=3) ranks first alongside one cell deep (x=2) on three
-        // rows, the two southern rows keep their edge cell only (row-major
-        // rank: the edge cells first, the deep cells by row)
-        expect(meadowIngressSpots(7, 5, [{ dx: 1, dy: 0 }])).toEqual([
-            '2,-2', '3,-2', '2,-1', '3,-1', '2,0', '3,0', '3,1', '3,2',
-        ]);
-        // Forest to the WEST — the mirrored fringe (the west edge column
-        // x=−3 first, one cell deep x=−2 on the top three rows)
-        expect(meadowIngressSpots(7, 5, [{ dx: -1, dy: 0 }])).toEqual([
-            '-3,-2', '-2,-2', '-3,-1', '-2,-1', '-3,0', '-2,0', '-3,1', '-3,2',
-        ]);
-        // 25×17, forest to the NORTH: the first eight cells of the top row
-        expect(meadowIngressSpots(25, 17, [{ dx: 0, dy: -1 }])).toEqual([
-            '-12,-8', '-11,-8', '-10,-8', '-9,-8', '-8,-8', '-7,-8', '-6,-8', '-5,-8',
+describe('meadowIngressSpots (the localized tree ingress — R1 EDGE WEAVE)', () => {
+    // The fringe is the MEADOW side of each shared forest SEAM: the seeded
+    // meander decides where the trees stand — captured lists.
+    const origin = { x: 0, y: 0 };
+    const seed = 7;
+
+    it('a cardinal forest edge grows its trees along the seam meander', () => {
+        // 7×5 board, forest to the EAST: the meadow side kept two edge
+        // cells (the wood side grew clearings elsewhere along the seam)
+        expect(meadowIngressSpots(7, 5, seed, origin, [{ dx: 1, dy: 0 }])).toEqual(['3,-2', '3,2']);
+        // Forest to the WEST — the mirrored seam's meadow side
+        expect(meadowIngressSpots(7, 5, seed, origin, [{ dx: -1, dy: 0 }])).toEqual(['-3,-1', '-3,0']);
+        // 25×17, forest to the NORTH: the meander's run along the top row
+        // plus its one-deep second layer
+        expect(meadowIngressSpots(25, 17, seed, origin, [{ dx: 0, dy: -1 }])).toEqual([
+            '-9,-8', '-8,-8', '-7,-8', '-6,-8', '-5,-8', '-4,-8', '-3,-8', '-2,-8', '-1,-8', '0,-8', '1,-8',
+            '-9,-7', '-6,-7', '-5,-7', '-4,-7', '-3,-7', '-2,-7', '-1,-7',
         ]);
     });
 
-    it('a diagonal forest edge claims its 3 closest cells at the shared corner', () => {
-        // SE corner (3,2) on the 7×5 board: T2's densified corner wedge —
-        // the corner's two flanks first (even parity ranks), the corner
-        // itself third by row-major Chebyshev rank
-        expect(meadowIngressSpots(7, 5, [{ dx: 1, dy: 1 }])).toEqual(['2,1', '3,1', '3,2']);
-        // 25×17 SW corner: the corner (−12,8), its flank up (−11,7) and the
-        // cell above (−12,7)
-        expect(meadowIngressSpots(25, 17, [{ dx: -1, dy: 1 }])).toEqual(['-12,7', '-11,7', '-12,8']);
+    it('a diagonal forest edge grows its corner wedge when the meander pushes the meadow side', () => {
+        // SE corner (3,2) on the 7×5 board: the meadow side kept the corner
+        expect(meadowIngressSpots(7, 5, seed, origin, [{ dx: 1, dy: 1 }])).toEqual(['3,2']);
+        // 25×17 SW corner: the push favored the WOOD side — the meadow
+        // corner stays bare (the meander, not a quota, decides)
+        expect(meadowIngressSpots(25, 17, seed, origin, [{ dx: -1, dy: 1 }])).toEqual([]);
     });
 
-    it('every shared edge gains its fringe — claimed spots fall through to the next edge', () => {
-        // East cardinal edge + SE diagonal edge: the cardinal fills its
-        // eight (edge row + one deep), the diagonal's three closest — (3,1),
-        // (3,2) then (2,1) — serve the corner after their edge cells were
-        // claimed: ELEVEN spots total (the claimed-cell fall-through dedupes
-        // the shared rank), each edge served (row-major order)
-        expect(meadowIngressSpots(7, 5, [{ dx: 1, dy: 0 }, { dx: 1, dy: 1 }])).toEqual([
-            '2,-2', '3,-2', '2,-1', '3,-1', '1,0', '2,0', '3,0', '2,1', '3,1', '2,2', '3,2',
+    it('every shared edge is served by its own seam; the union is row-major', () => {
+        // East cardinal edge + SE diagonal edge: the two seams' meadow
+        // sides union (deduped), row-major
+        expect(meadowIngressSpots(7, 5, seed, origin, [{ dx: 1, dy: 0 }, { dx: 1, dy: 1 }])).toEqual([
+            '3,-2', '3,2',
         ]);
     });
 
     it('a meadow beside no woods gains nothing; the output is row-major and pure', () => {
-        expect(meadowIngressSpots(7, 5, [])).toEqual([]);
-        const first = meadowIngressSpots(7, 5, [{ dx: 1, dy: 0 }]);
-        expect(meadowIngressSpots(7, 5, [{ dx: 1, dy: 0 }])).toEqual(first);
-        expect(first).not.toBe(meadowIngressSpots(7, 5, [{ dx: 1, dy: 0 }]));
+        expect(meadowIngressSpots(7, 5, seed, origin, [])).toEqual([]);
+        const first = meadowIngressSpots(7, 5, seed, origin, [{ dx: 1, dy: 0 }]);
+        expect(meadowIngressSpots(7, 5, seed, origin, [{ dx: 1, dy: 0 }])).toEqual(first);
+        expect(first).not.toBe(meadowIngressSpots(7, 5, seed, origin, [{ dx: 1, dy: 0 }]));
+    });
+
+    it('the refuse set holds the waterline spots out of the fringe (no tree stands on water, R2)', () => {
+        // A refuse set containing the whole fringe empties it
+        const all = meadowIngressSpots(7, 5, seed, origin, [{ dx: 1, dy: 0 }]);
+        const refused = new Set(all);
+        expect(meadowIngressSpots(7, 5, seed, origin, [{ dx: 1, dy: 0 }], refused)).toEqual([]);
+        // A partial refuse removes exactly those spots
+        const partial = new Set([all[0]]);
+        expect(meadowIngressSpots(7, 5, seed, origin, [{ dx: 1, dy: 0 }], partial)).toEqual(all.slice(1));
     });
 });
 
@@ -405,8 +473,9 @@ describe('the neighborhood model on the seed-7 reference island (25×17)', () =>
         // The full sweep over STABLE meadows (none of the 8 neighbors is a
         // lake/pond — R2's basin pass priced the pond-adjacent meadows from
         // the pre-swap map): every stable meadow's tree deposit IS its
-        // ingress fringe's size (meadowIngressSpots of its forest edges);
-        // bare meadows read 0
+        // ingress fringe's size (meadowIngressSpots of its forest edges,
+        // the tile's own water spots refused — R2: no tree stands on
+        // water); bare meadows read 0
         const lakesPonds = new Set(
             island.cells.filter((cell) => cell.biome === 'lake' || cell.biome === 'pond').map((cell) => `${cell.x},${cell.y}`),
         );
@@ -415,56 +484,57 @@ describe('the neighborhood model on the seed-7 reference island (25×17)', () =>
             .filter((cell) => !dirs.some(([dx, dy]) => lakesPonds.has(`${cell.x + dx},${cell.y + dy}`)))
             .forEach((cell) => {
                 const edges = neighborhoodOf(island, cell.x, cell.y).forest;
-                expect(cell.resources.tree ?? 0).toBe(meadowIngressSpots(island.width, island.height, edges).length);
+                const refuse = edgeMask(cell, [{ x: cell.x, y: cell.y }], island, 7).water;
+                expect(cell.resources.tree ?? 0).toBe(
+                    meadowIngressSpots(island.width, island.height, 7, cell, edges, refuse).length,
+                );
             });
-        // CARDINAL-ONLY quota: (0,3) has one cardinal forest edge (0,1) —
-        // exactly 8 ingress spots under T2's densified fringe (captured)
+        // The ingress rides the SEAM MEANDER now, not a fixed quota — the
+        // captured per-tile counts (the meadow side of each shared forest
+        // seam, the water spots refused):
         expect(neighborhoodOf(island, 0, 3).forest).toEqual([{ dx: 0, dy: 1 }]);
         expect(cellAt(island, 0, 3).resources.tree).toBe(8);
-        // DIAGONAL-ONLY corner fringe: (−1,3) has one diagonal forest edge —
-        // exactly 3 spots (captured)
+        // (−1,3)'s south-west corner: the meander favored the WOOD side, so
+        // the meadow corner grew no trees at all (the wood's own side did)
         expect(neighborhoodOf(island, -1, 3).forest).toEqual([{ dx: 1, dy: 1 }]);
-        expect(cellAt(island, -1, 3).resources.tree).toBe(3);
-        // The cardinal-double rule on the ingress side: (1,3) has two
-        // DIAGONAL edges → 6 spots; (1,2) has 1 cardinal + 1 diagonal → 11
+        expect(cellAt(island, -1, 3).resources.tree).toBeUndefined();
+        // (1,3) and (1,2): the two seams' meadow sides
         expect(neighborhoodOf(island, 1, 3).forest).toEqual([{ dx: 1, dy: -1 }, { dx: -1, dy: 1 }]);
-        expect(cellAt(island, 1, 3).resources.tree).toBe(6);
+        expect(cellAt(island, 1, 3).resources.tree).toBe(3);
         expect(neighborhoodOf(island, 1, 2).forest).toEqual([{ dx: 1, dy: -1 }, { dx: 1, dy: 0 }]);
-        expect(cellAt(island, 1, 2).resources.tree).toBe(11);
-        // A fully walled-in meadow corner beside the eastern pond: (6,1)
-        // priced its ingress from the pre-basin map (5 forest edges → 36
-        // captured under the 8/3 fringe); (7,1) sits 5 edges out → 33
-        expect(cellAt(island, 6, 1).resources.tree).toBe(36);
-        expect(cellAt(island, 7, 1).resources.tree).toBe(33);
+        expect(cellAt(island, 1, 2).resources.tree).toBe(6);
+        // A fully walled-in meadow corner beside the eastern pond: (6,1) and
+        // (7,1) — captured seam sides
+        expect(cellAt(island, 6, 1).resources.tree).toBe(28);
+        expect(cellAt(island, 7, 1).resources.tree).toBe(28);
         // BARE meadows (no forest neighbor at all): no deposit at all
         ['0,-3', '0,-2', '-2,1', '-2,2', '-1,2', '0,2', '-3,3', '-2,3'].forEach((key) => {
             const [x, y] = key.split(',').map(Number);
             expect(neighborhoodOf(island, x, y).forest).toEqual([]);
             expect(cellAt(island, x, y).resources.tree).toBeUndefined();
         });
-        // THE INGRESS IS LOCALIZED — (1,−2) shares its east edge with the
-        // woods: its 14 spots (1 cardinal + 2 diagonal edges under T2's 8/3
-        // fringe) hug that edge in the tile's east column; captured exact
-        // list
-        expect(meadowIngressSpots(island.width, island.height, neighborhoodOf(island, 1, -2).forest)).toEqual([
-            '11,-8', '12,-8', '11,-7', '12,-7', '12,-6', '12,-5', '12,-4', '12,-3',
-            '12,-2', '12,-1', '12,0', '11,7', '12,7', '12,8',
+        // THE INGRESS IS LOCALIZED — (1,−2)'s three forest seams (NE, E, SE)
+        // meander their tree runs into the tile's east column; the exact
+        // captured list (the deposit IS this list's length)
+        const ingressCell = cellAt(island, 1, -2);
+        expect(meadowIngressSpots(island.width, island.height, 7, ingressCell, neighborhoodOf(island, 1, -2).forest)).toEqual([
+            '11,-8', '12,-8', '12,-7', '12,-1', '11,0', '12,0', '11,1', '12,1', '12,7', '11,8', '12,8',
         ]);
-        expect(cellAt(island, 1, -2).resources.tree).toBe(14);
+        expect(ingressCell.resources.tree).toBe(11);
     });
 
     it('rocky neighborhoods suppress the stand and carve the spillover band (captured carves)', () => {
-        // The island's six carved tiles — the exact bands, row-major
+        // The island's four carved tiles — the exact bands, row-major (the
+        // seam meander's runs; the two diagonal-corner pushes favored the
+        // highland side, so (−2,−2) and (2,2) carve nothing this seed)
         const carvings = island.cells
             .filter((cell) => cell.carving)
             .map((cell) => `${cell.x},${cell.y}:${cell.carving?.rock.join(',')}`);
         expect(carvings).toEqual([
-            '-2,-2:12,8',
-            '-3,-1:12,8',
+            '-3,-1:12,7,11,8,12,8',
             '2,-1:-12,8',
-            '2,0:-12,-8,-12,-6,-12,-4,-12,-2,-12,0,-12,2,-12,4,-12,6,-12,8',
-            '2,1:-12,-8,-12,-6,-12,-4,-12,-2,-12,0,-12,2,-12,4,-12,6,-12,8',
-            '2,2:-12,-8',
+            '2,0:-12,-3,-12,-2,-12,-1,-12,0,-12,1,-12,2',
+            '2,1:-12,-8,-12,-1,-11,-1,-12,0,-12,1,-12,7,-12,8',
         ]);
         // THE ROCK SUPPRESSION — (2,0) sits beside the west highland column
         // (cardinal −0.1) and the highland corner (diagonal −0.05): 5 forest
@@ -476,8 +546,8 @@ describe('the neighborhood model on the seed-7 reference island (25×17)', () =>
         expect(forestCoverageOf(neighborhood.forest, neighborhood.rock, neighborhood.meadow)).toBe(0.9);
         expect(cellAt(island, 2, 0).resources.tree).toBe(383);
         // The band never eats the whole stand: the deposit stays within the
-        // band-free pool (425 − 9 band spots)
-        expect(cellAt(island, 2, 0).resources.tree).toBeLessThanOrEqual(425 - 9);
+        // band-free pool (425 − the 6 band spots)
+        expect(cellAt(island, 2, 0).resources.tree).toBeLessThanOrEqual(425 - 6);
     });
 
     it('is deterministic: the same seed regenerates the identical canvas, carves included', () => {
@@ -499,23 +569,22 @@ describe('the neighborhood fallout in the zoomed interior (sub-grids, stands, ca
         canvas.cells[(y + halfY) * canvas.width + (x + halfX)];
 
     it('the ingress meadow persists a REAL stand exactly matching its fringe (one source of truth)', () => {
-        // The meadow (1,−2) carries a stand of its 14 ingress spots (R2 swapped
-        // (1,−4) to an interior pond — its east-edge meadow (1,−2) owns the
-        // 14-spot fringe under T2's 8/3 rule); the stand's positions ARE
-        // meadowIngressSpots' selection (the same pure list generation pass 2
-        // wrote the deposit from)
+        // The meadow (1,−2) carries a stand of its 11 ingress spots (R1's
+        // EDGE WEAVE: the meadow side of its three forest seams — NE, E, SE
+        // — meandered into the tile's east column); the stand's positions
+        // ARE meadowIngressSpots' selection (the same pure list generation
+        // pass 3 wrote the deposit from)
         const stand = plugin.forestOf(1, -2);
-        expect(stand?.trees.size).toBe(14);
+        expect(stand?.trees.size).toBe(11);
         const spotList = Array.from(stand?.trees.keys() ?? []).sort((left, right) => {
             const [lx, ly] = left.split(',').map(Number);
             const [rx, ry] = right.split(',').map(Number);
             return ly - ry || lx - rx;
         });
         expect(spotList).toEqual([
-            '11,-8', '12,-8', '11,-7', '12,-7', '12,-6', '12,-5', '12,-4', '12,-3',
-            '12,-2', '12,-1', '12,0', '11,7', '12,7', '12,8',
+            '11,-8', '12,-8', '12,-7', '12,-1', '11,0', '12,0', '11,1', '12,1', '12,7', '11,8', '12,8',
         ]);
-        // The zoom mirrors it: exactly those 14 subtiles carry one tree
+        // The zoom mirrors it: exactly those 11 subtiles carry one tree
         const sub = plugin.canvasFor([{ x: 1, y: -2 }]);
         const treed = sub?.cells.filter((cell) => (cell.resources.tree ?? 0) > 0).map((cell) => `${cell.x},${cell.y}`);
         expect(treed).toEqual(spotList);
@@ -526,12 +595,12 @@ describe('the neighborhood fallout in the zoomed interior (sub-grids, stands, ca
     });
 
     it('no tree stands on a boulder: the spillover band and the stand never overlap', () => {
-        // (2,0) carries the 9-spot west band; the zoomed interior crowns
+        // (2,0) carries the 6-spot west band; the zoomed interior crowns
         // EXACTLY those fine cells with a GRAVEL voxel (R4's boulder — the
         // rock-terrain material) stacked on top
         const carved = cellAt(2, 0);
         const band = carved.carving?.rock ?? [];
-        expect(band.length).toBe(9);
+        expect(band.length).toBe(6);
         const sub = plugin.canvasFor([{ x: 2, y: 0 }])!;
         const bouldered = sub.cells
             .filter((cell) => cell.voxels.length === carved.voxels.length + 1 && cell.voxels[cell.voxels.length - 1] === 'gravel')
@@ -580,7 +649,7 @@ describe('the neighborhood fallout in the zoomed interior (sub-grids, stands, ca
         carved.carving = { rock: originalBand };
         const third = plugin.canvasFor([{ x: 2, y: 0 }]);
         expect(third).not.toBe(second);
-        expect(third?.cells.filter((cell) => cell.voxels.length === carved.voxels.length + 1 && cell.voxels[cell.voxels.length - 1] === 'gravel').length).toBe(9);
+        expect(third?.cells.filter((cell) => cell.voxels.length === carved.voxels.length + 1 && cell.voxels[cell.voxels.length - 1] === 'gravel').length).toBe(6);
         // A carve-less parent never grows boulders (no carving field → no
         // band → the fingerprint's 'none' stamp)
         expect(cellAt(3, -3).carving).toBeUndefined();
@@ -594,11 +663,12 @@ describe('the neighborhood fallout in the zoomed interior (sub-grids, stands, ca
         // carries one tree unit on exactly the stand's positions
         const treedTiles = canvas.cells.filter((cell) => (cell.resources.tree ?? 0) > 0);
         // The plugin canvas (post seedStands) prices each stand from its
-        // boulder-free pool: 91 carry a living stand (R4 washed the 12
-        // basin tiles clean — the pure generateIsland reads 92 — R4's
-        // river fords cut 2 more treed meadow cells, and seedStands
-        // refuses the spots that fall inside a spillover band)
-        expect(treedTiles.length).toBe(91);
+        // boulder-and-water-free pool: 85 carry a living stand (R4 washed
+        // the 12 basin tiles clean — the pure generateIsland reads 92 —
+        // R4's river fords cut 2 more treed meadow cells, R1's water seams
+        // refused the fringes whose every spot fell on water, and seedStands
+        // refuses the spots inside a spillover band)
+        expect(treedTiles.length).toBe(85);
         treedTiles.forEach((tile) => {
             const stand = plugin.forestOf(tile.x, tile.y);
             expect(stand).toBeDefined();
@@ -626,19 +696,19 @@ describe('the neighborhood fallout in the zoomed interior (sub-grids, stands, ca
         // the mirroring for) would otherwise desync.
         const carved = cellAt(2, 0);
         const band = carved.carving!.rock;
-        expect(band.length).toBe(9);
+        expect(band.length).toBe(6);
         const stand = plugin.forestOf(2, 0)!;
         const before = stand.trees.size;
         // THE REFUSAL — planting onto the band's first spot returns the
         // stand unchanged (same size, no record added)
-        const refused = plugin.forestPlant(2, 0, { x: -12, y: 0 }, {
+        const refused = plugin.forestPlant(2, 0, { x: -12, y: -3 }, {
             born: 5,
             base: 3,
             baseMinute: 5,
             carry: 0,
         });
         expect(refused.trees.size).toBe(before);
-        expect(refused.trees.has('-12,0')).toBe(false);
+        expect(refused.trees.has('-12,-3')).toBe(false);
         expect(plugin.forestOf(2, 0)?.trees.size).toBe(before);
         // A non-carved spot still plants (the guard refuses ONLY the band)
         const planted = plugin.forestPlant(2, 0, { x: 0, y: 0 }, {

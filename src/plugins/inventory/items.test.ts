@@ -107,7 +107,13 @@ describe('item categories', () => {
     it('maps ground items to their canvas emoji', () => {
         expect(ITEM_TYPE_GLYPHS.berry).toBe('🍒');
         expect(ITEM_TYPE_GLYPHS.coconut).toBe('🥥');
-        expect(ITEM_TYPE_GLYPHS.fish).toBe('🐟');
+        // T4 — R2: the ISLAND's ground-item palette carries NO fish glyph:
+        // no ground stock ever holds a fish unit again (the water is an
+        // unlimited source), so the island's own fallback can never draw a
+        // wild-fish emoji on the board. (The shared canvas package keeps a
+        // dormant stock glyph — never reached, since no ground entry is
+        // typed 'fish'.) The caught fish stays a bag item, rendered as text.
+        expect(ITEM_TYPE_GLYPHS.fish).toBeUndefined();
         expect(ITEM_TYPE_GLYPHS.shell).toBe('🐚');
         expect(ITEM_TYPE_GLYPHS.water).toBe('💧');
         expect(ITEM_TYPE_GLYPHS.vine).toBe('🌿');

@@ -5,11 +5,14 @@
 // sand — mirrors every matching dry column; GRAVEL supplies nothing — it is
 // terrain, not a resource; FINITE STONE stands only on the localized rock
 // sites (the highland peaks + the generator's peak-fallback heap); trees
-// stand in the forests' persistent fine-scale records; berries AND
-// mushrooms in the meadows and woods, fish AND seaweed in the water (the
-// sea AND the impassable fresh basins — R4/R5, fished from the dry shore),
-// coconuts on beaches, iron lodes in the highlands, flints, vines, the
-// sea's fish and seaweed), grows the living stocks back over time, keeps the
+// stand in the forests' persistent fine-scale records; mushrooms in the
+// woods, coconuts on beaches; the sea's seaweed — T4: FISH IS NO LONGER A
+// GROUND STOCK: the water is an UNLIMITED fish source worked with tools
+// (the shore cast demands a spear or a rod) and by constructed nets, and a
+// body AFLOAT feeds itself from the water directly (the natural path — the
+// sharks' and the afloat birds' feeding, plugins/behavior) so no tile
+// carries a fish count to indicate — R2, no wild-fish indicators anywhere),
+// grows the living stocks back over time, keeps the
 // rain as WEATHER (the event — R4: rain no longer scatters drinking-water
 // pools onto the land; the fresh water stands in the lake/pond basins, the
 // river courses and their dry shore rings — the basins refill on their own
@@ -18,6 +21,17 @@
 // and exposes the
 // gathering + harvest + exchange actions that other plugins (behavior,
 // lumber) and the god-view drive.
+//
+// T4 — THE BERRY ECONOMY: berries are BUSH AND FARM produce — never a loose
+// ground stock. R4 removed the ambient loose-berry seeding and its regrowth
+// rhythm (no berries appear on the ground at random); every meadow/forest
+// bush stands as a PERMANENT PLANT (the `bush` stock key = the standing
+// plant, one per bush cell — it never draws down and the bush is visible
+// when its berries are gone) that BEARS a lazy fruit batch (BUSH_BERRY_CAP
+// berries, one ripening every BUSH_RIPEN_MINUTES world minutes — the
+// per-bush fruit record below), and the farming plugin pays cultivated
+// harvests straight into bags. The gather action plucks a berry OFF the
+// standing plant.
 //
 // TILE DEPOSITS: every canvas cell carries `resources` (engine/types.ts
 // TileResources) — written by the terrain generator, kept in sync here. The
@@ -45,10 +59,11 @@
 import { arrayEach } from '@presource/core';
 import { type Position3D } from '@godspace/core';
 import type { Actor, TerrainCell, TileResource } from '../../engine/types';
-import { TILE_RESOURCES, UNLIMITED_TILE_RESOURCES, isFreshBasin } from '../../engine/types';
+import { TILE_RESOURCES, UNLIMITED_TILE_RESOURCES, isFreshBasin, isSeaWater } from '../../engine/types';
 import type { PluginContext, WorldPlugin } from '@godspace/core';
 import type { World } from '../../engine/world';
 import { itemDef, itemLabel, itemWeight, inventoryWeight, MINED_ITEMS } from './items';
+import { useTool } from './toolDurability';
 import {
     inventoryAdd,
     inventoryEntries,
@@ -89,22 +104,22 @@ export type InventoryPluginOptions = {
  * abundant, while every rhythm, eligibility rule and finite resource stays
  * exactly as tuned before.
  *
- * R7 — the caps MATCH the enriched forest seeding (see BIOME_STOCKS): berry
- * 5 → 6 and mushroom 4 → 5 keep the equilibrium a clear step above the
- * forest's seeded 4 / 3 (a picked cell refills PAST its starting abundance),
- * and the vine cap 2 → 3 lets the denser 0.6-chance vine map re-hang richer
- * per cell for the build chains. EXPORTED for the resource-profile tests
+ * T4 — the berry, fish and bush entries LEFT the table:
+ *   berry — no loose ground stock exists any more (berries are bush/farm
+ *           produce; the bush's own fruit batch regrows lazily per plant —
+ *           BUSH_BERRY_CAP/BUSH_RIPEN_MINUTES below — and the farm pays
+ *           bags directly, plugins/farming);
+ *   fish  — the water is an UNLIMITED source (the fishing tools and the
+ *           nets draw it forever; the source is never drawn down, exactly
+ *           like the river-water branch);
+ *   bush  — the `bush` stock key IS the standing plant (a constant one
+ *           per bush cell — it never regrows because it never depletes;
+ *           the BERRIES it bears are the lazy per-bush fruit record).
+ * EXPORTED for the resource-profile tests
  * (plugins/inventory/forest-resource.test.ts pins this tuning table). */
 export const REGROW_CAPS: Record<string, number> = {
-    // Berries ripen in clusters — a berry patch refills past a handful
-    // (R7: 5 → 6, matching the forest's richer 4-berry seeding)
-    berry: 6,
-    // The water's two stocks: a cell holds a small shoal, not a single fish,
-    // and seaweed mats the shallows. R5 — the fish cap is raised so the
-    // lakes and the sea read ABUNDANTLY stocked (the shore fishery the
-    // hunger ladder now works — plugins/behavior); the shoal refills on the
-    // fish rhythm below.
-    fish: 3,
+    // The water's remaining stock: seaweed mats the shallows. (The fish
+    // cap left with the fish stock — T4: the water is an unlimited source.)
     seaweed: 2,
     // Nut-bearing palms carry a small crown
     coconut: 3,
@@ -120,10 +135,6 @@ export const REGROW_CAPS: Record<string, number> = {
     // richer per cell, feeding the rope chains without new item ids.
     vine: 3,
     frond: 1,
-    // R2 — the berry bush regrows the berries it bears (the stand itself is a
-    // permanent meadow/forest feature; only its berry stock draws down and
-    // refills, on the bush rhythm below) — a laden bush carries three
-    bush: 3,
     // shell / iron / flint / STONE are finite — no regrowth (stone draws
     // down with the localized rock-site stock; the 🪨 icon drops when it
     // empties — drawDeposit deletes the entry at 0)
@@ -139,24 +150,36 @@ export const REGROW_CAPS: Record<string, number> = {
  * staggered so the early-game stock pins and the pre-construction runs are
  * untouched (a vine cell sits at its cap until harvested).
  *
- * R7 — the rhythms are PRESERVED exactly (the depletion/regrowth ecosystem
- * keeps its clock; only the seeding, chances and caps were enriched).
- * EXPORTED so the resource-profile tests can pin the untouched clock.
+ * T4 — the berry and fish rhythms LEFT the table: no loose berry stock and
+ * no fish stock exists any more (berries are the bushes' lazy fruit batches
+ * + the farm's clock-driven plots; fish is the unlimited water source —
+ * neither has a ground pool to regrow). EXPORTED so the resource-profile
+ * tests can pin the remaining clock.
  */
 export const REGROW_RHYTHM: Record<string, { every: number; offset: number }> = {
-    berry: { every: 30, offset: 20 },
-    fish: { every: 40, offset: 0 },
     coconut: { every: 60, offset: 10 },
     mushroom: { every: 40, offset: 15 },
     seaweed: { every: 50, offset: 25 },
     vine: { every: 80, offset: 30 },
-    // R2 — the berry bush is NOT listed here: it is a permanent PLANT, not
-    // a loose stock — a DEDICATED pass (the BUSH_RHYTHM over the bushCells
-    // registry, below) refills the stand off the plant registry instead of
-    // the seeded-stock registry the generic sweep uses
+    // The berry BUSH is a permanent PLANT, not a loose stock — its berries
+    // regrow through the lazy per-bush fruit record (BUSH_RIPEN_MINUTES,
+    // below), never through a sweep
     // The frond shed runs on its own rhythm (FROND_RHYTHM below) — it is
     // keyed off the TREE stock, not the frond key, so it is not listed here
 };
+
+/**
+ * T4 — THE BERRY-BUSH FRUIT BATCH: the berries ONE standing bush bears.
+ * The bush is a permanent plant (the `bush` stock key, one per bush cell);
+ * its berries live in a dedicated per-bush record and ripen lazily — one
+ * berry every BUSH_RIPEN_MINUTES world minutes up to the cap (60: a
+ * plucked-bare bush refills its three berries over three island hours —
+ * near the old 40-minute-rhythm refill pace, but keyed to the PLANT, so
+ * the bush is visible and inspectable whatever its fruit count). EXPORTED
+ * for the resource-profile and bush tests.
+ */
+export const BUSH_BERRY_CAP = 3;
+export const BUSH_RIPEN_MINUTES = 60;
 
 /**
  * The FROND SHED — palm fronds drop beneath the standing trees on this
@@ -178,48 +201,25 @@ const FROND_SELLER = 'tree';
  * rhythm tops it back up (the basin never dries, so the stock refills on a
  * staggered world-minute cadence keyed off the same fine clock as the other
  * rhythm). `every` 30 with offset 15 staggers the refill away from the
- * berry (offset 20) pulse. R4 — with the scattered rain pool gone this is
+ * mushroom (offset 15) pulse. R4 — with the scattered rain pool gone this is
  * the island's ONLY water replenishment: the basin's standing fresh water,
  * gathered from the wetland or its dry shore.
  */
 const FRESH_WATER_RHYTHM = { every: 30, offset: 15 };
 
-/**
- * R2 — THE BERRY-BUSH REPLENISHMENT. A plucked berry bush refills its berry
- * stock on this staggered cadence (keyed off the fine clock, like the other
- * rhythms). The dedicated tick pass (the BUSH_RHYTHM sweep below) runs it
- * over the bushCells registry — the standing plants — so a fully-plucked
- * bush (its `bush` stock drawn to zero) still regrows: the plant stands in
- * the registry whatever its berry count. `every` 40 with offset 25 clears
- * the pre-construction stock pins (which end at minute 35) and staggers the
- * refills away from the berry (offset 20) and vine (offset 30) pulses.
- */
-const BUSH_RHYTHM = { every: 40, offset: 25 };
-
-/** What each biome stocks when the island is surveyed — THE RICHER MAP,
- * ABUNDANCE-TUNED. The tile deposits (trees, stone, iron, sand, dirt) come
- * from the cells themselves — see the survey below; these are the biome's
- * living stocks: meadows berry, forests berry AND mushroom (the woods feed
- * two ways), beaches coconut. The starting counts are raised so the island
- * reads abundant from the first minute (the old berry 2 / berry 1 +
- * mushroom 1 / coconut 1 left the foods nearly impossible to FIND — the
- * cast spent its days foraging); every regrowth cap above bounds how far
- * each stock refills, and the finite draws (shells, flints, stone, iron)
- * stay exactly as sparse as they were.
- *
- * R7 — THE FOREST IS THE ISLAND'S LARDER: the woods' per-cell seeding is
- * enriched to berry 4 + mushroom 3 (from 2 + 2) so a surveyed forest reads
- * FILLED with berries and more from the first minute; the meadow (3) and
- * beach (2 coconuts) seeding stay exactly as tuned (the biome topology and
- * the non-forest stocks are untouched). The regrowth caps above sit a clear
- * step above these seeds, so a picked forest refills past its starting
- * abundance. EXPORTED for the resource-profile tests. */
+/** What each biome stocks when the island is surveyed — T4, THE BUSH MAP.
+ * The tile deposits (trees, stone, iron, sand, dirt) come from the cells
+ * themselves — see the survey below; these are the biome's living stocks.
+ * T4 — R4 removed the AMBIENT LOOSE BERRIES: the meadow stocks NOTHING
+ * loose and the forest keeps only its mushroom ring (the woods feed the
+ * second way — the berries hang on the bushes the deterministic hash
+ * seeds, bushAt below, whose lazy fruit batches carry the berry supply);
+ * the beach's coconut seeding stays exactly as tuned. EXPORTED for the
+ * resource-profile tests. */
 export const BIOME_STOCKS: Record<string, Inventory> = {
-    meadow: { berry: 3 },
-    forest: { berry: 4, mushroom: 3 },
+    meadow: {},
+    forest: { mushroom: 3 },
     beach: { coconut: 2 },
-    // Water cells hold fish AND seaweed — the sea's two stocks (salt
-    // water is never a drinking pool)
 };
 
 /** Chance a surveyed FOREST cell hangs a vine — the woods' material
@@ -245,11 +245,11 @@ const SHALLOW_SEAWEED_CHANCE = 0.5;
  * A berry bush stands on the cell when its hash lands under the chance.
  *
  * R7 — the chance is BIOME-SPECIFIC: the forest undergrowth is THICK with
- * berry bushes (0.6, the woods' standing berry reserve beside the enriched
- * loose berries), while the meadow keeps its original 0.3 (the meadow stocks
- * are untouched). The hash fold is unchanged, so every meadow bush that
- * stood before still stands (0.3 ⊂ 0.6 — the forest raise only ADDS bushes,
- * it never moves one), and the fold values are stable per address.
+ * berry bushes (0.6, the woods' standing berry reserve), while the meadow
+ * keeps its original 0.3 (the meadow stocks are untouched). The hash fold is
+ * unchanged, so every meadow bush that stood before still stands (0.3 ⊂ 0.6
+ * — the forest raise only ADDS bushes, it never moves one), and the fold
+ * values are stable per address.
  * EXPORTED for the resource-profile tests.
  */
 export const BUSH_CHANCE_PER_MEADOW_CELL = 0.3;
@@ -358,14 +358,26 @@ export type InventoryPlugin = WorldPlugin<World> & {
     /** Gathers one available item from the agent's cell. Returns the item id. */
     gather(agent: InventoryAgent): string | null;
     /**
-     * R5 — THE FISHING SHORE: takes one FISH from the water cell at (x, y)
-     * into the agent's bag WITHOUT entering the water. Legal only when the
-     * agent stands on DRY ground and the water cell is CARDINAL-adjacent to
-     * the agent's tile (the castaway works the water at its feet — never a
-     * diagonal, never at distance, never from the water itself; a body
-     * afloat gathers the fish underfoot through `gather` instead). Capacity
-     * is gated before anything moves; the behavior plugin's 'fish' effect
-     * re-validates at completion (the shoal may have been drawn down).
+     * R5/T4 — THE FISHING SHORE: lands one FISH from the water cell at
+     * (x, y) into the agent's bag WITHOUT entering the water. Legal only
+     * when the agent stands on DRY ground, the water cell is
+     * CARDINAL-adjacent to the agent's tile (the castaway works the water
+     * at its feet — never a diagonal, never at distance, never from the
+     * water itself) AND the water is a FISHING WATER by BIOME — the sea
+     * (ocean/shallows) or a fresh basin (lake/pond AND the passable river
+     * fords — R2: eligibility runs the existing biome predicates, never
+     * passability alone, so a river's ford is as fishable as a basin's
+     * shore). T4 — THE TOOL GATE: the agent's bag must hold a SPEAR or a
+     * ROD — the barehand cast is gone (R2: no generic gather of fish
+     * bypasses the tools). T4 — THE UNLIMITED SOURCE: the water stocks no
+     * fish to drain; every legal cast lands a fish forever (exactly the
+     * river-water branch's inexhaustibility), gated only by the bag's
+     * capacity — and the catch charges the tool's durability through the
+     * wear ledger (plugins/inventory/toolDurability, a successful catch
+     * spends toolWearPerUse(tool, 'fish'); the last health point breaks
+     * the tool atomically). No stock to re-validate at completion — the
+     * behavior plugin's 'fish' effect still re-validates the shore rule,
+     * the reach and the tool.
      */
     fish(agent: InventoryAgent, x: number, y: number): boolean;
     /** Removes one `itemId` from the agent's bag (eating / drinking). */
@@ -376,6 +388,25 @@ export type InventoryPlugin = WorldPlugin<World> & {
     give(giver: InventoryAgent, receiver: InventoryAgent, itemId: string, count: number): boolean;
     /** All cells whose stock currently holds `itemId`. */
     cellsWithItem(itemId: string): TerrainCell[];
+    /**
+     * T4 — THE FISHING WATERS: every water cell the survey marked
+     * fishable, in survey (row-major) order — the sea (ocean/shallows) and
+     * every fresh basin (lake/pond AND the passable river fords). This is
+     * the trek enumeration the behavior plugin's hunger rung builds its
+     * FISHING-SHORE targets from (a water cell's dry cardinal neighbors
+     * are the fishery) — there is NO fish stock to enumerate any more (R2:
+     * no wild-fish ground counts), the water itself is the source.
+     */
+    fishingWaters(): TerrainCell[];
+    /**
+     * T4 — THE BERRY-BUSH FRUIT CARD: the standing bush at (x, y) with its
+     * lazy fruit batch, advanced to the world clock at the read (the
+     * catch-up below mutates the record — the same lazy-growth pattern the
+     * forest ecology's pools fold). Undefined when no bush stands there.
+     * The Tile Inspector renders the card; the behavior plugin's hunger
+     * rung reads `fruits` before planning a bush forage.
+     */
+    bushView(x: number, y: number): BushView | undefined;
     /** Seeds an actor's bag with starting items. */
     spawnKit(actorId: string, kit: Inventory): void;
     /** Wipes and re-seeds every cell stock from the current canvas (resize flow). */
@@ -384,6 +415,24 @@ export type InventoryPlugin = WorldPlugin<World> & {
     mountForest(provider: ForestEcology): void;
     /** The forest ecology unmounts (plugin swap) — legacy harvest resumes. */
     unmountForest(): void;
+};
+
+/**
+ * T4 — one standing bush's inspection card (a copy; mutating it never
+ * reaches the simulation). `fruits` is the lazy batch's live count, `cap`
+ * the bush's berry ceiling (BUSH_BERRY_CAP), `nextRipeAt` the absolute
+ * world minute the NEXT berry ripens (already past when the bush stands
+ * full — the card reads "full" instead of a countdown).
+ */
+export type BushView = {
+    x: number;
+    y: number;
+    /** Berries the bush currently bears (0 = plucked bare — the plant stands). */
+    fruits: number;
+    /** The berry ceiling (BUSH_BERRY_CAP). */
+    cap: number;
+    /** Absolute world minute the next berry ripens (≤ now when full). */
+    nextRipeAt: number;
 };
 
 export const inventoryPlugin = (options: InventoryPluginOptions = {}): InventoryPlugin => {
@@ -404,29 +453,42 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
     const freshWaterCells = new Set<string>();
 
     // R2 — the BERRY-BUSH CELLS (key "x,y"): every meadow/forest cell the
-    // survey seeded a standing berry bush on. The bush is a PERMANENT stand —
-    // plucking its berries draws the `bush` stock to zero, and the plant is
-    // a PLANT, not a loose stock, so the stand persists in this registry
-    // whatever its berry count and a dedicated tick pass (the BUSH_RHYTHM,
-    // below) tops each bush's berry stock back up to the cap. Cleared +
-    // refilled by each survey (resurvey rebuilds it from the regenerated
-    // canvas).
+    // survey seeded a standing berry bush on. The bush is a PERMANENT stand
+    // — the `bush` stock key is the standing PLANT (a constant one per bush
+    // cell: it never draws down, so a plucked-bare bush stays visible and
+    // enumerable). Cleared + refilled by each survey (resurvey rebuilds it
+    // from the regenerated canvas).
     const bushCells = new Set<string>();
 
+    // T4 — THE PER-BUSH FRUIT RECORDS (key "x,y"): the berries each standing
+    // bush bears, ripening lazily against the world clock (one berry every
+    // BUSH_RIPEN_MINUTES up to BUSH_BERRY_CAP). A survey-bush seeds FULL
+    // (the island opens laden, the old seeded abundance) with the first new
+    // berry due one ripen interval out. Cleared + refilled by each survey.
+    const bushFruit = new Map<string, { fruits: number; ripeAt: number }>();
+
+    // T4 — THE FISHING-WATER REGISTRY (key "x,y"): every water cell the
+    // survey marked fishable (the sea + every fresh basin — the biome
+    // predicates, NOT passability: the passable river fords are fishing
+    // water exactly like the impassable basins). There is NO fish stock —
+    // the water is an unlimited source — so this registry is the trek
+    // enumeration the behavior plugin builds its fishing-shore targets
+    // from (fishingWaters below). Cleared + refilled by each survey.
+    const fishingWaterCells = new Set<string>();
+
     // RENEWABLE ELIGIBILITY REGISTRY — itemId → every cell the survey seeded
-    // that renewable item on (the generic-sweep items: berry, fish, coconut,
-    // mushroom, seaweed, vine). The regrowth sweep iterates THIS, NOT the
-    // stock keys: inventoryRemove DELETES a stock key at zero, so a
-    // stock-keyed sweep loses every fully-harvested cell forever — a picked-
-    // bare berry cell, a fished-out sea cell and a stripped vine never
-    // regrew (the exhausted-source bug; the frond shed and the bush pass
-    // were the first two sightings of it and carry their own registries).
-    // The registry is the ORIGINAL-SOURCE eligibility: only cells the survey
+    // that renewable item on (the generic-sweep items: coconut, mushroom,
+    // seaweed, vine). The regrowth sweep iterates THIS, NOT the stock keys:
+    // inventoryRemove DELETES a stock key at zero, so a stock-keyed sweep
+    // loses every fully-harvested cell forever — a picked-bare coconut cell
+    // and a stripped vine never regrew (the exhausted-source bug; the frond
+    // shed was the first sighting of it and carries its own registry). The
+    // registry is the ORIGINAL-SOURCE eligibility: only cells the survey
     // seeded the item on ever regrow it, so mushrooms never sprout on a
-    // beach, fish never strand on land and vines never hang on bare rock —
-    // the deterministic placement map is preserved cell for cell. Rebuilt by
-    // each survey (a resurvey regenerates the canvas); bush / frond / water
-    // keep their dedicated registries (specialized ecologies).
+    // beach and vines never hang on bare rock — the deterministic placement
+    // map is preserved cell for cell. Rebuilt by each survey (a resurvey
+    // regenerates the canvas); the bush fruits ripen lazily per plant and
+    // the frond/water passes keep their dedicated registries.
     const regrowCells = new Map<string, Set<string>>();
 
     /** Register a seeded renewable cell — only for items the generic sweep
@@ -581,12 +643,57 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
         }
     };
 
+    /** The plugin's read of the world clock in ABSOLUTE world minutes
+     * (the ticker's elapsed count — the same monotonic read the farming
+     * plugin's lazy plots use; 0 before setup). */
+    const nowMinutes = (): number => world?.ticker.elapsed() ?? 0;
+
+    /**
+     * T4 — THE BUSH FRUIT STATE, advanced to the world clock at the read.
+     * The record holds the bush's `fruits` count and the absolute minute
+     * `ripeAt` the next berry lands; the catch-up advances the count for
+     * every whole ripen interval that has passed since (capped at
+     * BUSH_BERRY_CAP), so a bush left alone for hours ripens its whole
+     * batch and a plucked one restarts its clock from the pluck minute.
+     * A bush standing in the stocks WITHOUT a fruit record (a hand-seeded
+     * fixture bush) derives its record on first read — full batch, first
+     * berry one interval out — so the state survives hand-injected
+     * stands. Undefined when no bush stands at the address.
+     */
+    const bushStateOf = (
+        x: number,
+        y: number,
+    ): { fruits: number; ripeAt: number } | undefined => {
+        if (!((stockOf(x, y).bush ?? 0) > 0)) {
+            return undefined;
+        }
+        const key = `${x},${y}`;
+        let record = bushFruit.get(key);
+        if (!record) {
+            record = { fruits: BUSH_BERRY_CAP, ripeAt: nowMinutes() + BUSH_RIPEN_MINUTES };
+            bushFruit.set(key, record);
+            return record;
+        }
+        // The catch-up — one berry per whole ripen interval past `ripeAt`,
+        // stopping at the cap (a full bush stops counting; the next pluck
+        // restarts the clock from the pluck minute)
+        const now = nowMinutes();
+        while (record.fruits < BUSH_BERRY_CAP && now >= record.ripeAt) {
+            record.fruits = record.fruits + 1;
+            record.ripeAt = record.ripeAt + BUSH_RIPEN_MINUTES;
+        }
+        return record;
+    };
+
     /**
      * One canvas survey: seeds the cell stocks from the tiles. Tile DEPOSITS
      * (engine/types TerrainCell.resources — trees, stone, iron and the
      * unlimited sand/dirt) come first, then the biome's living stocks
-     * (berries, mushrooms, coconuts), then the chance draws (forest vines,
-     * shallows seaweed, beach shells, highland flints) and the sea's fish.
+     * (mushrooms, coconuts), then the chance draws (forest vines, shallows
+     * seaweed, beach shells, highland flints) and the standing berry bushes
+     * (the deterministic hash — T4: no loose berries, no fish shoals — the
+     * water is marked a FISHING WATER instead, an unlimited source with no
+     * stock to count).
      * The canvas scan is row-major and the random draws run in that order,
      * so seeding is fully reproducible per seed. `canvas` is passed
      * explicitly so the routine works both in setup and after a terrain
@@ -598,9 +705,13 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
         // ring beside them). Rebuilt each survey (the canvas may have
         // regenerated). The half-extents are centered like the terrain grid.
         freshWaterCells.clear();
-        // R2 — the berry-bush registry is rebuilt from the (re)generated
-        // canvas: a cleared set so a resurvey never leaves stale stands
+        // R2/T4 — the berry-bush registry + the per-bush fruit records are
+        // rebuilt from the (re)generated canvas: cleared collections so a
+        // resurvey never leaves stale stands or stale fruit clocks
         bushCells.clear();
+        bushFruit.clear();
+        // T4 — the fishing-water registry is rebuilt the same way
+        fishingWaterCells.clear();
         // The renewable eligibility registry is rebuilt the same way — the
         // regrowth sweep's source of truth for WHERE each item may regrow
         regrowCells.clear();
@@ -626,8 +737,9 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
                     stock[resource] = (stock[resource] ?? 0) + count;
                 }
             });
-            // Biome living stocks: berries in meadows, berries AND
-            // mushrooms under forests, coconuts on beaches
+            // Biome living stocks: mushrooms under forests, coconuts on
+            // beaches (T4 — the loose berries left the map: berries are
+            // the bushes' fruit batches + the farm's crop, never ground stock)
             const biomeStock = BIOME_STOCKS[cell.biome];
             if (biomeStock) {
                 Object.entries(biomeStock).forEach(([item, count]) => {
@@ -637,22 +749,31 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
                     markRegrowable(item, cell.x, cell.y);
                 });
             }
-            // R2 — the BERRY BUSH: a standing berry plant in the meadow and
-            // forest undergrowth. Seeded on the deterministic coordinate hash
-            // (bushAt — no random-stream draw, so the other pins are
-            // untouched). The bush's stock is the berries it bears; foraging
-            // plucks them and the regrowth sweep refills the stand.
+            // R2/T4 — the BERRY BUSH: a standing berry plant in the meadow
+            // and forest undergrowth. Seeded on the deterministic coordinate
+            // hash (bushAt — no random-stream draw, so the other pins are
+            // untouched). The `bush` stock key is the standing PLANT (a
+            // constant one — it never draws down, so the bush stays visible
+            // and enumerable when its berries are plucked); the berries it
+            // bears live in the lazy per-bush fruit record (full at survey
+            // — the island opens laden — with the first new berry due one
+            // ripen interval out).
             // R7 — the chance is BIOME-SPECIFIC: the forest undergrowth seeds
-            // bushes at 0.6 (the woods' standing berry reserve beside the
-            // enriched loose berries), the meadow keeps its original 0.3.
-            // The fold is unchanged, so the raise only ADDS forest bushes.
+            // bushes at 0.6 (the woods' standing berry reserve), the meadow
+            // keeps its original 0.3. The fold is unchanged, so the raise
+            // only ADDS forest bushes.
             const bushChance = cell.biome === 'forest'
                 ? BUSH_CHANCE_PER_FOREST_CELL
                 : BUSH_CHANCE_PER_MEADOW_CELL;
             if ((cell.biome === 'meadow' || cell.biome === 'forest') && bushAt(cell.x, cell.y, bushChance)) {
                 stock.bush = (stock.bush ?? 0) + 1;
-                // Track the standing plant (the regrow pass's registry)
+                // Track the standing plant (the plant registry) + seed its
+                // full fruit batch (the lazy ripening record)
                 bushCells.add(`${cell.x},${cell.y}`);
+                bushFruit.set(`${cell.x},${cell.y}`, {
+                    fruits: BUSH_BERRY_CAP,
+                    ripeAt: (world?.ticker.elapsed() ?? 0) + BUSH_RIPEN_MINUTES,
+                });
             }
             // R2 — THE FRESH WATER: a lake/pond wetland cell stocks drinking
             // water, and so does the DRY SHORE ring beside one (a land actor
@@ -703,15 +824,17 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             if (cell.biome === 'highland' && context.random() < 0.3) {
                 stock.flint = (stock.flint ?? 0) + 1;
             }
-            // The water stocks fish — every water cell (the sea AND the
-            // impassable fresh basins, R4/R5) joins the eligibility registry
-            // (fish regrow in the water, never on the dry land) and seeds a
-            // two-unit shoal so the lakes and shallows read abundant (the
-            // cap above bounds the refill; the shore fishery draws them from
-            // dry ground — the fish primitive below)
-            if (!cell.passable) {
-                stock.fish = (stock.fish ?? 0) + 2;
-                markRegrowable('fish', cell.x, cell.y);
+            // T4 — THE WATER IS THE FISHING WATER: every sea cell and every
+            // fresh basin (the biome predicates — isSeaWater / isFreshBasin,
+            // so the PASSABLE river fords are marked exactly like the
+            // impassable basins; R2: eligibility never rides passability
+            // alone) joins the fishing-water registry. NO fish stock is
+            // seeded — the water is an UNLIMITED source (the shore cast
+            // with a spear or a rod draws it forever, the nets bank it over
+            // time), and no tile carries a fish count to indicate (R2: no
+            // wild-fish ground categories, no hover, no Underfoot read).
+            if (isSeaWater(cell.biome) || isFreshBasin(cell.biome)) {
+                fishingWaterCells.add(`${cell.x},${cell.y}`);
             }
         });
     };
@@ -909,18 +1032,47 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
                 inventoryAdd(bagOf(actor.id), target, 1);
                 return target;
             }
-            // R2 — THE BERRY BUSH: no loose food on the cell, but a berry
-            // bush stands here → pluck a berry off it. The bush's stock is
-            // the berries it bears; plucking draws the stand down (it
-            // regrows on the bush rhythm) and the berry lands in the bag
-            // (the bush FURNISHES the food — it is a concrete plant, not an
-            // abstract item). The capacity gate checks the BERRY (the
-            // gathered good), not the bush.
+            // T4 — THE BERRY BUSH: no loose food on the cell, but a berry
+            // bush stands here AND bears a ripe berry → pluck ONE berry off
+            // it. The `bush` stock key is the standing PLANT — it never
+            // moves (the depleted bush stays visible); the pluck draws the
+            // plant's lazy FRUIT record down (one ripen interval resets the
+            // next berry) and the berry lands in the bag (the bush
+            // FURNISHES the food — it is a concrete plant, not an abstract
+            // item). The capacity gate checks the BERRY (the gathered
+            // good), not the bush.
             if ((stock.bush ?? 0) > 0 && canHold(actor.id, { berry: 1 })) {
-                if (inventoryRemove(stock, 'bush', 1)) {
+                const bush = bushStateOf(actor.position.x, actor.position.y);
+                if (bush && bush.fruits > 0) {
+                    bush.fruits = bush.fruits - 1;
+                    // The next berry ripens one interval after the pluck —
+                    // the plant's lazy clock restarts from now (a bare bush
+                    // refills over BUSH_BERRY_CAP × BUSH_RIPEN_MINUTES)
+                    bush.ripeAt = nowMinutes() + BUSH_RIPEN_MINUTES;
                     inventoryAdd(bagOf(actor.id), 'berry', 1);
                     return 'berry';
                 }
+            }
+            // T4 — THE NATURAL FEEDING PATH (the water realm): no loose food
+            // and no bush underfoot, but the body stands ON fishing water —
+            // an IMPASSABLE sea or fresh-basin column (a shark's swim, a
+            // gull's afloat drift; no human can ever stand there, the
+            // movement rules refuse it). It feeds itself straight off the
+            // UNLIMITED source, the way the wilds always ate: no tool, no
+            // stock, no shore — the shore cast with its spear-or-rod gate
+            // stays the LAND route. The capacity gate is the only limit
+            // (one fish per completed gather). The behavior plugin's
+            // fish-source beats route here (see behaviorPlugin's gather
+            // completion: source 'fish' → inventory.gather).
+            const ground = world?.cellAt(actor.position.x, actor.position.y);
+            if (
+                ground &&
+                !ground.passable &&
+                (isSeaWater(ground.biome) || isFreshBasin(ground.biome)) &&
+                canHold(actor.id, { fish: 1 })
+            ) {
+                inventoryAdd(bagOf(actor.id), 'fish', 1);
+                return 'fish';
             }
             // No log line — foraging is a solo beat, not a story between
             // entities (the log is a story teller)
@@ -933,7 +1085,8 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
                 return false;
             }
             // DRY GROUND underfoot — the shore rule: a body fishes from the
-            // land (a body afloat gathers the fish underfoot via `gather`)
+            // land (a body afloat feeds itself through `gather`, the natural
+            // path — it never needs the shore cast)
             const ground = active.cellAt(agent.position.x, agent.position.y);
             if (!ground || !ground.passable) {
                 return false;
@@ -943,20 +1096,37 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             if (Math.abs(x - agent.position.x) + Math.abs(y - agent.position.y) !== 1) {
                 return false;
             }
-            // The water — fish stand only in the impassable cells (the
-            // survey seeds them there and only there)
+            // T4 — THE FISHING WATER by BIOME: the sea (ocean/shallows) or a
+            // fresh basin (lake/pond AND the PASSABLE river fords — R2:
+            // eligibility runs the existing biome predicates, never
+            // passability alone, so a ford is as fishable as a basin shore)
             const water = active.cellAt(x, y);
-            if (!water || water.passable) {
+            if (!water || !(isSeaWater(water.biome) || isFreshBasin(water.biome))) {
                 return false;
             }
-            // THE CAPACITY GATE — checked before the shoal gives the fish up
+            // T4 — THE TOOL GATE: the bag must hold a SPEAR or a ROD. The
+            // barehand cast is gone — a human/land-agent lands a fish only
+            // with real gear in hand (a creature never reaches this shore
+            // path; the water realm's bodies feed through `gather` instead).
+            const bag = bagOf(agent.id);
+            const tool = (bag.spear ?? 0) > 0 ? 'spear' : (bag.rod ?? 0) > 0 ? 'rod' : null;
+            if (tool === null) {
+                return false;
+            }
+            // THE CAPACITY GATE — checked before the catch lands
             if (!canHold(agent.id, { fish: 1 })) {
                 return false;
             }
-            if (!inventoryRemove(stockOf(x, y), 'fish', 1)) {
-                return false;
-            }
-            inventoryAdd(bagOf(agent.id), 'fish', 1);
+            // T4 — THE UNLIMITED SOURCE: no stock to draw down — the water
+            // hands a fish out forever (the river-water branch's
+            // inexhaustibility). Every legal cast lands exactly one fish.
+            inventoryAdd(bag, 'fish', 1);
+            // T4 — THE TOOL WEAR rides the SUCCESSFUL catch (a fish actually
+            // landed): the held tool spends toolWearPerUse(tool, 'fish')
+            // through the durability ledger (keyed entity+tool), and the
+            // last health point breaks the tool atomically — the replacement
+            // craft gate reopens the moment this returns.
+            useTool(active, agent.id, tool, 'fish', bag);
             // No log line — fishing is a solo beat, not a story between
             // entities (the log is a story teller)
             return true;
@@ -1039,6 +1209,37 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             return found;
         },
 
+        // T4 — the fishing waters, in survey (row-major) order: the sea +
+        // every fresh basin (passable fords included — see the survey's
+        // registry read)
+        fishingWaters: () => {
+            const found: TerrainCell[] = [];
+            fishingWaterCells.forEach((key) => {
+                const [x, y] = key.split(',').map(Number);
+                const cell = world?.cellAt(x, y);
+                if (cell) {
+                    found.push(cell);
+                }
+            });
+            return found;
+        },
+
+        // T4 — the standing bush's fruit card (the catch-up advanced at the
+        // read — see bushStateOf)
+        bushView: (x, y) => {
+            const record = bushStateOf(x, y);
+            if (!record) {
+                return undefined;
+            }
+            return {
+                x,
+                y,
+                fruits: record.fruits,
+                cap: BUSH_BERRY_CAP,
+                nextRipeAt: record.ripeAt,
+            };
+        },
+
         setup: (context: PluginContext<World>) => {
             // Remember the context — resurvey() re-runs the survey with the
             // same deterministic stream after the terrain regenerates
@@ -1084,10 +1285,15 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
             stocks.clear();
             // R2 — the fresh-water cell set goes with the environment
             freshWaterCells.clear();
-            // The standing berry bushes and the renewable eligibility
-            // registries go too — a stale registry would let a dedicated
-            // pass refill stocks on cells of a disposed canvas
+            // T4 — the standing berry bushes, their lazy fruit records and
+            // the fishing-water registry go too — a stale registry would
+            // let a reader/planner work cells of a disposed canvas
             bushCells.clear();
+            bushFruit.clear();
+            fishingWaterCells.clear();
+            // The renewable eligibility registries go with the environment —
+            // a stale registry would let a dedicated pass refill stocks on
+            // cells of a disposed canvas
             regrowCells.clear();
             // The fine clock resets with the environment; the mounted forest
             // provider and the terrain handle go with it (both re-resolve on
@@ -1177,23 +1383,12 @@ export const inventoryPlugin = (options: InventoryPluginOptions = {}): Inventory
                  });
              }
 
-            // R2 — THE BERRY-BUSH REPLENISHMENT. Every standing berry bush
-            // (the surveyed meadow/forest plants, tracked in bushCells) tops
-            // its berry stock back up to the cap on the BUSH_RHYTHM. Run over
-            // the PLANT registry — not the seeded-stock registry — so a
-            // fully-plucked bush (its `bush` stock down to zero) still
-            // regrows: the stand persists in the registry even when its
-            // berries are gathered away.
-            if (minute % BUSH_RHYTHM.every === BUSH_RHYTHM.offset) {
-                bushCells.forEach((key) => {
-                    const [x, y] = key.split(',').map(Number);
-                    const stock = stockOf(x, y);
-                    const current = stock.bush ?? 0;
-                    if (current < (REGROW_CAPS.bush ?? 0)) {
-                        stock.bush = current + 1;
-                    }
-                });
-            }
+            // T4 — the berry bushes need NO tick pass any more: the plants
+            // stand (their `bush` stock key is a constant one) and their
+            // berries ripen lazily against the world clock at every read
+            // (bushStateOf — the farming plugin's matureAt idiom), so a
+            // plucked bush refills across the minutes exactly as fast as
+            // any reader observes it.
          },
      };
 };

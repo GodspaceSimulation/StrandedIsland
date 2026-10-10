@@ -34,6 +34,7 @@ import {
     tileDepositSummary,
     tileSurfaceKey,
     forestTreeCount,
+    edgeMask,
     FOREST_COVERAGE,
     IRON_LODE_THRESHOLD,
     FOREST_MOISTURE_THRESHOLD,
@@ -228,16 +229,17 @@ describe('generateIsland', () => {
             .map((cell) => `${cell.x},${cell.y}:${cell.resources.tree ?? 0}`)
             .join(' ');
         // R1 re-grew the meadow fringes (the meadows are now forest-adjacent
-        // feeders); the 0.8 cutoff turned (1,−4)/(1,−5) into lakes, so 2 fewer
-        // meadow tiles (63) carry ingress; T2's denser fringe (8/3) lifted
-        // the per-edge counts — 44 meadows carry trees
+        // feeders); the 0.8 cutoff turned (1,−4)/(1,−5) into lakes; R1's
+        // EDGE WEAVE prices the fringe off the shared forest SEAM's meander
+        // (the meadow side of the weave, the tile's water spots refused —
+        // no tree stands on water) — 26 meadows carry trees (captured per tile)
         expect(meadowCounts).toBe(
-            '-3,-5:0 -2,-5:0 -1,-5:0 -5,-4:0 -4,-4:0 -3,-4:0 -2,-4:0 -7,-3:0 -6,-3:0 -5,-3:0 -3,-3:11 -2,-3:11 0,-3:0 1,-3:14 -7,-2:11 -6,-2:3 -5,-2:0 0,-2:0 1,-2:14 -6,-1:22 -5,-1:14 -4,-1:22 -2,-1:19 1,-1:14 -3,0:19 -3,1:11 -2,1:0 6,1:36 7,1:33 -4,2:19 -3,2:3 -2,2:0 -1,2:0 0,2:0 1,2:11 -5,3:11 -4,3:3 -3,3:0 -2,3:0 -1,3:3 0,3:8 1,3:6 2,3:11 3,3:25 -5,4:0 -4,4:0 -3,4:0 -2,4:3 -1,4:19 1,4:19 2,4:3 3,4:11 -5,5:0 -4,5:0 -3,5:0 -2,5:8 2,5:8 3,5:3',
+            '-3,-5:0 -2,-5:0 -1,-5:0 -5,-4:0 -4,-4:0 -3,-4:0 -2,-4:0 -7,-3:0 -6,-3:0 -5,-3:0 -3,-3:0 -2,-3:7 0,-3:0 1,-3:14 -7,-2:16 -6,-2:0 -5,-2:0 0,-2:0 1,-2:11 -6,-1:6 -5,-1:9 -4,-1:21 -2,-1:24 1,-1:12 -3,0:28 -3,1:6 -2,1:0 6,1:28 7,1:28 -4,2:9 -3,2:3 -2,2:0 -1,2:0 0,2:0 1,2:6 -5,3:0 -4,3:0 -3,3:0 -2,3:0 -1,3:0 0,3:8 1,3:3 2,3:17 3,3:29 -5,4:0 -4,4:0 -3,4:0 -2,4:1 -1,4:22 1,4:29 2,4:0 3,4:7 -5,5:0 -4,5:0 -3,5:0 -2,5:11 2,5:11 3,5:0',
         );
-        // The treed-tile census: 59 woods + the 33 ingressed meadows — 92
-        // (R4's river fords washed 2 more treed meadow cells clean — the
-        // drowned fringe deposits are gone with the ground supply)
-        expect(island.cells.filter((cell) => (cell.resources.tree ?? 0) > 0).length).toBe(92);
+        // The treed-tile census: 59 woods + the 26 seam-meandered ingress
+        // meadows — 85 (R4's river fords washed 2 treed meadow cells clean;
+        // R1's weave gave 7 meadows' fringes entirely to the wood side)
+        expect(island.cells.filter((cell) => (cell.resources.tree ?? 0) > 0).length).toBe(85);
         // Beach (−4,−7): the column is dirt/sand — the unlimited ground
         // supply (the gravel bedrock supplies no stone anymore)
         expect(island.cells.find((cell) => cell.x === -4 && cell.y === -7)?.resources).toEqual({
@@ -860,15 +862,56 @@ describe('islandTerrainPlugin', () => {
         expect(sub?.width).toBe(7);
         expect(sub?.height).toBe(5);
         expect(sub?.cells.length).toBe(35);
-        // Every subtile inherits the parent column — the interior ground IS
-        // the tile's ground (the center is a forest at height 5)
+        // The interior ground IS the tile's ground (the center is a forest
+        // at height 5) — every UNBLENDED subtile inherits the parent column
+        // exactly; R1's EDGE WEAVE: the tile's differing neighbors (here the
+        // two river cells west-north-west and the six beach ring tiles)
+        // weave their looks into the edge band — the mask below is the same
+        // plan the materializer ran
+        const parent = world.cellAt(0, 0)!;
+        const plan = edgeMask(parent, [{ x: 0, y: 0 }], world.canvas, 7);
+        // The captured plan: the river ford lends a fresh waterline on the
+        // west edge, the beach ring lends sand patches along the shared
+        // seams — irregular, seeded, coherent
+        expect([...plan.water.entries()]).toEqual([
+            ['-3,-1', { depth: 1, basin: 'river' }],
+            ['-3,0', { depth: 1, basin: 'river' }],
+        ]);
+        expect(new Set([...plan.land.entries()].map(([key, look]) => `${key}=${look}`))).toEqual(new Set([
+            '-1,-1=sand', '-1,-2=sand', '-2,-2=sand',
+            '-1,2=sand', '-2,2=sand',
+            '0,-1=sand', '0,-2=sand',
+            '3,-2=sand', '3,2=sand',
+        ]));
+        let inherited = 0;
         sub?.cells.forEach((cell) => {
-            expect(cell.voxels).toEqual(world.cellAt(0, 0)?.voxels);
-            expect(cell.height).toBe(world.cellAt(0, 0)?.height);
-            expect(cell.waterLevel).toBe(world.cellAt(0, 0)?.waterLevel);
-            expect(cell.biome).toBe(world.cellAt(0, 0)?.biome);
-            expect(cell.passable).toBe(world.cellAt(0, 0)?.passable);
+            const spot = `${cell.x},${cell.y}`;
+            if (plan.water.has(spot)) {
+                // The water spot is REAL water — the ford's fresh column
+                expect(cell.passable).toBe(false);
+                expect(cell.biome).toBe('river');
+                expect(cell.resources).toEqual({});
+                return;
+            }
+            if (plan.land.has(spot)) {
+                // The blend spot carries the neighbor's surface (the sand
+                // tongue over the inherited column)
+                expect(cell.biome).toBe('beach');
+                expect(cell.voxels[cell.voxels.length - 1]).toBe('sand');
+                expect(cell.passable).toBe(parent.passable);
+                return;
+            }
+            inherited = inherited + 1;
+            expect(cell.voxels).toEqual(parent.voxels);
+            expect(cell.height).toBe(parent.height);
+            expect(cell.waterLevel).toBe(parent.waterLevel);
+            expect(cell.biome).toBe(parent.biome);
+            expect(cell.passable).toBe(parent.passable);
         });
+        // The bulk of the interior still inherits — the blend is an edge
+        // band, never a repaint of the tile
+        expect(inherited).toBe(35 - plan.water.size - plan.land.size);
+        expect(inherited).toBeGreaterThan(20);
     });
 
     it('distributes the parent deposits onto the subtiles (the zoomed view)', () => {
@@ -878,15 +921,18 @@ describe('islandTerrainPlugin', () => {
         // neighbor-priced stand (T2's densified base) — those PERSISTENT
         // fine positions carry one tree unit each, and every subtile mirrors
         // the ground supply (the 7×5 wood carries NO stone — the finite-
-        // stone rule stamps only highlands, and the 7×5 has none)
+        // stone rule stamps only highlands, and the 7×5 has none). R1's
+        // weave: the stand's pool refuses the tile's waterline spots, so
+        // the seeded shuffle lands the 21 trees on the remaining positions
+        // (captured)
         const forest = plugin.canvasFor([{ x: 0, y: 0 }]);
         const treeTiles = forest?.cells.filter((cell) => (cell.resources.tree ?? 1) === 1 && cell.resources.tree === 1);
         expect(treeTiles?.map((cell) => [cell.x, cell.y])).toEqual([
             [-3, -2], [-1, -2], [0, -2], [1, -2], [2, -2],
-            [-3, -1], [-2, -1], [-1, -1], [1, -1], [3, -1],
-            [1, 0], [2, 0], [3, 0],
+            [-2, -1], [-1, -1], [0, -1], [3, -1],
+            [-1, 0], [2, 0], [3, 0],
             [-3, 1], [0, 1], [3, 1],
-            [-3, 2], [-2, 2], [-1, 2], [0, 2], [1, 2],
+            [-3, 2], [-2, 2], [-1, 2], [1, 2], [2, 2], [3, 2],
         ]);
         // Exactly fourteen bare fine cells remain (35 − 21) — the seeded gaps
         expect(forest?.cells.filter((cell) => cell.resources.tree === undefined).length).toBe(14);
@@ -900,6 +946,7 @@ describe('islandTerrainPlugin', () => {
         expect(plugin.cellFor([{ x: 0, y: 0 }, { x: -1, y: 0 }])?.resources).toEqual({
             dirt: 1,
             grass: 1,
+            tree: 1,
         });
         // The unlimited ground supply IS the ground — every DRY subtile of
         // the beach carries the symbolic deposits (the zoom preserves the

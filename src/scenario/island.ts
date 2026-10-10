@@ -74,11 +74,17 @@ import {
     STRUCTURE_TYPE_GLYPHS,
     type ConstructionPlugin,
 } from '../plugins/construction/constructionPlugin';
-// R5 — the farming governance: cultivated berry plots as the island's food
-// floor (plugins/farming). Mounted beside the other ledger rungs; the
-// handle exposes it so the god-view (board decor, inspector, legend) and the
-// tests read the plots through the public API.
-import { createFarmPlugin, type FarmingPlugin } from '../plugins/farming/farmingPlugin';
+ // R5 — the farming governance: cultivated berry plots as the island's food
+ // floor (plugins/farming). Mounted beside the other ledger rungs; the
+ // handle exposes it so the god-view (board decor, inspector, legend) and the
+ // tests read the plots through the public API.
+ import { createFarmPlugin, type FarmingPlugin } from '../plugins/farming/farmingPlugin';
+ // T4 — the fishing governance: the constructed fishing nets (timed catch
+ // accrual + hauls) and the spear/rod crafting rung (plugins/fishing). The
+ // active shore cast itself rides the inventory + behavior plugins; this
+ // plugin owns the NETS and the TOOL bridge. Mounted right behind farming,
+ // the same governance shape.
+ import { createFishingPlugin, type FishingPlugin } from '../plugins/fishing/fishingPlugin';
 import { storyPlugin, type StoryPlugin } from '../plugins/story/storyPlugin';
 import {
     birdsPlugin,
@@ -165,13 +171,20 @@ export type IslandOptions = {
          */
          construction?: boolean;
          /**
-         * R5 — the farming governance — cultivated berry plots: actors
-         * autonomously site, plant, tend and harvest plots that fruit on
-         * the world clock (plugins/farming/farmingPlugin.ts). Needs tasks +
-         * behavior + inventory + needs (the rungs ride the ledger and the
-         * behavior planning sweep). Default on.
-         */
+          * R5 — the farming governance — cultivated berry plots: actors
+          * autonomously site, plant, tend and harvest plots that fruit on
+          * the world clock (plugins/farming/farmingPlugin.ts). Needs tasks +
+          * behavior + inventory + needs (the rungs ride the ledger and the
+          * behavior planning sweep). Default on.
+          */
          farming?: boolean;
+         /**
+          * T4 — the fishing governance — the constructed fishing nets and
+          * the spear/rod crafting rung (plugins/fishing/fishingPlugin.ts).
+          * Needs tasks + behavior + inventory + needs (the rungs ride the
+          * ledger and the behavior planning sweep). Default on.
+          */
+         fishing?: boolean;
         /**
          * The storyteller — scenario encounters sampled from the one-shot
          * deck, injected into the log as story blocks. Needs needs +
@@ -253,6 +266,14 @@ export type IslandHandle = {
      * even when unmounted, matching every other plugin instance.
      */
     farming: FarmingPlugin;
+    /**
+     * T4 — the fishing plugin — the constructed nets + the fishing tools
+     * (plugins/fishing/fishingPlugin.ts): the autonomous net-build/collect
+     * rungs, the hungry-hand tool bridge, the net reads the Tile Inspector
+     * draws (nets / netAt + eligibleAt), the haul primitive (collect) and
+     * the regeneration reset. Exposed on the handle even when unmounted.
+     */
+    fishing: FishingPlugin;
     /**
      * The storyteller plugin — samples one unused scenario per encounter
      * (two castaways within the meeting ring), routes the play's profile
@@ -348,6 +369,7 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         lumber: true,
         construction: true,
         farming: true,
+        fishing: true,
         story: true,
         birds: true,
         sharks: true,
@@ -478,6 +500,21 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     // reads the species profiles — the same work ability the wild gather
     // uses, no new ability coined.
     const farming = createFarmPlugin({
+        tasks,
+        inventory,
+        needs,
+        profiles,
+        travelMinutesPerTile: TRAVEL_MINUTES_PER_TILE,
+    });
+    // T4 — the fishing governance — constructed nets + the fishing tools
+    // (plugins/fishing). Declared after the ledger/inventory/needs trio it
+    // coordinates with; its two rungs (the stewardship rung 11 and the
+    // hungry-hand bridge 41) register into the ledger at setup and ride the
+    // behavior planning sweep, so it MOUNTS after behavior (see the mounted
+    // list, right behind farming). The tool crafting applies through the
+    // plugin's own crafting registry; the catch wear rides the inventory's
+    // toolDurability ledger (charged inside inventory.fish itself).
+    const fishing = createFishingPlugin({
         tasks,
         inventory,
         needs,
@@ -795,6 +832,13 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         ...(toggles.farming && toggles.tasks && toggles.behavior && toggles.inventory && toggles.needs
             ? [farming]
             : []),
+        // T4 — the fishing rungs mount right behind the farming block (the
+        // same governance shape: the modules register into the ledger at
+        // setup and ride the behavior planning sweep; the net accrual is
+        // clock-derived, so the plugin has NO tick and nothing to step)
+        ...(toggles.fishing && toggles.tasks && toggles.behavior && toggles.inventory && toggles.needs
+            ? [fishing]
+            : []),
         // The storyteller runs after the whole environment minute (needs,
         // tasks, behavior, sleep) — an encounter reads the freshest state
         // and needs the needs + relationship systems
@@ -870,5 +914,5 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
         birds.release();
     }
 
-    return { world, terrain, entity, inventory, forest, needs, relationship, tasks, sleep, survival, lumber, construction, farming, story, birds, sharks, predators, scale, ascii, unicode, svg, data };
+    return { world, terrain, entity, inventory, forest, needs, relationship, tasks, sleep, survival, lumber, construction, farming, fishing, story, birds, sharks, predators, scale, ascii, unicode, svg, data };
 };

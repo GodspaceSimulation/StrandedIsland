@@ -14,7 +14,8 @@
 //                the island view; at scale 0 the tree card standing on the
 //                inspected fine spot (wood pool, age, maturity)
 //   Ground     — what lies on the terrain (the inventory plugin's cell stock;
-//                sea tiles stock fish, beaches hide shells…)
+//                T4: no tile stocks fish — the water is an unlimited source
+//                worked by the fishing tools and nets; beaches hide shells…)
 //   Residents  — EVERY living thing in the column: people, birds, any creature
 //                a plugin coins — actors in the broad sense. All live in the
 //                world's coordinate space (world.coordinates.column), grounded
@@ -37,6 +38,8 @@ import {
     forestStandLine,
     forestTreeLine,
     farmLine,
+    bushLine,
+    netLine,
     type TileOccupant,
     type TileStructure,
     type TileProgress,
@@ -281,6 +284,32 @@ export const TilePanel = () => {
                             <VoxelStack data-testid="tile-farm">
                                 {FARM_STAGE_GLYPHS[summary.farm.stage]}{' '}
                                 {farmLine(summary.farm, island.world.ticker.elapsed())}
+                            </VoxelStack>
+                        </Row>
+                    ) : null}
+                    {/* T4 — THE BUSH: the standing berry plant on this tile
+                        (plugins/inventory) — its lazy fruit batch advanced at
+                        the read. A plucked-BARE bush still renders this row
+                        (the plant never depletes; R4 keeps it visible), so
+                        the inspector always shows what the ground carries */}
+                    {summary.bush ? (
+                        <Row>
+                            <RowName>Bush</RowName>
+                            <VoxelStack data-testid="tile-bush">
+                                🪴 {bushLine(summary.bush, island.world.ticker.elapsed())}
+                            </VoxelStack>
+                        </Row>
+                    ) : null}
+                    {/* T4 — THE NET: the constructed fishing weir on this tile
+                        (plugins/fishing) — its banked catch against the
+                        storage cap and the banking countdown. Empty nets keep
+                        the row (the weir is working); full nets say "haul
+                        it" */}
+                    {summary.net ? (
+                        <Row>
+                            <RowName>Net</RowName>
+                            <VoxelStack data-testid="tile-net">
+                                🥅 {netLine(summary.net)}
                             </VoxelStack>
                         </Row>
                     ) : null}

@@ -38,11 +38,14 @@ const freshWorld = (): object => ({ id: `world-${Math.random()}` });
 
 describe('toolDurability — the material constants', () => {
     it('carries the documented stamina, wear rates and mend price', () => {
-        // Full health per tool
-        expect(TOOL_MAX_HEALTH).toEqual({ axe: 100, hammer: 100 });
+        // Full health per tool — T4: the fishing gear joins the ledger (a
+        // spear spends 60 health over its life, a rod 90)
+        expect(TOOL_MAX_HEALTH).toEqual({ axe: 100, hammer: 100, spear: 60, rod: 90 });
         // An unknown durable is sturdy by default
         expect(toolMaxHealth('axe')).toBe(100);
         expect(toolMaxHealth('hammer')).toBe(100);
+        expect(toolMaxHealth('spear')).toBe(60);
+        expect(toolMaxHealth('rod')).toBe(90);
         expect(toolMaxHealth('net')).toBe(100);
         // The mend: one wood + 2 work minutes, at the half-sound trigger
         expect(TOOL_REPAIR_MATERIAL).toBe('wood');
@@ -62,6 +65,14 @@ describe('toolDurability — the material constants', () => {
         expect(toolWearPerUse('hammer', 'build')).toBe(1);
         expect(toolWearPerUse('hammer', 'chop')).toBe(0);
         expect(toolWearPerUse('hammer', 'fell')).toBe(0);
+        // T4 — the fishing gear wears on a SUCCESSFUL catch ('fish'): the
+        // spear is the fast tool that runs out (2 per fish — 30 fish per
+        // fresh spear), the rod the patient one (1 per fish — 90 per rod);
+        // a failed cast or the walk to the shore wears nothing
+        expect(toolWearPerUse('spear', 'fish')).toBe(2);
+        expect(toolWearPerUse('rod', 'fish')).toBe(1);
+        expect(toolWearPerUse('spear', 'build')).toBe(0);
+        expect(toolWearPerUse('rod', 'chop')).toBe(0);
         // Unknown tools wear on nothing
         expect(toolWearPerUse('net', 'chop')).toBe(0);
     });

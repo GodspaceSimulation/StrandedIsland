@@ -61,9 +61,11 @@ describe('forestPlugin — the seeded stands (neighborhood density)', () => {
         // land below, rocky edges lower still)
         expect(forestTreeCount(25, 17)).toBe(255);
         // The reference wood (−7,0): a deep interior ring of eight forest
-        // neighbours clamps to the FULL stand — the captured wood (425
-        // trees, 1688 wood across their pools)
-        expect(ecology.standOf({ x: -7, y: 0 })).toEqual({ trees: 425, wood: 1688 });
+        // neighbours clamps to the FULL coverage price — and the stand's
+        // POOL refuses the tile's river-edge waterline spots (R1's EDGE
+        // WEAVE: no tree stands on water), so the mirror clamps to 412
+        // (captured wood 1631 across their pools)
+        expect(ecology.standOf({ x: -7, y: 0 })).toEqual({ trees: 412, wood: 1631 });
         // The whole census: every one of the island's 59 woods seeds
         // exactly the neighborhood count its terrain model priced (the
         // deposit IS the stand's size — captured per tile)
@@ -73,24 +75,26 @@ describe('forestPlugin — the seeded stands (neighborhood density)', () => {
             expect(ecology.standOf(cell)?.trees).toBe(cell.resources.tree);
         });
         // The captured distribution at the 0.8 wetland cutoff under T2's
-        // densified base: 41 full 425 interiors (up from 35), 4 woods that
-        // would clamp but hold a 1-spot boulder band (424), 6 × 404 edges,
-        // 5 × 383, 2 × 382, and 1 isolated 361 wood (the exact counts the
-        // islandTerrainNeighbors regression pins model-side)
-        expect(forests.filter((cell) => cell.resources.tree === 425).length).toBe(41);
-        expect(forests.filter((cell) => cell.resources.tree === 424).length).toBe(4);
+        // densified base (the RAW coverage prices — the mirror clamps the
+        // water-short pools at seeding): 30 full 425 interiors, 2 woods at
+        // 424 (a 1-spot boulder band), 6 × 404 edges, 5 × 383, 2 × 382, and
+        // 1 isolated 361 wood — the water-seam clamps spread the rest over
+        // 422…405 (the exact counts the islandTerrainNeighbors regression
+        // pins model-side)
+        expect(forests.filter((cell) => cell.resources.tree === 425).length).toBe(30);
+        expect(forests.filter((cell) => cell.resources.tree === 424).length).toBe(2);
         expect(forests.filter((cell) => cell.resources.tree === 404).length).toBe(6);
         expect(forests.filter((cell) => cell.resources.tree === 383).length).toBe(5);
         expect(forests.filter((cell) => cell.resources.tree === 382).length).toBe(2);
         expect(forests.filter((cell) => cell.resources.tree === 361).length).toBe(1);
         // The mixed seeded ages read as standing wood immediately (the
         // seeded woods hold mature trees and saplings side by side)
-        expect(ecology.standOf({ x: -7, y: 0 })?.wood).toBe(1688);
+        expect(ecology.standOf({ x: -7, y: 0 })?.wood).toBe(1631);
         // The INGRESS MEADOWS carry real persistent stands too — the
-        // meadow (1,−2) beside the woods seeds its 14-spot edge fringe
-        // (T2's densified 8/3 rule, 61 wood); the bare meadow (0,−3)
+        // meadow (1,−2) beside the woods seeds its 11-spot seam meander
+        // fringe (R1's EDGE WEAVE, 51 wood); the bare meadow (0,−3)
         // carries none
-        expect(ecology.standOf({ x: 1, y: -2 })).toEqual({ trees: 14, wood: 61 });
+        expect(ecology.standOf({ x: 1, y: -2 })).toEqual({ trees: 11, wood: 51 });
         expect(ecology.standOf({ x: 0, y: -3 })).toBeUndefined();
     });
 
@@ -150,7 +154,7 @@ describe('forestPlugin — the seeded stands (neighborhood density)', () => {
         expect(terrain.canvasFor([{ x: 2, y: 0 }])).toBe(terrain.canvasFor([{ x: 2, y: 0 }]));
         // T2's densified 383-tree stand with its mixed seeded ages (the
         // captured wood sum)
-        expect(ecology.standOf({ x: 2, y: 0 })).toEqual({ trees: 383, wood: 1452 });
+        expect(ecology.standOf({ x: 2, y: 0 })).toEqual({ trees: 383, wood: 1458 });
     });
 });
 
@@ -353,8 +357,8 @@ describe('forestPlugin — recruitment (the seed bank)', () => {
             17,
         );
         // (2,0) is a boulder-spilled wood: the west highland column carves a
-        // 9-spot band, so its capacity is the boulder-penalty cap 416
-        // (425 − 9), NOT the full 425
+        // 6-spot wavy band (R1's seam meander), so its capacity is the
+        // boulder-penalty cap 419 (425 − 6), NOT the full 425
         const stand = terrain.forestOf(2, 0)!;
         // T2's densified 0.9-coverage stand: 383 trees (up from 319), leaving
         // 42 bare fine cells (425 − 383)
@@ -375,14 +379,14 @@ describe('forestPlugin — recruitment (the seed bank)', () => {
         });
         // One recruit cycle: the random probe OR the bounded row-major
         // fallback lands saplings — the stand trims back to the boulder cap
-        // of 416, with the LAST bare non-rock spot standing
+        // of 419, with the LAST bare non-rock spot standing
         ecology.fastForward(10);
-        expect(stand.trees.size).toBe(416);
-        expect(stand.trees.has('2,8')).toBe(true);
+        expect(stand.trees.size).toBe(419);
+        expect(stand.trees.has('12,8')).toBe(true);
         // The mirrors read the capped stand (the rock penalty already priced
         // the band out — the deposit IS the stand)
-        expect(world.cellAt(2, 0)?.resources.tree).toBe(416);
-        expect(ecology.standOf({ x: 2, y: 0 })).toEqual({ trees: 416, wood: 1486 });
+        expect(world.cellAt(2, 0)?.resources.tree).toBe(419);
+        expect(ecology.standOf({ x: 2, y: 0 })).toEqual({ trees: 419, wood: 1495 });
     });
 
     // ── THE BOULDER BOUNDARY (the T5 fix's regression pins) ────────────────
@@ -393,8 +397,8 @@ describe('forestPlugin — recruitment (the seed bank)', () => {
     // and the terrain plugin's forestPlant refuses a carved spot outright —
     // so no tree EVER stands on a boulder, however long the world runs.
     // The reference tile is the seed-7 island's (2,0): the west highland
-    // column carves a 9-spot checkerboard band ('−12,−8' … '−12,8'),
-    // capacity 425 − 9 = 416.
+    // column carves a 6-spot wavy seam band ('−12,−3' … '−12,2'),
+    // capacity 425 − 6 = 419.
 
     it('recruitment never stands a tree on a boulder: the band stays treeless to the neighborhood cap', () => {
         const { world, terrain, ecology } = buildEcology(
@@ -403,7 +407,7 @@ describe('forestPlugin — recruitment (the seed bank)', () => {
             17,
         );
         const band = world.cellAt(2, 0)!.carving!.rock;
-        expect(band.length).toBe(9);
+        expect(band.length).toBe(6);
         const stand = terrain.forestOf(2, 0)!;
         // T2's densified 383-tree stand (the seeded size is irrelevant to
         // the boundary — the clearcut below starts the refill from zero)
@@ -420,33 +424,33 @@ describe('forestPlugin — recruitment (the seed bank)', () => {
         // from every roll)
         ecology.fastForward(10);
         expect(stand.trees.size).toBe(1);
-        expect(Array.from(stand.trees.keys())).toEqual(['9,2']);
-        // Full refill: 416 recruitment cycles (every 10 minutes) land the
+        expect(Array.from(stand.trees.keys())).toEqual(['-12,4']);
+        // Full refill: 419 recruitment cycles (every 10 minutes) land the
         // stand exactly at its neighborhood cap — every fine cell BUT the
         // band — with not one tree on a boulder
-        ecology.fastForward(4150);
+        ecology.fastForward(4180);
         const onRock = band.filter((spot) => stand.trees.has(spot));
         expect(onRock).toEqual([]);
-        expect(stand.trees.size).toBe(416);
+        expect(stand.trees.size).toBe(419);
         // The mirror reads the capped stand (the rock penalty already priced
         // the band out — the deposit IS the stand)
-        expect(world.cellAt(2, 0)?.resources.tree).toBe(416);
-        // The cap HOLDS: further cycles add nothing (416 = 425 − 9 — the
+        expect(world.cellAt(2, 0)?.resources.tree).toBe(419);
+        // The cap HOLDS: further cycles add nothing (419 = 425 − 6 — the
         // capacity gate, not a probe miss)
         ecology.fastForward(100);
-        expect(stand.trees.size).toBe(416);
+        expect(stand.trees.size).toBe(419);
         expect(band.filter((spot) => stand.trees.has(spot))).toEqual([]);
-        // The zoomed interior agrees: 416 treed subtiles, the 9 boulders
+        // The zoomed interior agrees: 419 treed subtiles, the 6 boulders
         // crowned and treeless — the invariant holds at every scale
         const sub = terrain.canvasFor([{ x: 2, y: 0 }])!;
         const treed = sub.cells.filter((cell) => (cell.resources.tree ?? 0) > 0);
-        expect(treed.length).toBe(416);
+        expect(treed.length).toBe(419);
         const bouldered = sub.cells.filter(
             (cell) =>
                 cell.voxels.length === (world.cellAt(2, 0)?.voxels.length ?? 0) + 1 &&
                 cell.voxels[cell.voxels.length - 1] === 'gravel',
         );
-        expect(bouldered.length).toBe(9);
+        expect(bouldered.length).toBe(6);
         expect(bouldered.filter((cell) => (cell.resources.tree ?? 0) > 0)).toEqual([]);
     });
 
@@ -474,21 +478,21 @@ describe('forestPlugin — recruitment (the seed bank)', () => {
                 }
             }
         }
-        expect(nonRock.length).toBe(416);
-        nonRock.slice(0, 415).forEach((spot) => {
+        expect(nonRock.length).toBe(419);
+        nonRock.slice(0, 418).forEach((spot) => {
             terrain.forestPlant(2, 0, spot, { born: 1, base: 1, baseMinute: 1, carry: 0 });
         });
-        expect(stand.trees.size).toBe(415);
+        expect(stand.trees.size).toBe(418);
         // One recruit cycle: exactly ONE sapling lands at the only bare
         // non-rock spot (the probe's 1/425 rolls OR the bounded row-major
         // fallback — either path fills THE spot), and the band gains
         // nothing
         ecology.fastForward(10);
-        expect(stand.trees.size).toBe(416);
+        expect(stand.trees.size).toBe(419);
         expect(stand.trees.has('12,8')).toBe(true);
         expect(band.filter((spot) => stand.trees.has(spot))).toEqual([]);
         // The mirrors read the capped stand
-        expect(world.cellAt(2, 0)?.resources.tree).toBe(416);
+        expect(world.cellAt(2, 0)?.resources.tree).toBe(419);
     });
 });
 
@@ -515,19 +519,19 @@ describe('forestPlugin — the spread (grass substrate only)', () => {
         // carries the forest voxel, the forest biome, and a stand of
         // INGRESS + ONE sapling (the ingressed meadows already held their
         // localized edge fringe — the spread's sapling JOINS that stand;
-        // the bare meadows seed a one-sapling stand). T2's densified 8/3
-        // fringe lifts every conversion count from the 6/2-era capture
+        // the bare meadows seed a one-sapling stand). R1's EDGE WEAVE
+        // prices the fringe off the shared forest seam's meander
         const converted = world.canvas.cells.filter(
             (cell) =>
                 cell.biome === 'forest' &&
                 meadowSet.includes(`${cell.x},${cell.y}`),
         );
         expect(converted.map((cell) => `${cell.x},${cell.y}:${cell.resources.tree}`)).toEqual([
-            '-7,-3:1', '-6,-3:1', '-5,-3:1', '-2,-3:9', '1,-3:12', '-7,-2:12', '-6,-2:4', '-5,-2:1',
-            '0,-2:1', '1,-2:15', '-6,-1:15', '-5,-1:12', '-4,-1:20', '-2,-1:17',
-            '1,-1:15', '-3,0:20', '-3,1:12', '-2,1:1', '6,1:26', '7,1:31', '-4,2:12', '-3,2:4',
-            '1,2:12', '-5,3:4', '-4,3:1', '0,3:9', '1,3:7', '2,3:12', '3,3:26', '-1,4:20',
-            '1,4:20', '2,4:4', '3,4:12', '3,5:4',
+            '-7,-3:1', '-6,-3:1', '-5,-3:1', '-2,-3:8', '1,-3:15', '-7,-2:17', '-6,-2:1', '-5,-2:1',
+            '0,-2:1', '1,-2:12', '-6,-1:7', '-5,-1:10', '-4,-1:22', '-2,-1:25',
+            '1,-1:13', '-3,0:29', '-3,1:7', '-2,1:1', '6,1:29', '7,1:29', '-4,2:10', '-3,2:4',
+            '1,2:7', '-5,3:1', '-4,3:1', '0,3:9', '1,3:4', '2,3:18', '3,3:30', '-1,4:23',
+            '1,4:30', '2,4:1', '3,4:8', '3,5:1',
         ]);
         // The meadow census dropped to 24 (58 before, 34 converted — the
         // river-era capture; the re-skin fringe the old 63-meadow board

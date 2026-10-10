@@ -232,7 +232,7 @@ export const ISLAND_RECIPES: readonly Recipe[] = [
 ];
 
 /**
- * R4 — the EARLY TOOLS the crew crafts before the long build projects: the
+ * R4 — the early tools the crew crafts before the long build projects: the
  * axe (a wood chop) and the hammer (the build work). Each is crafted ONCE —
  * the tool-craft rung below gates on "no crew carries this tool yet." The
  * axe speeds the lumber chop (plugins/lumber reads the bag); the hammer is
@@ -240,6 +240,35 @@ export const ISLAND_RECIPES: readonly Recipe[] = [
  * plan cursor's site placement pins stay stable).
  */
 export const TOOL_RECIPE_IDS: readonly string[] = ['axe', 'hammer'];
+
+/**
+ * T4 — THE MAINTAIN DROP ORDER — the full-hand release the maintenance
+ * fetch applies when the order's material cannot fit the bag: the LEAST
+ * essential goods first, food-and-water ids ABSENT (a body never drops its
+ * own relief — the survival ladder's abandonOneUnit rule,
+ * plugins/behavior/behaviorPlugin.ts ABANDON_ORDER; keep the two lists in
+ * step). The hand tools rank LAST (an axe's halved chop and a hammer's
+ * work are lost when they go — and their loss re-opens the crew's owed-tool
+ * demand, so they are the release's final resort).
+ */
+const MAINTAIN_DROP_ORDER: readonly string[] = [
+    'shell',
+    'flint',
+    'sand',
+    'dirt',
+    'grass',
+    'thatch',
+    'cloth',
+    'rope',
+    'plank',
+    'frond',
+    'vine',
+    'wood',
+    'stone',
+    'iron',
+    'axe',
+    'hammer',
+];
 
 /**
  * R5/R6 — THE ISLAND'S WORK COSTS: the construction-time WORK-MINUTES each
@@ -1320,7 +1349,41 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
         active: World,
         actor: TaskEntity,
         item: string,
+        // The units the release MUST NOT drop — the material being fetched
+        // plus, for a multi-raw order (the brick's sand+stone), the order's
+        // OTHER raws: dropping one raw to make room for another would walk
+        // the fetches in a circle (sand landed → dropped for stone's room →
+        // sand fetched again — the treadmill the first release cut showed)
+        keep: readonly string[] = [item],
     ): TaskSpec | undefined => {
+        // THE BAG ROOM POLICY (T4) — a hand that cannot fit ONE MORE UNIT of
+        // the material fetches nothing: the beat would bank, the claim's
+        // take would refuse (canHold), and the rung would re-plan the same
+        // futile fetch forever (the brick-ladder wedge: sand 1 of 2 with 60
+        // weight of lumber debris aboard — 185/200 — one 30-weight sand
+        // could never enter). The crew OWES the order its material, so a
+        // surplus unit the bag no longer owes releases first — the survival
+        // ladder's abandonOneUnit rule (plugins/behavior, the desperation
+        // line) applied to the maintenance fetch: LEAST essential first,
+        // the KEPT units excluded (the material being fetched AND the
+        // order's other raws), food and water ids ABSENT (a body never
+        // drops its own relief; the needs rungs own the hungry hand's
+        // cargo). Applied at plan time like the survival release; nothing
+        // expendable aboard (or the release still leaves no room) → the
+        // fetch yields no plan this minute.
+        const bag = inventory.of(actor.id);
+        if (inventoryWeight(bag) + itemWeight(item) > inventory.capacityOf(actor.id)) {
+            const released = MAINTAIN_DROP_ORDER.find(
+                (candidate) => !keep.includes(candidate) && (bag[candidate] ?? 0) > 0,
+            );
+            if (
+                released === undefined ||
+                !inventoryRemove(bag, released, 1) ||
+                inventoryWeight(bag) + itemWeight(item) > inventory.capacityOf(actor.id)
+            ) {
+                return undefined;
+            }
+        }
         // WOOD is never lying on a tile — it stands in trees: the order's
         // wood is FELLED (the same shared chop job the materials rung and
         // the lumber plugin work — R6 one job per tile)
@@ -1413,12 +1476,21 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
             };
         }
         // Fetch the first missing input (sand is the unlimited ground
-        // supply, stone the mined one — the quarry keeps it near)
+        // supply, stone the mined one — the quarry keeps it near). The
+        // release KEEPS the order's whole raw set (both brick raws + the
+        // fired brick itself) — dropping one raw to make room for another
+        // would walk the fetches in a circle (the sand/stone treadmill the
+        // first release cut showed)
         const missing = recipe.inputs.find((line) => (bag[line.item] ?? 0) < line.count);
         if (!missing) {
             return undefined;
         }
-        return orderFetchPlan(active, actor, missing.item);
+        return orderFetchPlan(
+            active,
+            actor,
+            missing.item,
+            [...recipe.inputs.map((line) => line.item), 'brick'],
+        );
     };
 
     /**
@@ -1484,10 +1556,10 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
             ) {
                 return undefined;
             }
-            // THE BAG ROOM GATE — a full hand fetches nothing
-            if (inventoryWeight(bag) >= inventory.capacityOf(actor.id)) {
-                return undefined;
-            }
+            // The BAG ROOM POLICY lives inside the fetch planner itself — a
+            // wedged hand releases its surplus there (the brick order's raw
+            // fetches route through brickPlan → orderFetchPlan, so the
+            // policy must sit BELOW the brick split, not above it)
             return orderFetchPlan(active, actor, order.item);
         }
         // THE WORK — the order is fully staged: stand on the structure

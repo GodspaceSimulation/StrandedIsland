@@ -39,6 +39,13 @@ materials.define({ id: 'dirt', name: 'Dirt', kind: 'resource' });
 materials.define({ id: 'tree', name: 'Tree', kind: 'resource' });
 materials.define({ id: 'grass', name: 'Grass', kind: 'resource' });
 materials.define({ id: 'frond', name: 'Frond', kind: 'resource' });
+// T4 — the fishing tools' display identity (the same pattern as the axe and
+// the hammer below: shared-catalog names, island-local game stats in
+// ITEM_CATALOG). The SPEAR (a flint-tipped shaft) and the ROD (a stick with
+// a vine line) are the two implements every ACTIVE shore catch demands —
+// R2 removes the barehand cast, so these are the island's fishing gear.
+materials.define({ id: 'spear', name: 'Spear', kind: 'tool' });
+materials.define({ id: 'rod', name: 'Fishing Rod', kind: 'tool' });
 
 export type ItemKind = 'food' | 'drink' | 'material' | 'tool';
 
@@ -104,6 +111,14 @@ export const ITEM_CATALOG: Record<string, ItemDef> = {
     // crafts them (ISLAND_RECIPES) before the long build projects.
     axe: { name: 'Axe', kind: 'tool' },
     hammer: { name: 'Hammer', kind: 'tool' },
+    // T4 — the FISHING GEAR: the spear (a flint-tipped shaft — the thrust
+    // catch at the water's edge) and the rod (a stick with a vine line —
+    // the patient cast). R2 removed the barehand cast: a human/land-agent
+    // can land a fish ONLY with one of these two in hand (or by hauling a
+    // constructed net's catch). The fish itself stays a plain food item —
+    // caught fish keep their inventory identity exactly as before.
+    spear: { name: 'Spear', kind: 'tool' },
+    rod: { name: 'Fishing Rod', kind: 'tool' },
 };
 
 /**
@@ -141,6 +156,11 @@ export const ITEM_WEIGHTS: Record<string, number> = {
     flint: 15,
     axe: 30,
     hammer: 35,
+    // T4 — the fishing gear's weights: the spear (a hafted shaft with a
+    // flint head) is the heavier thrust tool, the rod a light stick and
+    // line. Both sit beside the hand tools' band.
+    spear: 20,
+    rod: 12,
     // R5 — the crafted parts (ISLAND_RECIPES outputs): explicit weights so a
     // craft's net-weight gate reads the real load, never the fallback 1.
     plank: 15,
@@ -272,7 +292,15 @@ export const inventoryCategories = (inventory: Inventory): ItemCategoryStack[] =
 export const ITEM_TYPE_GLYPHS: Record<string, string> = {
     berry: '🍒',
     coconut: '🥥',
-    fish: '🐟',
+    // T4 — R2: the wild-fish glyph left the ISLAND's ground-item palette.
+    // Fish no longer stands in any cell stock (the water is an UNLIMITED
+    // source — the fishing tools and the constructed nets work it), so no
+    // ground entry is ever typed 'fish' and the island's own fallback
+    // emoji/hover cannot leak a wild fish indicator at any zoom level. The
+    // shared canvas package's stock taxonomy keeps its dormant fish glyph
+    // (a shared-package entry — untouched here); a CAUGHT fish stays in the
+    // bag, whose stacks render as text ("1 Fish"), so the caught-fish
+    // inventory keeps its label without a ground glyph.
     shell: '🐚',
     water: '💧',
     vine: '🌿',
@@ -282,7 +310,7 @@ export const ITEM_TYPE_GLYPHS: Record<string, string> = {
     frond: '🍃',
     // R2 — the berry bush's canvas glyph (the ground-item entries resolve a
     // bush unit's type through this, so a bush stands as its own visible
-    // plant beside the 🍒 berries it bears)
+    // plant beside the berries it bears)
     bush: '🪴',
     // R4 — the hand tools' canvas glyphs (the unicode/svg type palettes
     // resolve a tool entry's type through these)
