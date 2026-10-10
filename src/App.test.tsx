@@ -99,7 +99,7 @@ describe('App', () => {
         // R5 — Ael's first minute now belongs to the farm rung (a berry
         // plot beside his landing outranks the wood trek)
         expect(screen.getByTestId('actor-task-actor-1').textContent).toBe('· travels to the farm');
-        expect(screen.getByTestId('actor-task-actor-4').textContent).toBe('· chops a tree');
+        expect(screen.getByTestId('actor-task-actor-4').textContent).toBe('· plants a berry plot');
     });
 
     it('the Entity Inspector opens in the left rail when a castaway is selected', () => {
@@ -416,7 +416,7 @@ describe('App', () => {
         // First inspect Dune's landing spot (the river-era rim ranking
         // moved it to (5,-2) — a treed tile)…
         fireEvent.click(screen.getByTestId('unicode-tile-5--2'));
-        expect(screen.getByTestId('tile-position').textContent).toBe('(5, -2) · forest');
+        expect(screen.getByTestId('tile-position').textContent).toBe('(5, -2) · tree');
         expect(
             Array.from(screen.getByTestId('tile-residents').children).map((child) => child.textContent),
         ).toEqual(['Dune — human · well']);
@@ -636,8 +636,9 @@ describe('App', () => {
         expect(treedTile.querySelector('text')).toBeNull();
         expect(treedTile.querySelector('[data-testid="tree-icon-svg-canopy"]')).not.toBeNull();
         expect(treedTile.querySelector('[data-testid="tree-icon-svg-trunk"]')).not.toBeNull();
-        // Dune's landing tile keeps its entity text — the entity always wins
-        expect(tiles[182].querySelector('text')?.textContent).toBe('🧍‍♂️');
+        // Dune's river-era landing (5,-2) → tile (−2+8)×25+(5+12) = 167
+        // keeps its entity text — the entity always wins
+        expect(tiles[167].querySelector('text')?.textContent).toBe('🧍‍♂️');
         // A bare sea tile draws neither icon nor text
         expect(tiles[0].querySelector('[data-testid="tree-icon-svg-canopy"]')).toBeNull();
         expect(tiles[0].querySelector('text')).toBeNull();
@@ -693,10 +694,11 @@ describe('App', () => {
         expect(tiles[91].querySelector('[data-testid="tree-icon-svg-canopy"]')?.getAttribute('opacity')).toBe('1');
         // -- The rock icon (unicode) -----------------------------------------
         fireEvent.click(screen.getByTestId('canvas-tab-unicode'));
-        // The highland rock site (-1,-1) — 3 standing stones, nobody on it:
+        // The highland rock site (-1,0) — the river-era survey moved the
+        // rock band one row north; 3 standing stones, nobody on it:
         // the 🪨 marker stands while the stock does (the BINARY rule — no
         // fade: the stock-driven drop is its honesty mechanism)
-        const rock = screen.getByTestId('unicode-tile--1--1');
+        const rock = screen.getByTestId('unicode-tile--1-0');
         expect(rock.textContent).toBe('🪨');
         const rockIcon = rock.querySelector('[data-testid="rock-icon-unicode"]') as HTMLElement;
         expect(rockIcon).not.toBeNull();
@@ -704,11 +706,11 @@ describe('App', () => {
         // -- The rock icon (svg twin) ----------------------------------------
         fireEvent.click(screen.getByTestId('canvas-tab-svg'));
         const svgTiles = (screen.getByTestId('world-grid-svg') as SVGSVGElement).querySelectorAll('g');
-        // (-1,-1) ? tile (-1+8)×25+(-1+12) = 186 — the vector rock: main
+        // (-1,0) → tile (0+8)×25+(-1+12) = 211 — the vector rock: main
         // stone + pebble, no text glyph
-        expect(svgTiles[186].querySelector('[data-testid="rock-icon-svg-main"]')).not.toBeNull();
-        expect(svgTiles[186].querySelector('[data-testid="rock-icon-svg-pebble"]')).not.toBeNull();
-        expect(svgTiles[186].querySelector('text')).toBeNull();
+        expect(svgTiles[211].querySelector('[data-testid="rock-icon-svg-main"]')).not.toBeNull();
+        expect(svgTiles[211].querySelector('[data-testid="rock-icon-svg-pebble"]')).not.toBeNull();
+        expect(svgTiles[211].querySelector('text')).toBeNull();
     });
 
     it('the interior view (scale 0) draws tree icons at full opacity', () => {
@@ -1326,7 +1328,10 @@ describe('App', () => {
 // LIVE DOM (aria semantics), not from source strings.
 describe('App — the standing-job progress bars (R6)', () => {
     it('the live chop job draws an accessible bar on the unicode board, updates per beat, and reads in the Tile Inspector', () => {
-        const island = createIslandWorld({ seed: 7 });
+        // R5 — farming OFF: the farm rungs would reroute Dune's minute 1
+        // onto a berry plot and no chop job would open (the bars suite
+        // owns the RENDERING of the standing-job ledger, not the farm)
+        const island = createIslandWorld({ seed: 7, plugins: { farming: false } });
         render(<Dashboard island={island} onReroll={() => undefined} />);
         // Minute 1: the woodless cast opens the shared chop job on the
         // treed tile (5,-2) — Dune's river-era landing is forest, he
@@ -1362,7 +1367,9 @@ describe('App — the standing-job progress bars (R6)', () => {
     });
 
     it('the ascii and SVG boards draw the chop bar and the live site progress; the SVG strip grows with the work', () => {
-        const island = createIslandWorld({ seed: 7 });
+        // R5 — farming OFF (see the unicode twin above): the chop job must
+        // open on Dune's tile at minute 1
+        const island = createIslandWorld({ seed: 7, plugins: { farming: false } });
         render(<Dashboard island={island} onReroll={() => undefined} />);
         act(() => {
             island.world.step();

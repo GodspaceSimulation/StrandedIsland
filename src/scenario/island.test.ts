@@ -165,8 +165,8 @@ describe('createIslandWorld', () => {
         expect(Array.from(handle.world.actors.values()).map((actor) => ({ ...actor.position }))).toEqual([
             { x: -11, y: 0, z: 0 },
             { x: -9, y: -2, z: 0 },
-            { x: -2, y: 5, z: 0 },
-            { x: -5, y: -1, z: 0 },
+            { x: -3, y: 5, z: 0 },
+            { x: 5, y: -2, z: 0 },
         ]);
         expect(handle.tasks.tasks().map((task) => ({ actorId: task.actorId, kind: task.kind, label: task.label, remaining: task.remaining }))).toEqual([
             { actorId: 'actor-1', kind: 'move', label: 'travels to trees', remaining: 1 },
@@ -532,18 +532,20 @@ describe('createIslandWorld', () => {
         ]);
         // Terrain census: cell counts per DOMINANT VISIBLE type (R6 — each
         // coarse tile reads the majority of its children: the tree-fringed
-        // meadows surface as grass (29 → 63), the rock sites and the lone
-        // iron lode read as the dirt around them (stone 8 → 0, iron 1 → 0,
-        // dirt 0 → 9), and the tree census drops to the true canopy (59);
-        // the 0.8-threshold basins grow five lakes and eight ponds — every
-        // basin paints water), alphabetical
+        // meadows surface as grass (58 — five fell to the R4 river course),
+        // the rock sites and the lone iron lode read as the dirt around
+        // them (stone 8 → 0, iron 1 → 0, dirt 0 → 8), and the tree census
+        // drops to the true canopy; the 0.8-threshold basins grow four
+        // lakes and eight ponds, and the river paths add thirteen water
+        // cells the sand census lost to fords), alphabetical
         expect(frame.tables[1].rows).toEqual([
-            ['dirt', 9],
-            ['grass', 63],
-            ['lake', 5],
+            ['dirt', 8],
+            ['grass', 58],
+            ['lake', 4],
             ['ocean', 46],
             ['pond', 8],
-            ['sand', 138],
+            ['river', 13],
+            ['sand', 132],
             ['shallows', 97],
             ['tree', 59],
         ]);

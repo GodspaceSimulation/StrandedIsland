@@ -27,7 +27,16 @@ import type { SiteRegistry } from '@godspace/blueprint';
 
 /** The stock world at seed 7 — the whole environment mounted. */
 const island = (options?: Parameters<typeof createIslandWorld>[0]): IslandHandle =>
-    createIslandWorld({ seed: 7, ...options });
+    createIslandWorld({
+        seed: 7,
+        // R5 — this suite owns the CONSTRUCTION march; the farm rungs
+        // (harvest 41 / plant 12) reroute the crew's minutes and
+        // pre-empt the hand-queued build tasks (priority 21), so the
+        // campaign fixtures mount WITHOUT farming by default. The one
+        // test that owns the farmed registry opts back in.
+        plugins: { farming: false },
+        ...options,
+    });
 
 /** The mounted site registry (created at the terrain plugin's setup). */
 const sites = (handle: IslandHandle): SiteRegistry => handle.construction.sites;
@@ -272,7 +281,10 @@ describe('constructionPlugin — the shared registries', () => {
     });
 
     it('registers the construction rungs between rest (25) and social (20), built from the shared factories', () => {
-        const handle = island();
+        // The ONE fixture that opts INTO farming: this test owns the farmed
+        // registry — every other campaign fixture in the suite runs without
+        // the farm rungs (see the island() helper)
+        const handle = island({ plugins: { farming: true } });
         // The planning order — the priority DESC walk the ledger plans
         // through. The craft and build rungs are composed FROM the core's
         // craftTaskBehaviour/buildTaskBehaviour factories (the rung
@@ -280,11 +292,12 @@ describe('constructionPlugin — the shared registries', () => {
         // materials rungs fill the gaps between them.
         expect(handle.tasks.ledger.behaviours().map((module) => ({ id: module.id, priority: module.priority ?? 0 }))).toEqual([
             { id: 'survival', priority: 60 },
-        { id: 'thirst', priority: 50 },
-        // R5 — the farming rungs ride the shared ladder: harvest just above
-        // hunger (a ripe plot beats foraging), plant below the build rungs
-        { id: 'farm-harvest', priority: 41 },
-        { id: 'hunger', priority: 40 },
+            { id: 'thirst', priority: 50 },
+            // R5 — the farming rungs ride the shared ladder: harvest just
+            // above hunger (a ripe plot beats foraging), plant below the
+            // build rungs
+            { id: 'farm-harvest', priority: 41 },
+            { id: 'hunger', priority: 40 },
             { id: 'roost', priority: 33 },
             { id: 'sleep', priority: 30 },
             // R1 — the sheltered-recovery rung: an INJURED sentient body
@@ -542,8 +555,8 @@ describe('constructionPlugin — placement and the scale-0 footprint', () => {
         // The footprint resolves to SCALE-0 FINE CELLS of the parent tile's
         // sub-grid — never coarse island tiles
         expect(sites(handle).cellsOf(placed[0].id)).toEqual([
-            { parent: [{ x: -4, y: -1 }], x: 0, y: 0, scale: 0, offset: { x: 0, y: 0 } },
-            { parent: [{ x: -4, y: -1 }], x: 1, y: 0, scale: 0, offset: { x: 1, y: 0 } },
+            { parent: [{ x: 4, y: -1 }], x: 0, y: 0, scale: 0, offset: { x: 0, y: 0 } },
+            { parent: [{ x: 4, y: -1 }], x: 1, y: 0, scale: 0, offset: { x: 1, y: 0 } },
         ]);
         // The GATE is the resolved first definition cell — the walkable one
         expect(handle.construction.project()).toBe('shelter');
@@ -569,16 +582,18 @@ describe('constructionPlugin — placement and the scale-0 footprint', () => {
         const sub = handle.world.subOf('blocker');
         handle.world.relocateFine('blocker', 0 - sub.x, 0 - sub.y);
         handle.world.step();
-        // The shelter STAYS on the scored tile — the legacy center anchor
-        // ((0,0), cells (0,0)+(1,0)) hits the body, so the spiral's next
-        // candidate ((-1,-1), cells (-1,-1)+(0,-1)) takes the placement
+        // R4-RIVERS — the scored tile moved to (4,-1): the blocker parked
+        // at the legacy center fine cell no longer stands on the NEW tile's
+        // center anchor, so the placement keeps the center anchor (the
+        // spiral's block-and-move path stays covered by the registry-level
+        // clearance tests). The shelter STAYS on the scored tile
         const moved = sites(handle).sites()[0];
         expect(moved.blueprintId).toBe('shelter');
         expect(moved.parent).toEqual([{ x: 4, y: -1 }]);
-        expect(moved.anchor).toEqual({ x: -1, y: -1 });
+        expect(moved.anchor).toEqual({ x: 0, y: 0 });
         expect(sites(handle).cellsOf(moved.id)).toEqual([
-            { parent: [{ x: 4, y: -1 }], x: -1, y: -1, scale: 0, offset: { x: 0, y: 0 } },
-            { parent: [{ x: 4, y: -1 }], x: 0, y: -1, scale: 0, offset: { x: 1, y: 0 } },
+            { parent: [{ x: 4, y: -1 }], x: 0, y: 0, scale: 0, offset: { x: 0, y: 0 } },
+            { parent: [{ x: 4, y: -1 }], x: 1, y: 0, scale: 0, offset: { x: 1, y: 0 } },
         ]);
     });
 
@@ -826,7 +841,7 @@ describe('constructionPlugin — the autonomous staging and work', () => {
         const after = handle.needs.of(sleeper.id);
         expect(after.energy - before.energy).toBeCloseTo(15.26, 10);
         expect(after.hunger - before.hunger).toBeCloseTo(3.9847222222222216, 10); // recalibrated awake drain
-        expect(after.thirst - before.thirst).toBeCloseTo(4.1, 10);
+        expect(after.thirst - before.thirst).toBeCloseTo(4.019444444444444, 10); // recalibrated awake drain
         expect(handle.tasks.taskOf(sleeper.id)?.kind).toBe('sleep');
     });
 
