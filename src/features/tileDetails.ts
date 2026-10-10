@@ -1269,6 +1269,19 @@ export const dominantVisibleType = (
     if (!cell) {
         return undefined;
     }
+    // THE RIVER SEMANTIC (shape-first river revision) — a river ford's
+    // coarse identity is the river itself. The ford's zoomed interior is
+    // the channel band ringed by dry banks (the terrain plugin's
+    // riverFineMask — the shape-first mask carries no majority water), so
+    // the child-census majority reads the BANKS ('sand'/'grass') and would
+    // repaint the coarse tile as dry ground. The tile IS the river —
+    // generation carved its biome 'river', the canvas palette owns the
+    // 'river' key — so the semantic rule returns 'river' for any river
+    // parent before the fold, memo included. This is a deliberate
+    // terrain-identity rule scoped to the ford biome, not a fake count.
+    if (cell.biome === 'river') {
+        return 'river';
+    }
     // The stamp reads the cell's EIGHT in-grid neighbors off the grid the
     // cell sits in (its parent's grid — the root canvas for a length-1
     // path); R1's blend inputs ride it exactly as the terrain plugin's own

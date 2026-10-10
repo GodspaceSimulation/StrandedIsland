@@ -779,6 +779,18 @@ describe('dominantVisibleType — the coarse-scale majority read (R6)', () => {
         expect(dominantVisibleType(island, [{ x: -12, y: -8 }])).toBe('shallows');
     });
 
+    it('reads a river ford tile as the river itself (the shape-first semantic rule)', () => {
+        // The ford's fine channel keeps no water majority (the shape-first
+        // mask: the band + banks), so the child-census majority would read
+        // the banks — the terrain semantic rule carries the coarse identity
+        // instead: the tile IS the river
+        const river = island.world.canvas.cells.find((cell) => cell.biome === 'river')!;
+        expect(river).toBeDefined();
+        expect(dominantVisibleType(island, [{ x: river.x, y: river.y }])).toBe('river');
+        // The rule scopes the ford biome: a non-river tile still folds
+        expect(dominantVisibleType(island, [{ x: 1, y: -2 }])).toBe('grass');
+    });
+
     it('falls back to the tile\u2019s own key at the leaf level and undefined for dead addresses', () => {
         // A scale-0 child has no generated sub-grid: its own surface key IS
         // its visible type (the zoomed views show children cell-for-cell,
@@ -801,8 +813,16 @@ describe('dominantVisibleType — the coarse-scale majority read (R6)', () => {
 describe('dominantVisibleType — the depth-2 fold is exact and invalidates (R6)', () => {
     type DeepWorld = ReturnType<typeof createIslandWorld>;
 
-    /** The independent reference: naive recursive majority over MATERIALIZED children. */
+    /** The independent reference: naive recursive majority over MATERIALIZED children.
+     * Carries the RIVER SEMANTIC the real fold reads (a river parent's coarse
+     * identity is the river itself — the shape-first channel keeps no fine
+     * majority, the terrain rule scopes the ford biome), so the parity holds
+     * on river roots exactly as on every other tile. */
     const naiveDominant = (world: DeepWorld, path: Array<{ x: number; y: number }>): string | undefined => {
+        const cell = world.terrain.cellFor(path);
+        if (cell?.biome === 'river') {
+            return 'river';
+        }
         const grid = world.terrain.canvasFor(path);
         if (!grid || grid.cells.length === 0) {
             return tileSurfaceKey(world.terrain.cellFor(path));

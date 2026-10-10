@@ -439,9 +439,13 @@ describe('islandTerrain — the R1 shore agreement on the generated island', () 
                         expect(fine.voxels.includes('water')).toBe(false);
                     }
                 });
-                // The 60–70% water band — the zoomed river is still the river
-                expect(waterFine / sub.cells.length).toBeGreaterThanOrEqual(0.6);
-                expect(waterFine / sub.cells.length).toBeLessThanOrEqual(0.7);
+                // The shape-first channel fills part of the interior (the
+                // exact geometry contracts — connectivity, seam intervals,
+                // taper, enclosed-dry fill — live in
+                // islandTerrainRiver.test.ts; the old share band 0.55–0.7
+                // was retired with the dial that drew the pool floods).
+                // Here the purity core only: the channel exists.
+                expect(waterFine).toBeGreaterThan(0);
             });
     });
 

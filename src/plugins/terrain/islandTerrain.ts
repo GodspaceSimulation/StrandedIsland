@@ -972,69 +972,141 @@ export const fineWaterColumn = (
     };
 };
 
-// ── The scale-0 RIVER FINE MASK (T3 — the living riverbank) ──────────────────
+// ── The scale-0 RIVER FINE MASK (T4 — the true river course, shape-first) ────
 //
-// A RIVER tile's zoomed interior is no longer a solid ford block: the coarse
-// channel widens into an organic fresh-water body — the channel core plus a
-// seeded floodplain — ringed by DRY banks the land creeps onto. The rule: a
-// scale-0 river tile reads about 60–70% water, the rest surrounding land or
-// islands, the majority still river. Everything is deterministic and a pure
-// function of the parent cell, its in-grid CARDINAL neighbors' biomes, the
-// seed and the tile address:
+// A RIVER tile's zoomed interior IS THE CHANNEL: one continuous, spatially
+// coherent fresh-water course that runs the tile the way the coarse course
+// runs the board — WIDE at the sea mouth, narrowing to a uniform channel
+// inland, meandering smoothly turn by turn, ringed by narrow SAND banks on
+// both sides with dry grass beyond. The T3 flood (a spine plus a seeded
+// frontier flood to a fixed 65% of every tile) drew blotchy bars, seeded
+// islands and full-width water endpoints — a mosaic, not a river; the T4
+// floodplain top-up (a share dial flooding behind every seam) drew abrupt
+// neck/pool jumps and re-seeded enclosed dry patches. The SHAPE-FIRST
+// revision drops the share dial entirely — THE GEOMETRY IS THE WATER: the
+// tile's water is the dial's channel band and nothing else, so the width
+// the border interval opens is the width the interior keeps, the taper is
+// visible at every longitude, and the coarse identity is carried by the
+// river SEMANTIC (the dominantVisibleType river rule — a ford tile reads
+// 'river' because it IS the river, not because a fine census says so).
+// Everything stays deterministic and a pure function of the parent cell,
+// its in-grid CARDINAL neighbors' biomes, the seed and the tile address:
 //
-//   EDGE PLAN — only cardinal neighbors share an edge, so only they can hand
-//     the channel across the border. A neighbor that is WATER the channel
-//     can flow into (another river course, the open sea — the mouth, or an
-//     interior basin the channel meets) opens a WATER edge: the river lays
-//     its FULL fine row/column along it, so two adjacent river tiles meet
-//     water on water at every shared position and the sea mouth fans onto
-//     the sea's inherited water — the shared neighbor exits need no shared
-//     stream, both tiles derive the same full line from their own edge plan.
-//     A DRY neighbor (beach, meadow, forest, highland) is a LAND edge: its
-//     outermost fine row stays BANK — the river banks against its land
-//     neighbors, the water never spills along a land border (a beach
-//     neighbor's own river waterline laps against the bank from the other
-//     side). A river tile whose cardinal neighbors are all dry keeps the old
-//     pure zoom (defensive — the carve always leaves a channel neighbor;
-//     hand-built fixtures may not).
-//   THE SPINE — the union of half-lines from every water edge to the grid
-//     center: the channel core, ONE cardinally connected body by
-//     construction (a course that turns inside the tile bends the spine
-//     through the center; a single edge grows a source stub). Water wins the
-//     corner where a land edge and a water edge meet (deeper water wins —
-//     the shore mask's own rule).
-//   THE FLOOD — the free cells (nothing forced) sample a seeded lattice
-//     value noise in the INDEPENDENT `riverfine:<pathKey>` stream namespace
-//     (the coarse `river:` jitter, the seams and the shore waves untouched)
-//     and the water GROWS off the spine in noise order: the waterliest
-//     frontier cell admits first, so the flood spreads along the noise's low
-//     contours — organic bays and bars, never speckle. Admission stops at
-//     RIVER_FINE_WATER_TARGET of the whole grid — the 60–70% band's midpoint,
-//     so every normal river tile lands mid-band regardless of its edge plan
-//     (sensible tiny-grid rounding: a jammed frontier simply admits less).
-//     Every admitted cell touched standing water when it entered the
-//     frontier, so the channel stays connected by construction; a cell
-//     skipped at its rank (the frontier was dry then) stays bank even when
-//     later growth surrounds it — the SEEDED ISLANDS.
-//   THE BANKS — every dry cell reads its material from its position against
-//     the final water: 8-adjacent to water is the WET SAND ring (the beach
-//     hugging the channel, the bays and every island shore), deeper dry
-//     ground grows GRASS. The bank column is SYNTHESIZED (raised dry ground
-//     at the water line — never the inherited ford column, which carries the
+//   THE LONGITUDE — every river cell of the parent canvas carries its
+//     DISTANCE TO THE MOUTH (riverCourseDistances below: a multi-source BFS
+//     over the canvas' river cells, seeded at every course cell that
+//     cardinally touches open sea or a fresh basin; a canvas with no mouth —
+//     the deep zooms — reads every cell INLAND). The distance drives the
+//     CHANNEL WIDTH dial (RIVER_CHANNEL_MOUTH tapering by
+//     RIVER_CHANNEL_TAPER per step to the uniform RIVER_CHANNEL_MIN — big at
+//     the mouth, smaller and uniform as it travels inland).
+//
+//   THE CROSSINGS — the channel enters and leaves a tile through its WATER
+//     edges (cardinal neighbors that are river, sea or basin). Each shared
+//     edge carries ONE canonical crossing drawn from the PAIR stream
+//     `rivercross:<low>~<high>` (both tile addresses sorted — the same
+//     two-sided discipline the seams use): a keyed position along the edge
+//     (margin 2 off the corners) and a keyed ±1 width jitter over the
+//     UPSTREAM side's profile (the border reads as wide as the channel's
+//     narrower end). Both tiles of a border derive the SAME stream, so the
+//     channel endpoints agree position-for-position and width-for-width —
+//     the seam continuity is structural, not lucky. A SEA or BASIN edge
+//     needs no interval discipline (the other side zooms 100% water): its
+//     FULL fine row is forced water — the mouth fans onto the sea, a course
+//     debouches into a basin.
+//
+//   THE CENTERLINE — a sampled cubic Bézier through the tile. The curve
+//     leaves every crossing PERPENDICULAR to the shared edge (its first
+//     control sits on the edge normal), so consecutive tiles' curves meet
+//     tangent-smooth — no kink at any seam — and the two crossings'
+//     independent pair positions meander the composite course. A tile with
+//     one water edge (a spring) curves to a keyed interior end, tapering to
+//     RIVER_CHANNEL_SOURCE; three or more edges (a course meeting a basin
+//     and the sea, or adjacent fixture courses) fall back to straight hub
+//     spokes. The tile's water reads the curve's SIGNED DISTANCE FIELD
+//     against the half-width the two crossings lerp along it, wobbled by the
+//     INDEPENDENT `riverfine:<pathKey>` lattice (RIVER_FINE_NOISE_SCALE —
+//     the T3 namespace; sampled in GRID coordinates: the T3 mask sampled
+//     centered coordinates and every negative position degenerated to NaN —
+//     236 of 425 cells on the default board — so its noise ordering never
+//     actually shaped three quarters of the grid) with the bounded
+//     RIVER_BANK_WOBBLE amplitude HARD-QUIETED within a crossing's
+//     half-width + RIVER_BANK_QUIET: the seam region stays pure shared
+//     geometry, so the two tiles of a border can never disagree on a
+//     wobble-flipped cell.
+//
+//   THE ASSEMBLY — the raw field then:
+//     1. bows to the BORDER FORCES: sea/basin edges' full rows and river
+//        edges' crossing intervals are water; land edges' rows and river
+//        edges' non-interval stretches are bank (water wins a corner two
+//        edges claim — the shore contract's own allowance);
+//     2. prunes to the LARGEST 4-connected water component (the wobble can
+//        bead a detached droplet off the bank — it dries; the channel stays
+//        ONE connected body by construction);
+//     3. fills every ENCLOSED DRY COMPONENT — the no-islands guarantee,
+//        structural: the DRY 4-connected components that touch NO rim cell
+//        of the fine grid are fully surrounded by water (every external
+//        4-neighbor of such a component is water — a dry one would be in
+//        the component, a dry rim one would make it rim-touching), so the
+//        fill 4-connects the whole component to the channel and NO dry
+//        component that fails border-connection survives: the diagonal dry
+//        pairs and the enclosed sand pockets the old lone-cell sweep
+//        missed drown into the water, and the bank strips re-derive around
+//        the merged body. One pass: the fill only adds water, so no new
+//        enclosure can appear and the prune never needs a re-run;
+//     and every remaining dry cell banks: WET SAND hugging the water (8-
+//     adjacent — the narrow contiguous strips on BOTH sides of the channel),
+//     dry GRASS beyond. The bank column is SYNTHESIZED (raised dry ground at
+//     the water line — never the inherited ford column, which carries the
 //     water): riverBankColumn below.
-//   PARITY + CACHE — the mask reads ONLY inputs the sub-grid fingerprint
-//     already stamps (the parent's own fields + each in-grid neighbor's
-//     biome — tileDetails' dominantStamp mirrors the same stamp, so no
-//     fingerprint extension and no tileDetails edit); generateSubCanvas (the
-//     materializer) and surfaceKeyCounts (the fast histogram) both read the
-//     SAME mask, so the zoomed board and the coarse majority fold agree
-//     cell-for-cell; and the deposit scatter refuses bank spots (no finite
-//     stock stands on synthesized ground — subPrep).
+//
+//   PARITY + CACHE — the same discipline as T3: the mask reads ONLY inputs
+//     the sub-grid fingerprint already stamps (the parent's own fields + the
+//     in-grid cardinal neighbors' biomes — tileDetails' dominantStamp mirrors
+//     the same stamp, so no fingerprint extension and no tileDetails edit).
+//     The longitude BFS reads the canvas' river/sea geometry, which
+//     generation fixes and no ecology mutates (the forest spread converts
+//     meadows only — plugins/forest), so the BFS needs no stamp either.
+//     generateSubCanvas (the materializer) and surfaceKeyCounts (the fast
+//     histogram) both read the SAME mask, so the zoomed board and the coarse
+//     majority fold agree cell-for-cell; and the deposit scatter refuses
+//     bank spots (no finite stock stands on synthesized ground — subPrep).
 
-/** The water share of a river tile's zoomed interior — the 60–70% band's midpoint. */
-export const RIVER_FINE_WATER_TARGET = 0.65;
+/**
+ * The CHANNEL's full width at the mouth (fine cells before the board scale)
+ * — the fan that meets the sea.
+ */
+export const RIVER_CHANNEL_MOUTH = 13;
 
-/** The lattice scale of the flood noise — the organic blob size in fine cells. */
+/** The channel width taper per course step inland (fine cells). */
+export const RIVER_CHANNEL_TAPER = 2.5;
+
+/**
+ * The uniform inland channel width floor (fine cells) — "smaller and
+ * uniform as it travels inland": past the first few steps the channel holds
+ * this width for the rest of the course.
+ */
+export const RIVER_CHANNEL_MIN = 6.5;
+
+/** The channel width at a course's spring end (the source stub's far end). */
+export const RIVER_CHANNEL_SOURCE = 3;
+
+/**
+ * The bank wobble amplitude (fine cells) — the coherent bounded bank noise
+ * that keeps the channel from reading as ruled geometry.
+ */
+export const RIVER_BANK_WOBBLE = 1;
+
+/**
+ * The quiet margin beyond a crossing's half-width where the bank wobble is
+ * silenced: the seam region stays pure shared geometry, so the two tiles of
+ * a border can never disagree on a wobble-flipped cell (the widest
+ * still-flippable cell sits at halfWidth + RIVER_BANK_WOBBLE of the
+ * crossing; the quiet reach covers it with margin).
+ */
+export const RIVER_BANK_QUIET = 4;
+
+/** The lattice scale of the bank noise — the organic blob size in fine cells. */
 export const RIVER_FINE_NOISE_SCALE = 3;
 
 /** The bank material one dry river fine cell materializes as. */
@@ -1082,20 +1154,128 @@ export const riverBankColumn = (
     };
 };
 
+/** The longitude read for a course-less or unreachable river cell — the
+ * inland profile (the uniform narrow channel). */
+const RIVER_INLAND_DISTANCE = 99;
+
+/**
+ * The board scale of the river profile: the fine grids always carry the ROOT
+ * board's dimensions, so a small board shrinks every channel amplitude with
+ * it (a 7×5 board runs a brook, not a 13-wide torrent). The default 25×17
+ * board reads exactly 1.
+ */
+const riverProfileScale = (width: number, height: number): number =>
+    Math.min(1, Math.min(width, height) / 17);
+
+/**
+ * The channel's full width (fine cells) at `distance` course steps inland
+ * from the mouth — the longitudinal profile: the mouth's fan tapers by
+ * RIVER_CHANNEL_TAPER per step to the uniform RIVER_CHANNEL_MIN, scaled to
+ * the board.
+ */
+const riverChannelWidth = (distance: number, scale: number): number =>
+    Math.max(RIVER_CHANNEL_MIN, RIVER_CHANNEL_MOUTH - distance * RIVER_CHANNEL_TAPER) * scale;
+
+/**
+ * The course-longitude map of one canvas: every river cell (biome 'river' —
+ * the same biome-only classes the edge plan reads) keyed by its row-major
+ * index → the BFS distance in cardinal river steps to the nearest MOUTH (a
+ * river cell cardinally touching open sea or a fresh basin — the course's
+ * mouth). An EMPTY map: the canvas carries no mouth at all (the deep zooms)
+ * — every river cell reads the inland profile. Pure and generation-stable:
+ * only the river/sea geometry is read, which generation fixes and no
+ * post-generation system mutates (the forest ecology converts meadows only —
+ * plugins/forest), so the sub-grid fingerprint needs no extension for it.
+ */
+const riverCourseDistances = (
+    canvas: Pick<Canvas, 'width' | 'height' | 'cells'>,
+): Map<number, number> => {
+    const width = canvas.width;
+    const height = canvas.height;
+    const total = width * height;
+    const STEPS: Array<[number, number]> = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+    const isMouthWater = (index: number): boolean => {
+        const biome = canvas.cells[index].biome;
+        return biome === 'ocean' || biome === 'shallows' || biome === 'lake' || biome === 'pond';
+    };
+    const distances = new Map<number, number>();
+    const queue: number[] = [];
+    for (let index = 0; index < total; index++) {
+        if (canvas.cells[index].biome !== 'river') {
+            continue;
+        }
+        const col = index % width;
+        const row = Math.floor(index / width);
+        const mouth = STEPS.some(([dx, dy]) => {
+            const ncol = col + dx;
+            const nrow = row + dy;
+            if (ncol < 0 || ncol >= width || nrow < 0 || nrow >= height) {
+                return false;
+            }
+            return isMouthWater(nrow * width + ncol);
+        });
+        if (mouth) {
+            distances.set(index, 0);
+            queue.push(index);
+        }
+    }
+    for (let head = 0; head < queue.length; head++) {
+        const index = queue[head];
+        const level = distances.get(index) ?? 0;
+        const col = index % width;
+        const row = Math.floor(index / width);
+        for (const [dx, dy] of STEPS) {
+            const ncol = col + dx;
+            const nrow = row + dy;
+            if (ncol < 0 || ncol >= width || nrow < 0 || nrow >= height) {
+                continue;
+            }
+            const nindex = nrow * width + ncol;
+            if (canvas.cells[nindex].biome !== 'river' || distances.has(nindex)) {
+                continue;
+            }
+            distances.set(nindex, level + 1);
+            queue.push(nindex);
+        }
+    }
+    return distances;
+};
+
 /**
  * The dry-bank plan of one RIVER tile's zoomed interior (see the rule block
  * above): fine spot "x,y" → its synthesized bank. Everything the plan does
- * NOT bank is the river's inherited ford water. `pathKey` keys the flood
- * stream per tile address (the `riverfine:` namespace); `parentCanvas` is the
- * grid the parent sits in — the edge plan reads the parent's in-grid cardinal
- * neighbors off it. Pure: same inputs → the identical plan.
+ * NOT bank is the river's inherited ford water. `pathKey` keys the bank
+ * noise and the source-bend streams per tile address (the `riverfine:` and
+ * `riverbend:` namespaces); `parentCanvas` is the grid the parent sits in —
+ * the edge plan, the crossings and the longitude read the parent's in-grid
+ * cardinal neighbors off it. Pure: same inputs → the identical plan.
+ *
+ * THE MASK CACHE — the plan is memoized per (parentCanvas OBJECT, pathKey,
+ * seed). Sound because every input the plan reads is generation-fixed: the
+ * river/sea geometry the longitude BFS walks and the neighbors' WATER
+ * classes never change after generateIsland (the forest ecology converts
+ * meadows only — plugins/forest; the river parent's own biome/passable/
+ * waterLevel are just as fixed), and a regenerated world builds a FRESH
+ * canvas object that orphans the old WeakMap entry. The materializer, the
+ * fast histogram and repeated zoom walks share one plan — no per-call BFS
+ * or distance-field re-derivation.
  */
+const riverMaskCache = new WeakMap<
+    object,
+    Map<string, Map<string, RiverBank>>
+>();
+
 export const riverFineMask = (
     parent: TerrainCell,
     pathKey: string,
     parentCanvas: Pick<Canvas, 'width' | 'height' | 'cells'>,
     seed: number,
 ): Map<string, RiverBank> => {
+    const cacheKey = `${pathKey}|${seed}`;
+    const cached = riverMaskCache.get(parentCanvas)?.get(cacheKey);
+    if (cached) {
+        return cached;
+    }
     const width = parentCanvas.width;
     const height = parentCanvas.height;
     const halfX = (width - 1) / 2;
@@ -1142,148 +1322,413 @@ export const riverFineMask = (
         }
         return line;
     };
-    // The water field, row-major — every cell starts DRY; the plan opens the
-    // channel edges and the flood admits the rest. `forced` marks the plan's
-    // own cells (excluded from the flood's noise pool).
     const indexAt = (x: number, y: number): number => (y + halfY) * width + (x + halfX);
-    const water = new Array<boolean>(total).fill(false);
-    const forced = new Uint8Array(total);
-    // 1. THE LAND BOUNDARY — the full fine row along every land edge is bank
-    CARDINALS.forEach(([dx, dy], direction) => {
-        if (edgeWater[direction]) {
-            return;
-        }
-        edgeLine(dx, dy).forEach(({ x, y }) => {
-            const index = indexAt(x, y);
-            water[index] = false;
-            forced[index] = 1;
-        });
-    });
-    // 2. THE CHANNEL — every water edge lays its full row/column (the shared
-    //    exit; water wins the shared corner over the bank boundary), and the
-    //    spine — the half-line from the edge to the center — joins them into
-    //    ONE connected channel core
+
+    // ── THE LONGITUDE — the tile's distance to its course mouth ─────────────
+    // A course-less canvas (the deep zooms) or an unreachable course reads
+    // the INLAND profile: the uniform narrow channel, the majority share
+    const distances = riverCourseDistances(parentCanvas);
+    const longitudeOf = (cell: { x: number; y: number }): number =>
+        distances.size === 0
+            ? RIVER_INLAND_DISTANCE
+            : (distances.get(indexAt(cell.x, cell.y)) ?? RIVER_INLAND_DISTANCE);
+    const distance = longitudeOf(parent);
+    // The board scale — the fine grids always carry the root board's
+    // dimensions, so a small board shrinks the channel with it
+    const scale = riverProfileScale(width, height);
+
+    // ── THE CROSSINGS — one canonical seam crossing per channel edge ────────
+    type Crossing = {
+        /** The neighbor direction (the edge's cardinal offset). */
+        dx: number;
+        dy: number;
+        /** The crossing position along the edge, centered fine coordinates. */
+        pos: number;
+        /** The shared channel width at the crossing (fine cells). */
+        width: number;
+        /** The crossing point ON the shared border (fine coordinates). */
+        px: number;
+        py: number;
+    };
+    const crossings: Crossing[] = [];
     CARDINALS.forEach(([dx, dy], direction) => {
         if (!edgeWater[direction]) {
             return;
         }
-        edgeLine(dx, dy).forEach(({ x, y }) => {
-            const index = indexAt(x, y);
-            water[index] = true;
-            forced[index] = 1;
+        const neighbor = neighborAt(dx, dy)!;
+        const len = dx === 0 ? width : height;
+        const half = (len - 1) / 2;
+        // THE CANONICAL PAIR STREAM — both tiles of the border derive the
+        // same crossing position and width (the seams' two-sided discipline;
+        // the low address sorts first so the key is order-stable)
+        const selfSpot = `${parent.x},${parent.y}`;
+        const otherSpot = `${neighbor.x},${neighbor.y}`;
+        const [keyA, keyB] = selfSpot <= otherSpot ? [selfSpot, otherSpot] : [otherSpot, selfSpot];
+        const stream = randomKeyed(seed, `rivercross:${keyA}~${keyB}`);
+        // THE KEYED WIDTH — over the UPSTREAM side's profile: a river border
+        // reads as wide as the channel's narrower end (the mouth tile fans
+        // against the sea at its own profile width; mid-course borders stay
+        // uniform), ±1 of pair jitter, clamped to the edge's fit. Drawn
+        // FIRST so the width-aware margin below knows its reach.
+        const neighborLongitude = neighbor.biome === 'river' ? longitudeOf(neighbor) : -1;
+        const profileWidth = riverChannelWidth(Math.max(distance, neighborLongitude), scale);
+        const jitterRoll = stream();
+        const channelWidth = Math.max(2, Math.min(len - 2, profileWidth + (jitterRoll - 0.5) * 2));
+        // THE WIDTH-AWARE MARGIN — the crossing sits far enough from both
+        // corners that its FULL interval fits inside the edge (no clipped
+        // seams, no fans hugging a corner): the margin is at least the
+        // interval's own reach, at least 2, never past the edge middle
+        const reach = Math.sqrt(Math.max(0, (channelWidth * channelWidth) / 4 - 0.25));
+        const margin = Math.min(Math.max(2, Math.ceil(reach)), Math.floor((len - 1) / 2));
+        // THE KEYED POSITION — drawn after the width so the margin knows it
+        const pos = margin + Math.floor(stream() * Math.max(1, len - 2 * margin)) - half;
+        crossings.push({
+            dx,
+            dy,
+            pos,
+            width: channelWidth,
+            // The crossing point sits ON the shared border (half a cell
+            // outside the outermost fine row's centers)
+            px: dx === 0 ? pos : (dx < 0 ? -halfX : halfX) + dx * 0.5,
+            py: dx === 0 ? (dy < 0 ? -halfY : halfY) + dy * 0.5 : pos,
         });
-        // The spine's half-line: from the edge's midpoint inward to the
-        // center cell (inclusive)
-        if (dx === 0) {
-            const end = dy < 0 ? -halfY : halfY;
-            const stepY = dy < 0 ? 1 : -1;
-            for (let y = end; ; y += stepY) {
-                const index = indexAt(0, y);
-                water[index] = true;
-                forced[index] = 1;
-                if (y === 0) {
-                    break;
-                }
-            }
-        } else {
-            const end = dx < 0 ? -halfX : halfX;
-            const stepX = dx < 0 ? 1 : -1;
-            for (let x = end; ; x += stepX) {
-                const index = indexAt(x, 0);
-                water[index] = true;
-                forced[index] = 1;
-                if (x === 0) {
-                    break;
-                }
-            }
-        }
     });
-    // 3. THE FLOOD — the free cells grow the water off the spine with a
-    //    PRIM-STYLE FRONTIER: the noise samples come from a keyed lattice in
-    //    the INDEPENDENT `riverfine:<pathKey>` stream namespace (the coarse
-    //    `river:` jitter, the seams and the shore waves untouched; latticeNoise
-    //    is declared further down the module — the reference resolves lazily,
-    //    the mask only ever runs at zoom time), and every step admits the
-    //    WATERLIEST cell of the current frontier (the free cells touching
-    //    standing water). The flood thus spreads along the noise's low
-    //    contours — organic bays and bars, never speckle — and can never
-    //    freeze behind a noise ridge (a single sorted pass would strand the
-    //    growth: cells passed while dry are never revisited). Every admitted
-    //    cell touches standing water, so the channel stays ONE cardinally
-    //    connected body by construction; the cells still dry when the water
-    //    share reaches the target are the banks — interior dry blobs the
-    //    flood surrounded are the SEEDED ISLANDS.
+    // ── THE CENTERLINE — the sampled curve(s) the water field distance-reads ─
+    // Each segment carries the two full widths at its ends; the field reads
+    // (distance to segment − half-width at the foot). The curve leaves every
+    // crossing PERPENDICULAR to the shared edge (the first control sits on
+    // the edge normal), so consecutive tiles' curves meet tangent-smooth and
+    // the seam stays the shared crossing's pure geometry.
+    type FieldSegment = {
+        x0: number;
+        y0: number;
+        x1: number;
+        y1: number;
+        w0: number;
+        w1: number;
+    };
+    const segments: FieldSegment[] = [];
+    const pushCurve = (
+        ax: number,
+        ay: number,
+        c1x: number,
+        c1y: number,
+        c2x: number,
+        c2y: number,
+        bx: number,
+        by: number,
+        widthStart: number,
+        widthEnd: number,
+    ): void => {
+        const SAMPLES = 40;
+        let prevX = ax;
+        let prevY = ay;
+        for (let step = 1; step <= SAMPLES; step++) {
+            const t = step / SAMPLES;
+            const mt = 1 - t;
+            // The cubic Bézier point at t
+            const x =
+                mt * mt * mt * ax + 3 * mt * mt * t * c1x + 3 * mt * t * t * c2x + t * t * t * bx;
+            const y =
+                mt * mt * mt * ay + 3 * mt * mt * t * c1y + 3 * mt * t * t * c2y + t * t * t * by;
+            segments.push({
+                x0: prevX,
+                y0: prevY,
+                x1: x,
+                y1: y,
+                w0: widthStart + (widthEnd - widthStart) * ((step - 1) / SAMPLES),
+                w1: widthStart + (widthEnd - widthStart) * (step / SAMPLES),
+            });
+            prevX = x;
+            prevY = y;
+        }
+    };
+    // The perpendicular exit depth of one crossing — deep enough to read as
+    // a smooth run, never past the tile's interior
+    const exitDepth = (crossing: Crossing): number =>
+        Math.min(6, (crossing.dx === 0 ? halfY : halfX) - 0.5);
+    if (crossings.length === 1) {
+        // THE SOURCE STUB — one water edge (a spring, or a defensive
+        // single-mouth fixture): the channel enters and rises to a keyed
+        // interior end, tapering to RIVER_CHANNEL_SOURCE
+        const crossing = crossings[0];
+        const c1x = crossing.px - crossing.dx * exitDepth(crossing);
+        const c1y = crossing.py - crossing.dy * exitDepth(crossing);
+        // The tile's own keyed bend — the spring end swings inside the tile
+        // (this stream needs no sharing: a bend belongs to one tile alone)
+        const bend = randomKeyed(seed, `riverbend:${pathKey}`);
+        const endX = (bend() - 0.5) * 4 * scale;
+        const endY = (bend() - 0.5) * 4 * scale;
+        // The second control — between the exit control and the end, swung
+        // lateral for a gentle S into the spring
+        const swing = (bend() - 0.5) * 3 * scale;
+        const segX = endX - c1x;
+        const segY = endY - c1y;
+        const segLen = Math.hypot(segX, segY) || 1;
+        pushCurve(
+            crossing.px,
+            crossing.py,
+            c1x,
+            c1y,
+            (c1x + endX) / 2 - (segY / segLen) * swing,
+            (c1y + endY) / 2 + (segX / segLen) * swing,
+            endX,
+            endY,
+            crossing.width,
+            Math.max(2, RIVER_CHANNEL_SOURCE * scale),
+        );
+    } else if (crossings.length === 2) {
+        // THE THROUGH FLOW — the course crosses the tile from one water edge
+        // to another: perpendicular exits at both ends, the interior shape
+        // set by the two crossings' independent pair positions (the
+        // composite course meanders tile by tile)
+        const a = crossings[0];
+        const b = crossings[1];
+        pushCurve(
+            a.px,
+            a.py,
+            a.px - a.dx * exitDepth(a),
+            a.py - a.dy * exitDepth(a),
+            b.px - b.dx * exitDepth(b),
+            b.py - b.dy * exitDepth(b),
+            b.px,
+            b.py,
+            a.width,
+            b.width,
+        );
+    } else {
+        // THE HUB (three or more water edges — a course meeting a basin and
+        // the sea, or adjacent fixture courses): straight spokes from every
+        // crossing to the center, each its own ramp. Rare, deterministic.
+        crossings.forEach((crossing) => {
+            pushCurve(
+                crossing.px,
+                crossing.py,
+                (crossing.px * 2) / 3,
+                (crossing.py * 2) / 3,
+                crossing.px / 3,
+                crossing.py / 3,
+                0,
+                0,
+                crossing.width,
+                Math.max(2, crossing.width * 0.75),
+            );
+        });
+    }
+
+    // ── THE WATER FIELD — the signed distance read of every fine cell ───────
+    // The bank noise comes from the INDEPENDENT `riverfine:<pathKey>` lattice
+    // (the coarse `river:` jitter, the seams and the shore waves untouched;
+    // latticeNoise is declared further down the module — the reference
+    // resolves lazily, the mask only ever runs at zoom time), sampled in GRID
+    // coordinates: the T3 mask sampled centered coordinates and every
+    // negative position degenerated to NaN (236 of 425 cells on the default
+    // board) — the noise now shapes the whole grid.
     const random = randomKeyed(seed, `riverfine:${pathKey}`);
     const noise = latticeNoise(random, width, height, RIVER_FINE_NOISE_SCALE);
-    // The cardinal steps — the connectivity vocabulary the coarse walk uses
-    const STEPS: Array<[number, number]> = [[0, -1], [1, 0], [0, 1], [-1, 0]];
-    const inRange = (x: number, y: number): boolean =>
-        y >= -halfY && y <= halfY && x >= -halfX && x <= halfX;
-    // The frontier heap: free (nothing forced) dry cells 4-adjacent to
-    // standing water, keyed by their noise sample. A flat array scanned for
-    // the minimum each admission — at most total entries, total admissions:
-    // O(total²) worst case, microseconds at zoom scale.
-    const heap: Array<{ index: number; sample: number }> = [];
-    const heaped = new Uint8Array(total);
-    const sampleOf: number[] = new Array<number>(total);
-    for (let index = 0; index < total; index++) {
-        const x = (index % width) - halfX;
-        const y = Math.floor(index / width) - halfY;
-        sampleOf[index] = noise(x, y);
+    const water = new Array<boolean>(total).fill(false);
+    const signed = new Float64Array(total);
+    const quiet = new Float64Array(total);
+    for (let row = 0; row < height; row++) {
+        for (let col = 0; col < width; col++) {
+            const x = col - halfX;
+            const y = row - halfY;
+            const index = row * width + col;
+            let best = Infinity;
+            for (const segment of segments) {
+                // The point-to-segment foot + the lerped half-width there
+                const segX = segment.x1 - segment.x0;
+                const segY = segment.y1 - segment.y0;
+                const lenSq = segX * segX + segY * segY;
+                let foot = lenSq === 0 ? 0 : ((x - segment.x0) * segX + (y - segment.y0) * segY) / lenSq;
+                foot = Math.max(0, Math.min(1, foot));
+                const footX = segment.x0 + segX * foot;
+                const footY = segment.y0 + segY * foot;
+                const value =
+                    Math.hypot(x - footX, y - footY) -
+                    (segment.w0 + (segment.w1 - segment.w0) * foot) / 2;
+                if (value < best) {
+                    best = value;
+                }
+            }
+            signed[index] = best;
+            // THE QUIET ZONE — within a crossing's half-width plus the quiet
+            // margin the bank wobble is silenced (a hard step: both tiles of
+            // a border compute the SAME zone from the SAME shared crossing,
+            // so a wobble can never flip a mirrored seam cell; the
+            // still-flippable cells — signed within ±2× the amplitude of
+            // zero — all sit inside the zone)
+            let silenced = false;
+            for (const crossing of crossings) {
+                const d = Math.hypot(x - crossing.px, y - crossing.py);
+                if (d <= crossing.width / 2 + RIVER_BANK_QUIET) {
+                    silenced = true;
+                    break;
+                }
+            }
+            quiet[index] = silenced ? 0 : 1;
+        }
     }
-    // Seed the frontier with the dry free cells the channel already touches
+
+    // ── THE BORDER FORCES ───────────────────────────────────────────────────
+    const forcedWater = new Uint8Array(total);
+    const forcedDry = new Uint8Array(total);
+    CARDINALS.forEach(([dx, dy], direction) => {
+        if (!edgeWater[direction]) {
+            // THE LAND BOUNDARY — the full row along every land edge is bank
+            edgeLine(dx, dy).forEach(({ x, y }) => {
+                forcedDry[indexAt(x, y)] = 1;
+            });
+            return;
+        }
+        const neighbor = neighborAt(dx, dy)!;
+        const line = edgeLine(dx, dy);
+        if (neighbor.biome !== 'river') {
+            // THE SEA/BASIN MOUTH — the full row is water: the river fans
+            // onto the open water (whose own zoom is 100% pure, so the
+            // border agrees by construction)
+            line.forEach(({ x, y }) => {
+                forcedWater[indexAt(x, y)] = 1;
+            });
+            return;
+        }
+        // THE RIVER SEAM — the crossing interval is water (the edge cells
+        // whose centers sit within the crossing's disc: the same test both
+        // tiles run on mirrored coordinates), the rest of the row is bank on
+        // BOTH sides: no full-width endpoint rows, no half-matched
+        // floodplain at a seam
+        const crossing = crossings.find((entry) => entry.dx === dx && entry.dy === dy)!;
+        const reach = Math.sqrt(Math.max(0, (crossing.width * crossing.width) / 4 - 0.25));
+        line.forEach(({ x, y }) => {
+            const index = indexAt(x, y);
+            const position = dx === 0 ? x : y;
+            if (Math.abs(position - crossing.pos) <= reach) {
+                forcedWater[index] = 1;
+            } else {
+                forcedDry[index] = 1;
+            }
+        });
+    });
+    // THE CORNERS — a corner cell serves two edges; water claims outrank the
+    // land boundary's dry row (the shore contract's "the corners may go to a
+    // perpendicular water edge")
     for (let index = 0; index < total; index++) {
-        if (water[index] || forced[index]) {
+        if (forcedWater[index] && forcedDry[index]) {
+            forcedDry[index] = 0;
+        }
+    }
+
+    // ── THE ASSEMBLY ────────────────────────────────────────────────────────
+    // 1. THE BAND — the curve's signed distance, wobbled where the seam
+    //    quiet zone allows it
+    for (let index = 0; index < total; index++) {
+        if (forcedWater[index]) {
+            water[index] = true;
+        } else if (forcedDry[index]) {
+            water[index] = false;
+        } else {
+            const col = index % width;
+            const row = Math.floor(index / width);
+            const wobble = quiet[index] * RIVER_BANK_WOBBLE * (noise(col, row) - 0.5) * 2;
+            water[index] = signed[index] + wobble < 0;
+        }
+    }
+    // 2. THE PRUNE — keep the LARGEST 4-connected water component (the
+    //    earliest on ties — row-major deterministic): the wobble can bead a
+    //    detached droplet off the bank; the channel is the big body and
+    //    stays ONE connected piece by construction
+    const label = new Int32Array(total).fill(-1);
+    const sizes: number[] = [];
+    let keepLabel = -1;
+    let keepSize = 0;
+    for (let index = 0; index < total; index++) {
+        if (!water[index] || label[index] !== -1) {
             continue;
         }
-        const x = (index % width) - halfX;
-        const y = Math.floor(index / width) - halfY;
-        if (STEPS.some(([dx, dy]) => inRange(x + dx, y + dy) && water[indexAt(x + dx, y + dy)])) {
-            heaped[index] = 1;
-            heap.push({ index, sample: sampleOf[index] });
-        }
-    }
-    // The growth — always admit the frontier's waterliest cell (ties break
-    // row-major: deterministic, no stream involved) until the water share
-    // reaches the target
-    const target = Math.round(RIVER_FINE_WATER_TARGET * total);
-    let standing = 0;
-    for (let index = 0; index < total; index++) {
-        if (water[index]) {
-            standing = standing + 1;
-        }
-    }
-    while (standing < target && heap.length > 0) {
-        let best = 0;
-        for (let slot = 1; slot < heap.length; slot++) {
-            const candidate = heap[slot];
-            const champion = heap[best];
-            if (candidate.sample < champion.sample ||
-                (candidate.sample === champion.sample && candidate.index < champion.index)) {
-                best = slot;
+        const id = sizes.length;
+        sizes.push(0);
+        label[index] = id;
+        const queue: number[] = [index];
+        for (let head = 0; head < queue.length; head++) {
+            const current = queue[head];
+            sizes[id] = sizes[id] + 1;
+            const col = current % width;
+            const row = Math.floor(current / width);
+            for (const [dx, dy] of CARDINALS) {
+                const ncol = col + dx;
+                const nrow = row + dy;
+                if (ncol < 0 || ncol >= width || nrow < 0 || nrow >= height) {
+                    continue;
+                }
+                const nindex = nrow * width + ncol;
+                if (water[nindex] && label[nindex] === -1) {
+                    label[nindex] = id;
+                    queue.push(nindex);
+                }
             }
         }
-        const { index } = heap[best];
-        heap[best] = heap[heap.length - 1];
-        heap.pop();
-        // The cell may have been wetted by no path to here — but a heaped
-        // cell is dry by construction (only dry free cells enter the heap
-        // and an admitted cell's entry was popped with it)
-        const x = (index % width) - halfX;
-        const y = Math.floor(index / width) - halfY;
-        water[index] = true;
-        standing = standing + 1;
-        // The newly wet cell extends the frontier to its dry free neighbors
-        STEPS.forEach(([dx, dy]) => {
-            const nx = x + dx;
-            const ny = y + dy;
-            if (!inRange(nx, ny)) {
+        if (sizes[id] > keepSize) {
+            keepSize = sizes[id];
+            keepLabel = id;
+        }
+    }
+    for (let index = 0; index < total; index++) {
+        if (water[index] && label[index] !== keepLabel) {
+            water[index] = false;
+        }
+    }
+    // 3. THE ENCLOSED-DRY FILL — the no-islands guarantee, structural. The
+    //    DRY 4-connected components that touch NO rim cell of the fine grid
+    //    are fully surrounded by water (every external 4-neighbor of such a
+    //    component is water — a dry one would be in the component, a dry rim
+    //    one would make it rim-touching), so the fill 4-connects the whole
+    //    component to the post-prune channel body: the diagonal dry pairs
+    //    and the enclosed sand pockets the old lone-cell sweep missed drown
+    //    into the water, and the bank strips re-derive around the merged
+    //    body. ONE pass: the fill only adds water, so no new enclosure can
+    //    appear, the prune never needs a re-run, and the water stays ONE
+    //    4-connected body (each filled component is internally 4-connected
+    //    and meets the body 4-adjacently at its perimeter).
+    {
+        const component = new Int32Array(total).fill(-1);
+        const compRim: boolean[] = [];
+        for (let index = 0; index < total; index++) {
+            if (water[index] || component[index] !== -1) {
+                continue;
+            }
+            const id = compRim.length;
+            compRim.push(false);
+            component[index] = id;
+            const queue: number[] = [index];
+            for (let head = 0; head < queue.length; head++) {
+                const current = queue[head];
+                const col = current % width;
+                const row = Math.floor(current / width);
+                if (col === 0 || col === width - 1 || row === 0 || row === height - 1) {
+                    compRim[id] = true;
+                }
+                for (const [dx, dy] of CARDINALS) {
+                    const ncol = col + dx;
+                    const nrow = row + dy;
+                    if (ncol < 0 || ncol >= width || nrow < 0 || nrow >= height) {
+                        continue;
+                    }
+                    const nindex = nrow * width + ncol;
+                    if (!water[nindex] && component[nindex] === -1) {
+                        component[nindex] = id;
+                        queue.push(nindex);
+                    }
+                }
+            }
+        }
+        compRim.forEach((rim, id) => {
+            if (rim) {
                 return;
             }
-            const nIndex = indexAt(nx, ny);
-            if (!water[nIndex] && !forced[nIndex] && !heaped[nIndex]) {
-                heaped[nIndex] = 1;
-                heap.push({ index: nIndex, sample: sampleOf[nIndex] });
+            for (let index = 0; index < total; index++) {
+                if (component[index] === id) {
+                    water[index] = true;
+                }
             }
         });
     }
@@ -1297,10 +1742,18 @@ export const riverFineMask = (
         const wet = NEIGHBOR_OFFSETS.some((offset) => {
             const nx = x + offset.dx;
             const ny = y + offset.dy;
-            return inRange(nx, ny) && water[indexAt(nx, ny)];
+            return nx >= -halfX && nx <= halfX && ny >= -halfY && ny <= halfY &&
+                water[indexAt(nx, ny)];
         });
         banks.set(`${x},${y}`, { surface: wet ? 'sand' : 'grass' });
     }
+    // Memoize the pure plan (see the cache rule above)
+    let byCanvas = riverMaskCache.get(parentCanvas);
+    if (!byCanvas) {
+        byCanvas = new Map();
+        riverMaskCache.set(parentCanvas, byCanvas);
+    }
+    byCanvas.set(cacheKey, banks);
     return banks;
 };
 
