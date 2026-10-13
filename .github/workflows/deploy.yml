@@ -1,0 +1,81 @@
+# Deploys the Stranded Island build to GitHub Pages.
+#
+# TRIGGER (R1): every push to main, plus a manual "Run workflow" button.
+#
+# PREREQUISITE (one-time, repo Settings): Settings → Pages → Build and
+# deployment → Source must be "GitHub Actions" — otherwise the deploy job
+# fails with " Pages site is not configured ".
+#
+# INSTALL: `npm install` against https://registry.npmjs.org (pinned in
+# setup-node) resolves every dependency — internal @godspace/*, @presource/*,
+# @userfiction/* packages and build tooling — from public npm; no workspace
+# or file: links are needed (package.json uses plain ^semver ranges).
+# npm ci is intentionally NOT used: no lockfile can be generated while
+# @userfiction/core and @godspace/* (1.0.2) are still unpublished — switch
+# install to `npm ci` once a package-lock.json is committed.
+#
+# BUILD: `vite build` with base './' (vite.config.ts) keeps every asset path
+# relative, so the bundle works at the GitHub Pages subpath
+# https://godspacesimulation.github.io/StrandedIsland/ without config changes.
+name: Deploy Stranded Island to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Least-privilege for the official Pages flow: read the repo, write the
+# Pages site, and mint the OIDC token deploy-pages uses to authenticate.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; a new push cancels a still-running older deploy.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          # Node 24 satisfies the toolchain's engines: vite 8 / plugin-react 6
+          # need ^20.19 || >=22.12; jsdom 29 needs ^20.19 || ^22.13 || >=24.
+          node-version: 24
+          # Pin the public registry explicitly — local npm configs in other
+          # checkouts may point elsewhere (e.g. registry.yarnpkg.com).
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        run: npm run build
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

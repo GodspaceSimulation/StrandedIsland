@@ -591,3 +591,91 @@ most one tile edge — the cross-parent wrap machinery lives in the shared
 site registry and its own tests); leftover materials may linger in bags
 between projects (bounded by the demand gate, and consumed by the next
 blueprint that needs them).
+
+## Deployment — GitHub Pages (npm only)
+
+`.github/workflows/deploy.yml` builds and deploys on every push to `main`
+(plus a manual "Run workflow" trigger): `npm install` from
+https://registry.npmjs.org → `vite build` → the official Pages
+configure/upload/deploy actions. One-time prerequisite in repo Settings:
+**Settings → Pages → Build and deployment → Source: "GitHub Actions"**.
+Assets stay subpath-safe because `vite.config.ts` builds with `base: './'`
+(relative asset URLs), so the site works at
+`https://godspacesimulation.github.io/StrandedIsland/` unchanged.
+
+### npm packages this distribution pulls from npm
+
+The internal version line is **1.0.2** across all packages below. The
+workflow cannot build until each "publish needed" package exists on npm
+(publish order — dependents after their dependencies):
+
+| order | package | version | state |
+|---|---|---|---|
+| 1 | `@presource/core` | 1.0.2 | published ✔ |
+| 2 | `@presource/react` | 1.0.2 | published ✔ (ships raw TS/TSX sources, no `dist` — see note) |
+| 3 | `@userfiction/core` | 1.0.2 | publish needed (depends on `@presource/core`) |
+| 4 | `@godspace/core` | 1.0.2 | publish needed (depends on `@presource/core`, `@userfiction/core`) |
+| 5 | `@godspace/canvas` | 1.0.2 | publish needed (depends on `@godspace/core`) |
+| 5 | `@godspace/material` | 1.0.2 | publish needed (depends on `@godspace/core`, `@userfiction/core`) |
+| 5 | `@godspace/blueprint` | 1.0.2 | publish needed (depends on `@godspace/core`) |
+
+Publish each package manually from its own directory inside the outer
+noobscript workspace (the builds resolve `vite`/`tsc` from the workspace's
+hoisted tooling). Do NOT use the outer root `yarn release` for this: its
+turbo task publishes EVERY workspace package and re-runs
+`scripts/sync-versions.ts`, which rewrites all package versions across the
+repo — far beyond the five packages this site needs.
+
+```powershell
+# Anchored to the outer workspace root — the whole block runs from ANY
+# directory (every Set-Location is root-relative, never relative to the
+# previous step, so no chained-cd breakage). Windows PowerShell 5.1 safe:
+# no && (PS7-only); a failed build throws before npm publish can run.
+$repoRoot = 'D:\Projects\typescript\noobscript'   # adjust if the workspace lives elsewhere
+
+# 1. @userfiction/core — its "prepack": "npm run build" builds dist automatically
+Set-Location (Join-Path $repoRoot 'packages/userfiction/core')
+npm publish --access public
+
+# 2. @godspace/core — no prepack, so build explicitly first;
+#    publish only when the build exited 0
+Set-Location (Join-Path $repoRoot 'packages/godspace/core')
+npm run build
+if ($LASTEXITCODE -ne 0) { throw '@godspace/core build failed — publish aborted' }
+npm publish --access public
+
+# 3–5. @godspace/canvas, @godspace/material, @godspace/blueprint — any order
+#      after @godspace/core (each depends only on it)
+foreach ($pkg in 'godspace/canvas', 'godspace/material', 'godspace/blueprint') {
+    Set-Location (Join-Path $repoRoot "packages/$pkg")
+    npm run build
+    if ($LASTEXITCODE -ne 0) { throw "$pkg build failed — publish aborted" }
+    npm publish --access public
+}
+```
+
+`@presource/core` and `@presource/react` are already on npm at 1.0.2 and
+need nothing. The inner manifests' `"*"` dependency ranges (e.g.
+`@godspace/core` → `@presource/core`, `@userfiction/core`; `@presource/react`
+→ `@presource/core ^1.0.0`) are VALID npm registry ranges — `*` simply
+matches any published version — so no inner package edits are required for
+npm resolution. npm resolves every range independently: the `^1.0.2` pins in
+this distribution's package.json govern ONLY its own direct dependencies,
+while the inner packages' `*` (and `^1.0.0`) ranges each resolve on their
+own against the registry — nothing overrides them (today every range lands
+on 1.0.2).
+
+Note on `@presource/react`: the published 1.0.2 tarball contains only raw
+`src/` TypeScript (no `dist`, no build script), so it is consumed as TS/TSX
+— fine for Vite, whose esbuild transform transpiles it (verified against
+vite 8.0.8 + @vitejs/plugin-react 6.0.1 installing purely from npm), but not
+for plain-Node consumers. Publishing a built `dist` in a later `@presource/react`
+version is the clean long-term fix; no action is needed for this site.
+
+`package.json` here pins `^1.0.2` registry ranges (no workspace `*` or
+`file:` links) and carries its own standalone dev toolchain (vite,
+@vitejs/plugin-react, vitest, jsdom, testing-library, typescript,
+@types/node), so a plain `npm install` inside this repository is
+self-sufficient. `engines` documents the Node range the toolchain requires
+(Node 24 is used in CI). Once a `package-lock.json` is committed, switch the
+workflow's install step to `npm ci` for reproducible builds.
