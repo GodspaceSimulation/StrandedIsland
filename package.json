@@ -25,6 +25,7 @@
         "@presource/core": "^1.0.2",
         "@presource/react": "^1.0.2",
         "@userfiction/core": "^1.0.2",
+        "@userfiction/inventory": "^1.0.2",
         "react": "^18.2.0",
         "react-dom": "^18.2.0"
     },

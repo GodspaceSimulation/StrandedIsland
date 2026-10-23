@@ -2,11 +2,13 @@
 //
 // The pure `Record<item, count>` bag helpers (count/add/remove/entries/
 // total/fits/has/affords/transfer/exchange + the Inventory type) are
-// CANONICAL in @userfiction/core (packages/userfiction/core/src/inventory/
-// inventory.ts — the engine-independent fiction layer, R1/R2). The island
-// keeps this module as its local import path so every existing consumer
-// ('./inventory', the plugin barrel) resolves the exact same names (R3);
-// the helpers themselves have one owner and are never forked here.
+// CANONICAL in @userfiction/inventory (packages/userfiction/inventory/
+// src/inventory.ts — that package now owns the whole old inventory API;
+// @userfiction/core no longer exports any inventory). The island keeps
+// this module as its local import path so every existing consumer
+// ('./inventory', the plugin barrel) resolves the exact same names; the
+// helpers themselves have one owner and are never forked here.
+// Actor types still come from @userfiction/core (see src/engine/types.ts).
 
 export {
     inventoryCount,
@@ -19,5 +21,5 @@ export {
     inventoryAffords,
     inventoryTransfer,
     inventoryExchange,
-} from '@userfiction/core';
-export type { Inventory } from '@userfiction/core';
+} from '@userfiction/inventory';
+export type { Inventory } from '@userfiction/inventory';
