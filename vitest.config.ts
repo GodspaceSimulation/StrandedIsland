@@ -9,5 +9,12 @@ export default defineConfig({
         globals: true,
         include: ['src/**/*.{test,spec}.{ts,tsx}'],
         passWithNoTests: true,
+        // The world-simulation tests (full island boots, driveUntil march
+        // loops, 400+ minute reference runs) regularly exceed vitest's
+        // default 5s testTimeout when the monorepo test run goes wide
+        // (yarn runs every workspace in parallel). Explicit headroom keeps
+        // a margin without masking hangs.
+        testTimeout: 60_000,
+        hookTimeout: 60_000
     },
 });

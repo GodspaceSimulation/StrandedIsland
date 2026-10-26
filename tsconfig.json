@@ -16,6 +16,6 @@
         "lib": ["decorators", "dom", "es5", "scripthost", "es2015.collection"],
         "types": ["node", "vitest/globals"]
     },
-    "exclude": ["node_modules", "**/*.test.ts", "**/*.test.tsx", "**/dist/*"],
+    "exclude": ["node_modules", "**/*.test.ts", "**/dist/*"],
     "include": ["src/**/*", "vite.config.ts", "vitest.config.ts"]
 }

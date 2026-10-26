@@ -653,7 +653,7 @@ describe('App', () => {
         expect(screen.getByTestId('unicode-tile-0--3').textContent).toBe('');
         // -- The SVG twin — the vector tree icon --------------------------
         fireEvent.click(screen.getByTestId('canvas-tab-svg'));
-        const board = screen.getByTestId('world-grid-svg') as SVGSVGElement;
+        const board = screen.getByTestId('world-grid-svg') as unknown as SVGSVGElement;
         const tiles = board.querySelectorAll('g');
         const treedTile = tiles[91];
         // The vector tree: canopy circle + trunk rect, NO text glyph (the
@@ -774,7 +774,7 @@ describe('App', () => {
         expect(ruleFor(entity.className)).not.toContain('opacity');
         // -- The coverage fade (svg twin) ------------------------------------
         fireEvent.click(screen.getByTestId('canvas-tab-svg'));
-        const board = screen.getByTestId('world-grid-svg') as SVGSVGElement;
+        const board = screen.getByTestId('world-grid-svg') as unknown as SVGSVGElement;
         const tiles = board.querySelectorAll('g');
         // (1,-2) ? tile (-2+8)×25+(1+12) = 163 — the vector canopy carries
         // the same 0.5 fade; (4,-5) ? tile 91 stands at full 1
@@ -793,7 +793,7 @@ describe('App', () => {
         expect(ruleFor(rockIcon.className)).not.toContain('opacity');
         // -- The rock icon (svg twin) ----------------------------------------
         fireEvent.click(screen.getByTestId('canvas-tab-svg'));
-        const svgTiles = (screen.getByTestId('world-grid-svg') as SVGSVGElement).querySelectorAll('g');
+        const svgTiles = (screen.getByTestId('world-grid-svg') as unknown as SVGSVGElement).querySelectorAll('g');
         // (-1,0) → tile (0+8)×25+(-1+12) = 211 — the vector rock: main
         // stone + pebble, no text glyph
         expect(svgTiles[211].querySelector('[data-testid="rock-icon-svg-main"]')).not.toBeNull();
@@ -832,7 +832,7 @@ describe('App', () => {
         expect(ruleFor(fine.className)).not.toContain('opacity');
         // The svg twin agrees: no opacity attribute on the interior canopy
         fireEvent.click(screen.getByTestId('canvas-tab-svg'));
-        const board = screen.getByTestId('world-grid-svg') as SVGSVGElement;
+        const board = screen.getByTestId('world-grid-svg') as unknown as SVGSVGElement;
         const canopies = board.querySelectorAll('[data-testid="tree-icon-svg-canopy"]');
         expect(canopies.length).toBeGreaterThan(0);
         canopies.forEach((canopy) => expect(canopy.getAttribute('opacity')).toBeNull());
@@ -870,7 +870,7 @@ describe('App', () => {
 
         // -- SVG tab — the vector twin -------------------------------------
         fireEvent.click(screen.getByTestId('canvas-tab-svg'));
-        const board = screen.getByTestId('world-grid-svg') as SVGSVGElement;
+        const board = screen.getByTestId('world-grid-svg') as unknown as SVGSVGElement;
         // The viewBox spans 25×26 × 17×26 user units — the SAME 26px tile
         // occupation the ascii/unicode boards draw
         expect(board.getAttribute('viewBox')).toBe('0 0 650 442');
@@ -948,7 +948,7 @@ describe('App', () => {
         // 26px tile edge, no CSS grid to overflow
         fireEvent.click(screen.getByTestId('canvas-tab-svg'));
         expect(
-            (screen.getByTestId('world-grid-svg') as SVGSVGElement).getAttribute('viewBox'),
+            (screen.getByTestId('world-grid-svg') as unknown as SVGSVGElement).getAttribute('viewBox'),
         ).toBe('0 0 650 442');
     });
 
