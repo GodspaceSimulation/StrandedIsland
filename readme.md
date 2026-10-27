@@ -169,15 +169,19 @@ cleared — so the land set the spawn, build and trek scans walk curves
 around them, and only the salt carries vessels.
 
 **Rivers (R4)** — the survey carves one or more RIVER paths from the high-
-ground down to the sea: cardinal-connected chains of passable `river` cells
-(the ford — the land set walks THROUGH them). A river column carries the
-water voxel at the sea line and an UNLIMITED `water` supply (`takeFromCell`
-never draws it down — the same rule as the ground supply): a thirsty body
-standing in or beside a river drinks forever. Rivers paint their own blue
-(`RIVER_TILE_COLOR` in the terrain palette, mirrored by the scenario's
-`GRASS_TILE_PALETTE.river`) on every board, join the unicode/SVG legends,
-and suppress the lake/pond decorations on their cells. Trees never spread
-onto a river cell — water substrate.
+ground down to the sea: cardinal-connected chains of `river` cells. The
+coarse cell stays PASSABLE (the resource-generation and thirst contracts
+treat the course as open ground — the water supply below is reachable), but
+a river is WATER for everything that stands or walks on it: ground actors do
+not cross it (movement rejects the water biome, plugins/movement) and
+construction never builds over it (the placement gates below). A river
+column carries the water voxel at the sea line and an UNLIMITED `water`
+supply (`takeFromCell` never draws it down — the same rule as the ground
+supply): a thirsty body standing BESIDE a river drinks forever. Rivers paint
+their own blue (`RIVER_TILE_COLOR` in the terrain palette, mirrored by the
+scenario's `GRASS_TILE_PALETTE.river`) on every board, join the unicode/SVG
+legends, and suppress the lake/pond decorations on their cells. Trees never
+spread onto a river cell — water substrate.
 
 **The fine shoreline (R1)** — a beach tile's scale-0 interior is no longer
 a solid sand block: a deterministic WATERLINE hugs every edge that faces a
@@ -421,11 +425,12 @@ the island's BUILD and CRAFT governance, planned through the shared
 - **@godspace/blueprint** — the stock definition registry (shelter, house,
   fort, raft, boat — multi-tile footprints of SCALE-0 fine cells with staged
   material requirements and a work cost) and the site registry the plugin
-  wires to the island grid: placement is hook-vetoed (dry land only, no
-  grounded body standing in the footprint's fine cells), overlap is
-  registry-checked, deliveries stage capped exactly at the requirement and
-  the work accrues in one-world-minute stages (`workOn`) once every
-  material is staged.
+  wires to the island grid: placement is hook-vetoed (every footprint fine
+  cell must be dry, unobstructed ground — no standing tree, no boulder, no
+  water including the passable rivers — with no grounded body standing in
+  it), overlap is registry-checked, deliveries stage capped exactly at the
+  requirement and the work accrues in one-world-minute stages (`workOn`)
+  once every material is staged.
 - **@godspace/material** — the crafting registry seeded with the ISLAND's
   recipes (vine 2 → rope, wood 1 → plank ×2, frond 2 → thatch,
   frond 3 → cloth), each craft atomic: a spent/moved stock loses nothing.
@@ -437,12 +442,47 @@ the island's BUILD and CRAFT governance, planned through the shared
 **The plan** — one stock structure at a time, cooperative and
 deterministic (R1): `shelter → raft → house → boat → quarry → furnace →
 fort` (`PLAN_ORDER`). The tick places the current project when nothing is
-live, ranked by PRIORITY-AWARE placement: land cells scored by centrality
-with beach/wood adjacency bonuses, and vessels require a beach tile WITH a
-SEA-water neighbour — the launch mooring; a lake beach never hosts a hull.
+live, ranked by PRIORITY-AWARE placement: land cells scored by proximity to
+fresh water, food ground and the camp (vessels: a beach tile WITH a
+SEA-water neighbour — the launch mooring; a lake beach never hosts a hull).
 The quarry and furnace come BEFORE the fort: the furnace fires the bricks
 the fort's upgrades need, and the axe/hammer tool chain the early projects
 owe (the tool rung, priority 23) keeps the crew equipped.
+
+**Siting — the full-footprint contract (R1)** — a structure stands only on
+solid, UNOBSTRUCTED ground, and BOTH placement paths validate the WHOLE
+footprint (every resolved fine cell), not just the anchor tile:
+
+- the autonomous planner (`placeOrAdvance`) searches each ranked tile's fine
+  grid center-out and accepts the first anchor whose every footprint cell
+  passes;
+- a direct `sites.place()` call is vetoed by the registry's clearance hook,
+  which runs the SAME gates — so a god-issued placement can never slip past
+  what the planner enforces.
+
+The per-cell gates (`plugins/construction/fineSiting.ts`):
+
+- **DRY** — the fine cell is passable AND not a water biome (ocean,
+  shallows, lake, pond, river). The river matters: its coarse `passable`
+  flag stays true for resource generation, but it is water — never buildable.
+- **UNOBSTRUCTED** — no standing TREE on the exact fine cell
+  (`resources.tree > 0`: felling frees the spot; whole forests are NOT
+  banned, only the trunks actually standing there) and no BOULDER (the parent
+  tile's `carving.rock` band at that fine spot — a physical boulder still
+  blocks even after its stone unit is mined; a loose stone pile is not a
+  boulder and does not block).
+- **CLEAR** — no other building/site on any footprint cell (the shared
+  registry's occupancy/overlap rule) and no grounded body standing there
+  (nobody is ever sealed inside a footprint).
+- grass, dry beach and highland are all valid when unobstructed; a depleted
+  rock tile with no boulder left in its band no longer obstructs.
+
+Fine cells that run off a tile's edge wrap across the coarse boundary and
+are resolved in the ADJACENT tile's own sub-grid, so a footprint straddling
+two tiles is validated cell-for-cell on both sides. Vessels keep their
+existing contract on top of this: the whole hull footprint dry AND at least
+one cell beside navigable fine SEA water. Existing sites are never moved
+retroactively.
 
 **The rungs** (the ledger's planning order — needs always win):
 
@@ -539,9 +579,9 @@ Deliverers and builders work from anywhere on the footprint while it is
 unbuilt; when it COMPLETES, its resolved cells wall off (the fine movement
 rules refuse stepping onto them through the world's `structures` hook) and
 the gate stays usable — the intentional doorway. Planned footprints do not
-block movement: their clearance is checked at placement, and a body can
-always step OFF a cell a wall later rises on (only destinations are
-validated).
+block movement: their clearance is checked at placement (dry unobstructed
+ground — see **Siting** above), and a body can always step OFF a cell a
+wall later rises on (only destinations are validated).
 
 **The shelter's survival use** — a body sleeping or resting on a built
 roofed structure's gate (shelter, house) recovers energy faster: +0.5 per

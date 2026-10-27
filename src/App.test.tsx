@@ -252,39 +252,47 @@ describe('App', () => {
 
         // 60 seeded steps (seed 7, one world minute each). The construction
         // governance is mounted (the stock world), so the cast's wander
-        // pattern differs from the pre-construction reference. At the 0.8
-        // water threshold the terrain/roll stream shifted and only TWO
-        // scenarios play, both binding Ael to Cove: Spear Lessons +12
-        // (minute 1) and Quiet Distrust -8 (minute 46); the drift nets Ael's
-        // bonds to 0 / 3 / 0 — the DISPLAYED values round to 0 / 3 / 0.
+        // pattern differs from the pre-construction reference. The R2 dry
+        // movement rules (plugins/movement/fineMovement — the cast walks
+        // around water instead of through it) put the cast in reach three
+        // times: Spear Lessons +12 (minute 1, Ael/Cove), Quiet Distrust −8
+        // (minute 40, Bram/Dune) and The Night Watch Pact +14 (minute 46,
+        // Ael/Cove). The per-minute drift (0.02 toward 0) then decays the
+        // totals: Ael/Cove 24.82 → the panel rounds to 25, Bram/Dune −7.6 →
+        // −8 (still 'neutral' — the ladder is |value| < 25). Traced in
+        // Temp/t5-integration/probe-app.mts.
         for (let tick = 0; tick < 60; tick++) {
             fireEvent.click(screen.getByTestId('step-button'));
         }
         const stepped = screen.getByTestId('actor-relations');
         expect(
             Array.from(stepped.children).map((child) => child.textContent),
-        ).toEqual(['Bram — neutral (0)', 'Cove — neutral (11)', 'Dune — neutral (0)']);
+        ).toEqual(['Bram — neutral (0)', 'Cove — neutral (25)', 'Dune — neutral (0)']);
 
         // A different selection never shows its own name either — the list is
         // always the OTHER castaways, so pairs between third parties cannot
-        // be mislabelled as the inspected actor's bonds. Both 0.8 scenarios
-        // bound Ael to Cove — Bram's own bonds stay neutral across the round.
+        // be mislabelled as the inspected actor's bonds. Bram's own bond is
+        // the Quiet Distrust (−8, drifted to −7.6): the round's other pairing
+        // never leaks into Ael's list and Ael/Cove never leaks into Bram's.
         fireEvent.click(screen.getByTestId('actor-chip-Ael'));
         fireEvent.click(screen.getByTestId('actor-chip-Bram'));
         const bram = screen.getByTestId('actor-relations');
         const bramRows = Array.from(bram.children).map((child) => child.textContent);
-        expect(bramRows).toEqual(['Ael — neutral (0)', 'Cove — neutral (0)', 'Dune — neutral (0)']);
+        expect(bramRows).toEqual(['Ael — neutral (0)', 'Cove — neutral (0)', 'Dune — neutral (-8)']);
         expect(bramRows.join('|')).not.toContain('Bram');
 
         // The story feed carries the encounters as coherent story blocks —
         // newest first, the latest scenario's block on top. The feed holds
-        // 10 beats: five spawns, Kiki's exit past the world's edge, the
-        // two bond moves and the two story blocks.
+        // 12 beats: five spawns, Kiki's exit past the world's edge, three
+        // bond moves and the three story blocks.
         fireEvent.click(screen.getByTestId('story-tab'));
         const entries = screen.getAllByTestId('story-entry');
-        expect(entries.length).toBe(10);
-        expect(entries[0].textContent).toContain('Quiet Distrust');
-        expect(entries[0].textContent).toContain('counting the food stores');
+        expect(entries.length).toBe(12);
+        expect(entries[0].textContent).toContain('The Night Watch Pact');
+        expect(entries[0].textContent).toContain('split the night into two watches');
+        // The earlier beat keeps its own block further down the feed
+        expect(entries[2].textContent).toContain('Quiet Distrust');
+        expect(entries[2].textContent).toContain('counting the food stores');
     });
 
     it('the tick carries its fixed world minute at every view — the scale ladder is a pure view', () => {

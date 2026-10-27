@@ -80,7 +80,13 @@ export type World = EngineWorld<Actor> & {
     inBounds(x: number, y: number): boolean;
     /** The actor standing at an exact 3D position (Z defaults to the ground plane). */
     actorAt(x: number, y: number, z?: number): Actor | undefined;
-    /** All currently passable (dry) cells — used for spawn placement. */
+    /**
+     * All currently passable cells — the coarse land set (spawn placement and
+     * the construction scan). NOTE (R2): passability alone is NOT dry ground —
+     * a river column still carries `passable: true` for resource compatibility.
+     * Ground locomotion and spawning read isWalkableCell instead
+     * (engine/types); this stays the coarse vocabulary its callers expect.
+     */
     landCells(): TerrainCell[];
     /**
      * The mounted structure-blocking hook (see StructureBlocker) — the
@@ -195,6 +201,11 @@ export const createWorld = (options: WorldOptions = {}): World => {
                 return found;
             };
 
+            // The coarse land set — passability alone. R2 keeps this the
+            // COARSE vocabulary its callers (the construction scan) expect:
+            // a river column still carries `passable: true` for resource
+            // compatibility, so DRY-GROUND decisions read isWalkableCell
+            // instead (spawn placement: scenario/island.ts).
             world.landCells = () => canvasHolder.current.cells.filter((cell) => cell.passable);
 
             // The structure blocker starts unmounted — the construction

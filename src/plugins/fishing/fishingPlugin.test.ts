@@ -445,7 +445,9 @@ describe('fishingPlugin — the lazy catch: timed accrual and collection', () =>
     });
 
     it('hauls autonomously: the rung walks back to the ripe net and banks the catch', () => {
-        const { world, inventory, fishing } = buildStack({
+        // `tasks` is destructured for the commit-beat assertion below (the
+        // haul beat is planned at minute 17 and pays on the second work-minute)
+        const { world, inventory, tasks, fishing } = buildStack({
             netBuildWork: 4,
             netCollectWork: 2,
             netCatchMinutes: 10,
@@ -459,18 +461,37 @@ describe('fishingPlugin — the lazy catch: timed accrual and collection', () =>
         expect(fishing.netAt(E1.x, E1.y)).toMatchObject({ builtAt: 5 });
         // The builder's bag is empty (the bill was paid) — she wanders
         // while the weir fills; the stewardship rung pulls her back and
-        // the collect beats land the fish (deterministic for seed 7:
-        // the haul claim fires on minute 17)
+        // the collect beats land the fish. Deterministic for seed 7 under
+        // the R2 dry movement (plugins/movement/fineMovement — the wander
+        // and the trek are water-avoiding now): the first fish banks during
+        // minute 15 (the countdown reaches 1 → the ripe net), the rung walks
+        // back over minutes 15–16 and commits to the net underfoot at minute
+        // 17, and the TWO declared collect work-minutes run 18–19, so the
+        // claim fires on minute 19 (traced in Temp/t5-integration/
+        // probe-ledger.mts: the tile job opens units 2 / progress 0 at
+        // minute 17, reads progress 1 at minute 18, and the bag pays at 19 —
+        // the ledger's planned-at-N-executes-at-N+1 beat convention).
         for (let minute = 6; minute <= 16; minute++) {
             world.step();
             expect(inventory.of('a')).toEqual({});
         }
-        world.step(); // minute 17 — the haul
+        // Minute 17: the rung reaches the net and commits to the haul beat.
+        // The payout still waits for the LAST declared work-minute — the
+        // minutes are the cost, the claim is what pays
+        world.step(); // minute 17 — the rung commits to the net underfoot
+        expect(tasks.taskOf('a')).toMatchObject({
+            behaviour: FISHING_BEHAVIOUR_ID,
+            kind: FISH_NET_COLLECT_TASK,
+            label: 'hauls the net',
+        });
+        world.step(); // minute 18 — the first of the two collect beats
+        expect(inventory.of('a')).toEqual({});
+        world.step(); // minute 19 — the claim: the catch lands
         expect(inventory.of('a')).toEqual({ fish: 1 });
         // The net clock advanced exactly one interval (built 5 + 10 → the
-        // countdown reads 8 at minute 17) and the body stood ON the net
+        // countdown reads 6 at minute 19) and the body stood ON the net
         // tile through the claim (the on-tile gate held)
-        expect(fishing.netAt(E1.x, E1.y)).toEqual({ x: E1.x, y: E1.y, stored: 0, cap: 3, minutesToNext: 8, builtAt: 5 });
+        expect(fishing.netAt(E1.x, E1.y)).toEqual({ x: E1.x, y: E1.y, stored: 0, cap: 3, minutesToNext: 6, builtAt: 5 });
         expect(world.actors.get('a')).toMatchObject({ position: { x: E1.x, y: E1.y, z: 0 } });
     });
 });

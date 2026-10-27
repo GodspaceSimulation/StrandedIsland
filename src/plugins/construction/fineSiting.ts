@@ -19,19 +19,54 @@
 //     worker will introduce (a land tile's fine cells partly turned to
 //     water) — without standing a world up.
 //
-//   footprintIsDry / footprintTouchesSeaWater — the two fine-scale gates the
-//     scan applies to a candidate anchor's resolved footprint: every cell
-//     dry land (mixed-shore safe), and for VESSELS at least one cell directly
-//     beside NAVIGABLE fine water (biome shallows/ocean — isSeaWater, the
-//     same salt rule the launch rechecks; a lake/pond fine cell is water but
-//     never a mooring). A fine step OFF the tile's edge (the odd centered
-//     sub-grids run −half … +half) crosses the COARSE boundary and resolves
-//     through the ADJACENT tile's fine cell — the wrap the shared subtile
-//     continuity rule (subTileStep) already defines, applied to terrain.
+//   footprintIsDry / footprintIsClear / footprintTouchesSeaWater — the
+//     fine-scale gates the scan applies to a candidate anchor's resolved
+//     footprint: every cell dry land (mixed-shore safe, and NEVER water of
+//     any kind — the river fine cell is passable but still water, the engine
+//     vocabulary isWaterBiome), every cell free of a standing natural
+//     obstruction (a tree, a boulder — footprintIsClear / fineCellObstructed),
+//     and for VESSELS at least one cell directly beside NAVIGABLE fine water
+//     (biome shallows/ocean — isSeaWater, the same salt rule the launch
+//     rechecks; a lake/pond fine cell is water but never a mooring). A fine
+//     step OFF the tile's edge (the odd centered sub-grids run −half … +half)
+//     crosses the COARSE boundary and resolves through the ADJACENT tile's
+//     fine cell — the wrap the shared subtile continuity rule (subTileStep)
+//     already defines, applied to terrain.
+//
+// R1 (build validity) — THE FULL-FOOTPRINT CONTRACT: a structure may only
+// stand on solid, UNOBSTRUCTED ground. The gates below are the single
+// definition both placement paths share (the autonomous scan in
+// constructionPlugin's placeOrAdvance AND the site registry's clearance
+// hook, so a god-issued sites.place() is validated exactly like a planned
+// one):
+//   • DRY — the cell is walkable ground (engine/types isWalkableCell:
+//     passable AND not a water biome). The river is the case that matters:
+//     engine/types keeps `passable` TRUE on rivers (resource generation and
+//     the thirst ladder still treat the course as open ground), so a bare
+//     passable read would let a shelter be built in midstream. Building
+//     reads the SHARED predicate, never its own water list.
+//   • UNOBSTRUCTED — no standing TREE on the fine cell (resources.tree > 0:
+//     the forest stand mirror, so a FELLED cell frees up — whole forests are
+//     never banned, only the exact standing trunks), and no physical BOULDER
+//     (the parent tile's carving.rock band at this fine spot). The band IS
+//     the boulder: its gravel stack stands while the entry is listed, so a
+//     mined crown still obstructs. A depleted rock TILE with no band entry
+//     (the gravel bedrock alone) obstructs nothing, and a loose stone pile
+//     is never in the band — neither blocks.
+//   • REGISTRY — other buildings/sites are the site registry's own
+//     occupancy/overlap rule (createSiteRegistry), plus the fine spot must
+//     be free of grounded bodies (fineMovement.fineSpotTaken). Those checks
+//     stay where they are; the helpers here only add the terrain/obstacle
+//     half.
 
 import { subTileStep, type TileCoord } from '@godspace/core';
 import type { TerrainCell } from '../../engine/types';
-import { isSeaWater } from '../../engine/types';
+import { isSeaWater, isWalkableCell } from '../../engine/types';
+
+/** Resolves one COARSE tile's cell — the parent of a footprint's fine cells.
+ * Injected by the caller (the construction plugin reads world.cellAt). Used
+ * for the boulder band, which is a PARENT (carving) record, not a fine one. */
+export type FineParentResolver = (tileX: number, tileY: number) => TerrainCell | undefined;
 
 /** Resolves one fine cell's terrain — tile (tx,ty) fine (fx,fy) — or
  * undefined when the terrain cannot resolve it (no terrain plugin, a
@@ -89,6 +124,13 @@ export const spiralAnchors = (halfX: number, halfY: number): TileCoord[] => {
  * the RESOLVED addresses (parent tile + fine coords — the site registry's
  * SiteCell shape). An unresolvable fine cell (no terrain plugin, depth-0
  * ladder) reads as dry — the pre-fine behavior, never a veto on ignorance.
+ *
+ * R1 — DRY MEANS DRY: a cell is valid only when engine/types' shared
+ * isWalkableCell says so (passable AND not a water biome). The water half is
+ * what closes the RIVER hole: engine/types keeps rivers passable (the
+ * resource/thirst contract), so `passable` alone would build a shelter
+ * midstream. A river fine cell is refused; a river tile's synthesized BANK
+ * (dry beach/meadow ground) passes.
  */
 export const footprintIsDry = (
     cells: Array<{ parent: { x: number; y: number }; x: number; y: number }>,
@@ -96,8 +138,58 @@ export const footprintIsDry = (
 ): boolean =>
     cells.every((cell) => {
         const terrain = resolve(cell.parent.x, cell.parent.y, cell.x, cell.y);
-        return terrain === undefined || terrain.passable;
+        // Ignorance never vetoes (the legacy terrainless world)
+        return terrain === undefined || isWalkableCell(terrain);
     });
+
+/**
+ * Whether ONE footprint fine cell carries a standing natural obstruction —
+ * a TREE or a BOULDER. The reads are deliberately PRECISE (per fine cell,
+ * never per tile) so an ordinary clear spot inside a forest stays buildable
+ * and only the exact standing trunk vetoes:
+ *
+ *   • TREE — the fine cell's own `resources.tree` counter (the forest
+ *     stand's mirror in terrain/islandTerrain.ts subPrep/generateSubCanvas:
+ *     one unit per standing trunk, the legacy seeded scatter when no stand
+ *     exists). A felled trunk drops the counter, so the cell frees itself
+ *     the moment the wood is taken — no stale veto.
+ *   • BOULDER — the PARENT tile's `carving.rock` band (the rock-spillover
+ *     fine spots the generator stamped, "x,y" strings). The band is the
+ *     PHYSICAL boulder: the mine draws the crown's stone UNIT down (the
+ *     visibleCrowns split in subPrep), but the gravel stack itself stands
+ *     while the band lists the spot, so a mined-down crown still obstructs
+ *     until the boulder is genuinely gone (no band entry → no veto). Loose
+ *     stone piles are NOT boulders — they never appear in the band.
+ *
+ * An unresolvable fine cell (no terrain plugin) reads UNOBSTRUCTED — the
+ * same never-veto-on-ignorance rule footprintIsDry keeps.
+ */
+export const fineCellObstructed = (
+    cell: { parent: { x: number; y: number }; x: number; y: number },
+    resolve: FineTerrainResolver,
+    resolveParent: FineParentResolver,
+): boolean => {
+    const terrain = resolve(cell.parent.x, cell.parent.y, cell.x, cell.y);
+    if (terrain !== undefined && (terrain.resources.tree ?? 0) > 0) {
+        return true;
+    }
+    // The boulder band is a PARENT record — resolved per tile, then matched
+    // against this fine cell's own (wrapped) coordinates
+    const parent = resolveParent(cell.parent.x, cell.parent.y);
+    const band = parent?.carving?.rock ?? [];
+    return band.includes(`${cell.x},${cell.y}`);
+};
+
+/**
+ * Whether EVERY footprint cell is free of standing trees and boulders
+ * (fineCellObstructed). Skipped entirely by a caller with no terrain
+ * resolver — the legacy terrainless world has no fine obstacles to read.
+ */
+export const footprintIsClear = (
+    cells: Array<{ parent: { x: number; y: number }; x: number; y: number }>,
+    resolve: FineTerrainResolver,
+    resolveParent: FineParentResolver,
+): boolean => cells.every((cell) => !fineCellObstructed(cell, resolve, resolveParent));
 
 /**
  * Whether at least one footprint cell stands DIRECTLY BESIDE navigable fine

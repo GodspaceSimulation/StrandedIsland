@@ -132,7 +132,7 @@ import {
 } from '@godspace/material';
 import type { World } from '../../engine/world';
 import type { Actor, TerrainCell } from '../../engine/types';
-import { isFreshBasin, isSeaWater } from '../../engine/types';
+import { isFreshBasin, isSeaWater, isWalkableCell } from '../../engine/types';
 import type { InventoryPlugin } from '../inventory/inventoryPlugin';
 import type { NeedsPlugin } from '../needs/needsPlugin';
 import type { EntityProfiles } from '../entity/entityPlugin';
@@ -151,9 +151,11 @@ import {
 } from '../inventory/toolDurability';
 import { fineSpotTaken, fineTargetStep, nearestCell, travelSpec, type FineMover } from '../movement/fineMovement';
 import {
+    footprintIsClear,
     footprintIsDry,
     footprintTouchesSeaWater,
     spiralAnchors,
+    type FineParentResolver,
     type FineTerrainResolver,
 } from './fineSiting';
 // Type-only coupling — the resolver reads the terrain plugin's cellFor/depth
@@ -654,6 +656,11 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
     // ([{tile},{fine}], plugins/terrain islandTerrain.ts) — no terrain
     // change, no wiring edit.
     let fineTerrain: FineTerrainResolver | undefined;
+
+    // R1 — the COARSE tile resolver the boulder gate reads (the parent
+    // tile's carving.rock band). Bound to the live world at setup; undefined
+    // until then, exactly like fineTerrain.
+    let coarseCell: FineParentResolver | undefined;
 
     // The plan cursor + the completed ledger (a launched vessel removes its
     // site, so completion is recorded explicitly, not re-derived)
@@ -1637,12 +1644,9 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
             return;
         }
         // THE PLACEMENT SCAN (R1 — PRIORITY-AWARE SITING): row-major land
-        // cells, anchor at the tile's center fine cell. The anchor sits at
-        // the grid's exact middle, so the stock footprints (±1 offsets)
-        // never wrap across the world's edge: every resolved cell lands on
-        // the anchor tile or an immediate neighbour. Each structure type
-        // SCORES the ground it WANTS and the scan places on the highest
-        // score (ties keep the row-major order — deterministic):
+        // cells, the anchor SEARCHED over each tile's fine grid. Each
+        // structure type SCORES the ground it WANTS and the scan places on
+        // the highest score (ties keep the row-major order — deterministic):
         //   shelter / house — the CAMP CLUSTER: near the fresh water (the
         //     thirst treks are the longest errands in the game), near the
         //     food ground (meadow and forest forage), near the cast (short
@@ -1804,9 +1808,15 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
         //      standing in the cells; occupancy; self-overlap) — conflicts();
         //   2. every footprint fine cell stands on DRY fine terrain (the
         //      mixed-shore gate — a land tile's fine water cells are never
-        //      built over; skipped when no terrain plugin resolves fine
-        //      cells, the legacy terrainless world);
-        //   3. VESSELS: at least one footprint cell stands directly beside
+        //      built over, and R1 closes the river: passable water is still
+        //      water; skipped when no terrain plugin resolves fine cells,
+        //      the legacy terrainless world);
+        //   3. R1 — every footprint fine cell is UNOBSTRUCTED: no standing
+        //      tree on the exact cell, no boulder from the parent's
+        //      carving.rock band (fineSiting footprintIsClear — precise
+        //      per-cell reads, so a clear spot inside a forest still
+        //      builds);
+        //   4. VESSELS: at least one footprint cell stands directly beside
         //      NAVIGABLE fine sea water (biome shallows/ocean — the launch's
         //      own salt rule, kept at fine scale; a lake/pond fine cell is
         //      never a mooring). A fine step off the tile's edge wraps the
@@ -1844,8 +1854,13 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                 });
                 // The fine-scale terrain gates (skipped without a resolver —
                 // the legacy terrainless world places at the coarse gates)
-                if (fineTerrain) {
+                if (fineTerrain && coarseCell) {
                     if (!footprintIsDry(resolved, fineTerrain)) {
+                        continue;
+                    }
+                    // R1 — the full-footprint obstruction gate: a standing
+                    // tree or a boulder vetoes the anchor
+                    if (!footprintIsClear(resolved, fineTerrain, coarseCell)) {
                         continue;
                     }
                     if (
@@ -2186,6 +2201,11 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                     ? (tileX, tileY, fx, fy) =>
                           terrainPlugin.cellFor([{ x: tileX, y: tileY }, { x: fx, y: fy }])
                     : undefined;
+            // R1 — the coarse tile resolver the boulder gate reads (the
+            // parent's carving.rock band). Bound even without a fine
+            // resolver: the clearance hook reads it for the coarse water
+            // veto, the obstruction gate only runs when fine cells resolve.
+            coarseCell = (tileX, tileY) => active.cellAt(tileX, tileY);
 
             // The site registry rebuilds against the LIVE canvas — the grid
             // is the sub-grid dims the whole zoom ladder shares (the
@@ -2201,13 +2221,40 @@ export const constructionPlugin = (options: ConstructionPluginOptions): Construc
                         parent.length === 1 &&
                         scale === 0 &&
                         active.cellAt(parent[0].x, parent[0].y) !== undefined,
-                    // CLEARANCE — every footprint cell needs dry land and no
-                    // grounded body standing on the fine spot (nobody is
-                    // ever sealed inside a footprint at placement)
+                    // CLEARANCE — R1: every footprint cell needs DRY,
+                    // UNOBSTRUCTED ground and no grounded body standing on
+                    // the fine spot (nobody is ever sealed inside a footprint
+                    // at placement). The SAME gates the autonomous scan
+                    // applies (fineSiting footprintIsDry/footprintIsClear),
+                    // so a direct registry placement is validated exactly
+                    // like a planned one:
+                    //   • coarse: the parent tile exists and is WALKABLE
+                    //     ground (engine/types isWalkableCell — a river tile
+                    //     is passable for the resource/thirst contract but
+                    //     never buildable);
+                    //   • fine (when the terrain plugin resolves fine cells):
+                    //     the cell is walkable dry land, no standing tree on
+                    //     it, no boulder from the parent's carving.rock band;
+                    //   • occupancy: nobody grounded on the fine spot.
                     clearance: (cell: SiteCell) => {
                         const tile = active.cellAt(cell.parent[0].x, cell.parent[0].y);
-                        if (!tile || !tile.passable) {
+                        if (!isWalkableCell(tile)) {
                             return false;
+                        }
+                        if (fineTerrain && coarseCell) {
+                            // The per-cell terrain/obstruction gates — the
+                            // SAME helpers the placement scan runs (one
+                            // definition, two callers). The registry hands a
+                            // SiteCell (parent is a PATH); the fineSiting
+                            // helpers take the resolved (tile, fine) address,
+                            // so the path's tail is the parent tile.
+                            const address = { parent: cell.parent[0], x: cell.x, y: cell.y };
+                            if (!footprintIsDry([address], fineTerrain)) {
+                                return false;
+                            }
+                            if (!footprintIsClear([address], fineTerrain, coarseCell)) {
+                                return false;
+                            }
                         }
                         // The Scale-0 occupancy scan (fineMovement) — the
                         // sentinel selfId matches no living body

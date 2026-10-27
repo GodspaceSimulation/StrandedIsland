@@ -291,6 +291,78 @@ describe('behaviorPlugin — every living thing plans through the ladder', () =>
         expect(world.coordinates.positionOf('bird-1')).toEqual({ x: -12, y: -8, z: 0 });
     });
 
+    it('a body on a river tile’s DRY BANK keeps its ground vocabulary (T4 bank trap)', () => {
+        // The T4 bank probe: a body parked on a river tile's synthesized dry
+        // bank is legal ground (fineStep accepts the entry), so the gate must
+        // NOT freeze it. The old coarse-only gate read the RIVER tile as water
+        // and left the body immobile for hundreds of minutes (881/900 idle).
+        const { world, tasks } = buildStack();
+        const grid = world.canvas;
+        const halfX = (grid.width - 1) / 2;
+        const halfY = (grid.height - 1) / 2;
+        const fineTerrain = world.plugins.get('island-terrain') as unknown as {
+            cellFor(path: Array<{ x: number; y: number }>): { biome: string; passable: boolean } | undefined;
+        };
+        // The first river tile with a walkable fine bank (deterministic seed 7)
+        const river = grid.cells.find((tile) => tile.biome === 'river')!;
+        let bank: { x: number; y: number } | null = null;
+        for (let fy = -halfY; fy <= halfY && !bank; fy++) {
+            for (let fx = -halfX; fx <= halfX && !bank; fx++) {
+                const cell = fineTerrain.cellFor([{ x: river.x, y: river.y }, { x: fx, y: fy }]);
+                if (cell && !['river', 'lake', 'pond', 'ocean', 'shallows'].includes(cell.biome)) {
+                    bank = { x: fx, y: fy };
+                }
+            }
+        }
+        expect(bank).not.toBeNull();
+        // Park the body exactly on that bank (the derived spot is overridden)
+        spawn(world, 'a', 'Ael', river.x, river.y);
+        const derived = world.subOf('a')!;
+        world.relocateFine('a', bank!.x - derived.x, bank!.y - derived.y);
+        expect(world.subOf('a')).toEqual(bank);
+        // The coarse tile IS water, yet the body stands on dry ground — the
+        // gate must read the FINE cell, so the idle filler plans a wander
+        for (let index = 0; index < 3; index++) {
+            world.step();
+        }
+        const task = tasks.taskOf('a');
+        expect(task).toBeDefined();
+        expect(task?.kind).toBe('move');
+    });
+
+    it('never wades: no planned task can move a dry body into a wet fine cell', () => {
+        // R2 removed the walk-through-water escape. Every remaining move is
+        // fineStep-validated, so a dry-footed body's tasks always land dry —
+        // the T4 escape probe caught a [+1,+1] step into a river tile.
+        const { world, tasks } = buildStack();
+        spawn(world, 'a', 'Ael', 0, 3);
+        for (let index = 0; index < 40; index++) {
+            world.step();
+            const task = tasks.taskOf('a');
+            if (!task || task.kind !== 'move') {
+                continue;
+            }
+            const payload = task.payload as { dx?: number; dy?: number };
+            if (typeof payload?.dx !== 'number' || typeof payload?.dy !== 'number') {
+                continue;
+            }
+            // Re-derive where the task WOULD land and require it to be dry
+            const before = world.subOf('a')!;
+            const tile = world.actors.get('a')!.position;
+            const next = { x: before.x + payload.dx, y: before.y + payload.dy };
+            const wrapped =
+                next.x > 12 ? { tile: { x: tile.x + 1, y: tile.y }, fine: { x: -12, y: next.y } } :
+                next.x < -12 ? { tile: { x: tile.x - 1, y: tile.y }, fine: { x: 12, y: next.y } } :
+                next.y > 8 ? { tile: { x: tile.x, y: tile.y + 1 }, fine: { x: next.x, y: -8 } } :
+                next.y < -8 ? { tile: { x: tile.x, y: tile.y - 1 }, fine: { x: next.x, y: 8 } } :
+                { tile, fine: next };
+            const cell = world.cellAt(wrapped.tile.x, wrapped.tile.y);
+            // The tile is always walkable ground (never a water column)
+            expect(cell).toBeDefined();
+            expect(['river', 'lake', 'pond', 'ocean', 'shallows']).not.toContain(cell?.biome);
+        }
+    });
+
     it('a floating tired bird sleeps afloat: the roost declines on water, the slumber takes over', () => {
         const profiles = entityPlugin();
         const inventory = inventoryPlugin({ rainChancePerMinute: 0, profiles });
@@ -678,57 +750,43 @@ describe('behaviorPlugin', () => {
         world.relocateFine('b', -12 - bramSub.x, -4 - bramSub.y);
         expect(world.subOf('b')).toEqual({ x: -12, y: -4 });
         // Minute 2: the east task's completing step lands on the TAKEN spot
-        // ({−12,−4} is occupied) — Ael falls back north instead of the wrap.
-        // The dog plans its own wander
+        // ({−12,−4} is occupied) — Ael takes the DIAGONAL fine step toward the
+        // goal instead (the mill now orders legal neighbours by fine progress
+        // toward the aim, so a blocked walker slides around the body rather
+        // than marching due north). The dog plans its own wander
         world.step();
         expect(world.ticker.elapsed()).toBe(2);
         expect(world.actors.get('a')).toMatchObject({ position: { x: 0, y: 3, z: 0 } });
         expect(world.subOf('a')).toEqual({ x: 12, y: -4 });
-        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', payload: { dx: 0, dy: -1 } });
+        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', payload: { dx: 1, dy: -1 } });
         expect(tasks.taskOf('b')).toMatchObject({ kind: 'move', label: 'wanders', payload: { dx: 0, dy: -1 } });
-        // Minute 3: the fallback walks — a north fine step inside the tile
-        // (no crossing, no charge). The dog's wander lands it one spot north
-        // — ONTO Ael's next landing ({−12,−5}) — so the re-planned east wrap
-        // is blocked AGAIN and Ael falls back north a second time
+        // Minute 3: the diagonal WRAPS — Ael crosses into (1,3) at sub
+        // {−12,−5} with the crossing charge (the old north-first mill needed
+        // three extra fallback minutes to reach this point). Every step stayed
+        // out of the log.
         world.step();
         expect(world.ticker.elapsed()).toBe(3);
-        expect(world.actors.get('a')).toMatchObject({ position: { x: 0, y: 3, z: 0 } });
-        expect(world.subOf('a')).toEqual({ x: 12, y: -5 });
-        expect(world.subOf('b')).toEqual({ x: -12, y: -5 });
-        expect(needs.of('a').energy).toBe(100);
-        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', payload: { dx: 0, dy: -1 } });
-        // Minute 4: the second fallback walks ({12,−6}); the dog wanders off
-        // ({−11,−4}) — the east wrap is finally clear and Ael plans it
-        world.step();
-        expect(world.ticker.elapsed()).toBe(4);
-        expect(world.subOf('a')).toEqual({ x: 12, y: -6 });
-        expect(world.subOf('b')).toEqual({ x: -11, y: -4 });
-        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', payload: { dx: 1, dy: 0 } });
-        // Minute 5: the east attempt crosses — the actor flows into (1,3)
-        // at sub {−12,−6} with the crossing charge. Every step stayed out of
-        // the log
-        world.step();
-        expect(world.ticker.elapsed()).toBe(5);
         expect(world.actors.get('a')).toMatchObject({ position: { x: 1, y: 3, z: 0 } });
-        expect(world.subOf('a')).toEqual({ x: -12, y: -6 });
+        expect(world.subOf('a')).toEqual({ x: -12, y: -5 });
         expect(needs.of('a').energy).toBe(99);
+        expect(tasks.taskOf('a')).toMatchObject({ kind: 'move', payload: { dx: 1, dy: 0 } });
         expect(world.events.log().filter((event) => event.kind === 'move')).toEqual([]);
-        // The walk across tile (1,3) from {−12,−6}: 24 more east fine steps
-        // (minutes 6–29), then the wrapping step itself onto the pool tile
-        // (2,3) at minute 30 (a second crossing, a second charge)
+        // The walk across tile (1,3) from {−12,−5}: 24 more east fine steps
+        // (minutes 4–27), then the wrapping step itself onto the pool tile
+        // (2,3) at minute 28 (a second crossing, a second charge)
         for (let index = 0; index < 25; index++) {
             world.step();
         }
-        expect(world.ticker.elapsed()).toBe(30);
+        expect(world.ticker.elapsed()).toBe(28);
         expect(world.actors.get('a')).toMatchObject({ position: { x: 2, y: 3, z: 0 } });
         expect(needs.of('a').energy).toBe(98);
         // On the pool tile the thirst behaviour pivots to the 3-minute
         // COLLECTION — the water goes INTO THE BAG first (nothing recovers
-        // straight from the ground), completing at minute 33
+        // straight from the ground), completing at minute 31
         for (let index = 0; index < 3; index++) {
             world.step();
         }
-        expect(world.ticker.elapsed()).toBe(33);
+        expect(world.ticker.elapsed()).toBe(31);
         // The pooled water is carried now — the bag holds it, the cell is
         // dry. T4 — the cell's stocks hold NO loose berries and the bush
         // needs no rhythm: the plant stands and its lazy batch is untouched
@@ -737,14 +795,14 @@ describe('behaviorPlugin', () => {
         expect(inventory.cellStock(2, 3)).toEqual({ tree: 17, dirt: 1, grass: 1, bush: 1 });
         expect(inventory.bushView(2, 3)).toEqual({ x: 2, y: 3, fruits: 3, cap: 3, nextRipeAt: 60 });
         // The same minute re-plans the 2-minute drink from the bag,
-        // completing at minute 35 (−35 thirst relief, the bag empties)
+        // completing at minute 33 (−35 thirst relief, the bag empties)
         for (let index = 0; index < 2; index++) {
             world.step();
         }
-        expect(world.ticker.elapsed()).toBe(35);
+        expect(world.ticker.elapsed()).toBe(33);
         expect(needs.of('a').thirst).toBe(45);
         expect(inventory.of('a')).toEqual({});
-        // The whole journey — the blocked wrap, the fallbacks, the two
+        // The whole journey — the blocked wrap, the diagonal slide, the two
         // crossings, the collect and the drink — ALL silent, no move or
         // consume events
         expect(world.events.log().filter((event) => event.kind === 'move' || event.kind === 'consume')).toEqual([]);

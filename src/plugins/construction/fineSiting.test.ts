@@ -18,12 +18,15 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+    fineCellObstructed,
+    footprintIsClear,
     footprintIsDry,
     footprintTouchesSeaWater,
     spiralAnchors,
+    type FineParentResolver,
     type FineTerrainResolver,
 } from './fineSiting';
-import type { TerrainCell } from '../../engine/types';
+import { isWaterBiome, type TerrainCell } from '../../engine/types';
 
 /**
  * A hand-built fine world: the resolver reads terrain from a map keyed
@@ -54,15 +57,40 @@ const dryCell = (): TerrainCell => ({
 });
 
 /** A water fine cell of the given biome (impassable — water never walks). */
-const waterCell = (biome: 'ocean' | 'shallows' | 'lake' | 'pond'): TerrainCell => ({
+const waterCell = (biome: 'ocean' | 'shallows' | 'lake' | 'pond' | 'river'): TerrainCell => ({
     x: 0,
     y: 0,
     voxels: ['sand', 'water'],
     height: 2,
     waterLevel: 3,
     biome,
-    passable: false,
+    passable: biome === 'river',
     resources: {},
+});
+
+/** A dry land fine cell carrying a standing TREE (the stand mirror). */
+const treeCell = (): TerrainCell => ({
+    x: 0,
+    y: 0,
+    voxels: ['grass', 'forest'],
+    height: 4,
+    waterLevel: 3,
+    biome: 'forest',
+    passable: true,
+    resources: { tree: 1 },
+});
+
+/** A coarse parent tile — the boulder band (carving.rock) lives here. */
+const parentCell = (rock: string[] = [], stone = 0): TerrainCell => ({
+    x: 0,
+    y: 0,
+    voxels: ['grass'],
+    height: 4,
+    waterLevel: 3,
+    biome: 'forest',
+    passable: true,
+    resources: stone > 0 ? { stone } : {},
+    ...(rock.length > 0 ? { carving: { rock } } : {}),
 });
 
 /** A one-cell footprint resolved at tile (0,0) fine (0,0). */
@@ -160,6 +188,97 @@ describe('fineSiting — footprintIsDry, the mixed-shore gate', () => {
                 resolve,
             ),
         ).toBe(false);
+    });
+
+    it('R1 — refuses a PASSABLE river fine cell: a river is water, not ground', () => {
+        // The engine keeps rivers passable (the resource/thirst contract), so
+        // the dry gate must read the BIOME, not the passability flag
+        const river = waterCell('river');
+        expect(river.passable).toBe(true);
+        expect(footprintIsDry(at(0, 0), fineWorld({ '0,0:0,0': river }))).toBe(false);
+        // The coarse read behind the same rule — the shared engine vocabulary
+        // (isWaterBiome: the union of isSeaWater + isFreshBasin)
+        expect(isWaterBiome('river')).toBe(true);
+        expect(isWaterBiome('lake')).toBe(true);
+        expect(isWaterBiome('pond')).toBe(true);
+        expect(isWaterBiome('ocean')).toBe(true);
+        expect(isWaterBiome('shallows')).toBe(true);
+        expect(isWaterBiome('beach')).toBe(false);
+        expect(isWaterBiome('meadow')).toBe(false);
+        expect(isWaterBiome('forest')).toBe(false);
+        expect(isWaterBiome('highland')).toBe(false);
+        expect(isWaterBiome(undefined)).toBe(false);
+    });
+
+    it('R1 — refuses every water biome as a footprint cell (all five)', () => {
+        const biomes = ['ocean', 'shallows', 'lake', 'pond', 'river'] as const;
+        const answers = biomes.map((biome) => footprintIsDry(at(0, 0), fineWorld({ '0,0:0,0': waterCell(biome) })));
+        expect(answers).toEqual([false, false, false, false, false]);
+        // …and accepts the three dry land biomes plus a dry river BANK
+        // (riverBankColumn writes beach/meadow — the bank is real ground)
+        const dry = (['beach', 'meadow', 'highland'] as const).map((biome) => ({
+            ...dryCell(),
+            biome,
+        }));
+        expect(dry.map((cell) => footprintIsDry(at(0, 0), fineWorld({ '0,0:0,0': cell })))).toEqual([true, true, true]);
+    });
+});
+
+describe('fineSiting — footprintIsClear, the full-footprint obstruction gate (R1)', () => {
+    it('vetoes a footprint cell carrying a standing TREE (the exact trunk, not the forest)', () => {
+        const resolve = fineWorld({ '0,0:0,0': treeCell(), '0,0:1,0': dryCell() });
+        const parent: FineParentResolver = () => parentCell();
+        expect(
+            footprintIsClear(
+                [
+                    { parent: { x: 0, y: 0 }, x: 0, y: 0 },
+                    { parent: { x: 0, y: 0 }, x: 1, y: 0 },
+                ],
+                resolve,
+                parent,
+            ),
+        ).toBe(false);
+        // The tree's OWN cell is the veto; the bare neighbour is clear — a
+        // forest tile with a clear spot stays buildable
+        expect(footprintIsClear([{ parent: { x: 0, y: 0 }, x: 1, y: 0 }], resolve, parent)).toBe(true);
+    });
+
+    it('vetoes a footprint cell standing on the parent boulder band (carving.rock)', () => {
+        const resolve = fineWorld({}, dryCell());
+        const parent: FineParentResolver = () => parentCell(['1,0', '-2,1']);
+        expect(footprintIsClear([{ parent: { x: 0, y: 0 }, x: 1, y: 0 }], resolve, parent)).toBe(false);
+        expect(footprintIsClear([{ parent: { x: 0, y: 0 }, x: -2, y: 1 }], resolve, parent)).toBe(false);
+        // A cell beside the boulder is clear
+        expect(footprintIsClear([{ parent: { x: 0, y: 0 }, x: 0, y: 0 }], resolve, parent)).toBe(true);
+        // A depleted rock tile whose band is EMPTY obstructs nothing (no
+        // physical boulder remains — the loose stone pile is not a boulder)
+        const spent: FineParentResolver = () => parentCell([], 0);
+        expect(footprintIsClear([{ parent: { x: 0, y: 0 }, x: 1, y: 0 }], resolve, spent)).toBe(true);
+    });
+
+    it('does NOT treat a loose stone pile as an obstacle (only the boulder band blocks)', () => {
+        // A fine cell carrying a stone unit but no tree and no band entry:
+        // gatherable stone underfoot is not a standing obstruction
+        const resolve = fineWorld({ '0,0:0,0': { ...dryCell(), resources: { stone: 1 } } });
+        expect(footprintIsClear([{ parent: { x: 0, y: 0 }, x: 0, y: 0 }], resolve, () => parentCell())).toBe(true);
+        // The per-cell read agrees
+        expect(fineCellObstructed({ parent: { x: 0, y: 0 }, x: 0, y: 0 }, resolve, () => parentCell())).toBe(false);
+    });
+
+    it('reads an unresolvable fine cell and a missing parent as unobstructed', () => {
+        // No terrain, no parent: the never-veto-on-ignorance rule
+        expect(footprintIsClear(at(0, 0), fineWorld({}), () => undefined)).toBe(true);
+    });
+
+    it('resolves the boulder band through the cell own WRAPPED parent tile', () => {
+        // A footprint cell that stepped across the coarse boundary lives on
+        // the NEIGHBOR tile (parent 1,0) — its band entry is that tile's
+        const resolve = fineWorld({}, dryCell());
+        const parent: FineParentResolver = (tileX) => (tileX === 1 ? parentCell(['-2,0']) : parentCell());
+        expect(footprintIsClear([{ parent: { x: 1, y: 0 }, x: -2, y: 0 }], resolve, parent)).toBe(false);
+        // The same fine coords on the ORIGINAL tile are clear — the band is
+        // per-parent, never global
+        expect(footprintIsClear([{ parent: { x: 0, y: 0 }, x: -2, y: 0 }], resolve, parent)).toBe(true);
     });
 });
 

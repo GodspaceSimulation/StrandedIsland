@@ -40,6 +40,7 @@ import {
     type WorldPlugin,
 } from '@godspace/core';
 import type { World } from '../../engine/world';
+import { isWalkableCell } from '../../engine/types';
 import type { EntityProfiles } from '../entity/entityPlugin';
 import type { NeedsState } from '../needs/needsPlugin';
 
@@ -222,7 +223,7 @@ export const predatorsPlugin = (options: PredatorsPluginOptions = {}): Predators
         canvas: {
             width: number;
             height: number;
-            cells: Array<{ x: number; y: number; passable: boolean }>;
+            cells: Array<{ x: number; y: number; passable: boolean; biome?: string }>;
         },
     ): Array<{ x: number; y: number }> => {
         const halfX = (canvas.width - 1) / 2;
@@ -230,7 +231,10 @@ export const predatorsPlugin = (options: PredatorsPluginOptions = {}): Predators
         const rim: Array<{ x: number; y: number }> = [];
         arrayEach(canvas.cells, ({ value: cell }) => {
             const shore = Math.max(Math.abs(cell.x) / (halfX || 1), Math.abs(cell.y) / (halfY || 1));
-            if (cell.passable && shore >= SHORE_BAND) {
+            // R2 — a rim SPAWN needs WALKABLE ground (isWalkableCell): a river
+            // tile's passable flag survives for resources, but a boar must
+            // never wade in from the water
+            if (isWalkableCell(cell) && shore >= SHORE_BAND) {
                 rim.push({ x: cell.x, y: cell.y });
             }
         });
@@ -369,11 +373,12 @@ export const predatorsPlugin = (options: PredatorsPluginOptions = {}): Predators
                     return;
                 }
                 // Roam: one land tile every `pace` world minutes — the
-                // lumbering gait. A random in-bounds LAND neighbor — boars
-                // never beach themselves in the water (a passable check
-                // keeps the step dry); a cell with no land neighbor → the
-                // boar stays put (no roll, no event). Silent roaming — the
-                // log tells stories of meetings, not beast telemetry.
+                // lumbering gait. A random in-bounds WALKABLE neighbor — boars
+                // never beach themselves in the water nor wade a river (the
+                // isWalkableCell check keeps the step dry); a cell with no
+                // land neighbor → the boar stays put (no roll, no event).
+                // Silent roaming — the log tells stories of meetings, not
+                // beast telemetry.
                 if (minute % pace !== 0) {
                     return;
                 }
@@ -384,7 +389,9 @@ export const predatorsPlugin = (options: PredatorsPluginOptions = {}): Predators
                     const x = position.x + offset.dx;
                     const y = position.y + offset.dy;
                     const inBounds = x >= -halfX && x <= halfX && y >= -halfY && y <= halfY;
-                    if (inBounds && active.cellAt(x, y)?.passable === true) {
+                    // R2 — WALKABLE ground only (isWalkableCell): the roam
+                    // never steps into a river or any other water column
+                    if (inBounds && isWalkableCell(active.cellAt(x, y))) {
                         land.push({ x, y });
                     }
                 });

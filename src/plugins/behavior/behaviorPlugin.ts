@@ -169,16 +169,21 @@ import { beatGatherJob, openGatherJob } from '../tasks/gatherWork';
 import {
     chebyshev,
     fineStep,
+    invalidSpotRecovery,
+    moverStandsOnDryGround,
     nearestCell,
+    settleDryFineSpot,
     strictFineStep,
     travelSpec,
 } from '../movement/fineMovement';
 import type { World } from '../../engine/world';
 import type { Actor, TerrainCell } from '../../engine/types';
 // T4 — the shared water predicates: the fishing-shore eligibility runs the
-// BIOME vocabulary (sea + fresh basin — passable river fords included),
-// never passability alone
-import { isFreshBasin, isSeaWater } from '../../engine/types';
+// BIOME vocabulary (sea + fresh basin — river courses included), never
+// passability alone. R2 — isWalkableCell is the GROUND rule (passable AND not
+// water): every locomotion gate reads it so a river is an obstacle, never a
+// path.
+import { isFreshBasin, isSeaWater, isWalkableCell } from '../../engine/types';
 import type { InventoryPlugin } from '../inventory/inventoryPlugin';
 import type { NeedsPlugin } from '../needs/needsPlugin';
 import type { RelationshipPlugin } from '../relationship/relationshipPlugin';
@@ -424,21 +429,37 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
 
     /**
      * THE WATER REALM — whether a body's ground-travel vocabulary applies. A
-     * body standing on an impassable cell (the sea a shark swims, the water a
-     * gull floats on) cannot fine-step ACROSS tiles (the wrap needs dry
-     * land), so the travel rungs decline for it — a task ladder that walks
-     * tiles is not the water realm's vocabulary. Without the guard a thirsty
-     * floater would mill inside its water tile forever (a busy body every
-     * minute, the birds plugin's busy gate never re-opening — pinned afloat
-     * to die of thirst). The non-travel rungs still serve the water realm: a
-     * floater FEEDS ITSELF off the water it stands on (T4 — the natural
-     * feeding path: the unlimited source underfoot, no tool, no stock) and
-     * eats from the beak-bag, a spent swimmer rests — and the sleep rung lets
-     * a tired bird doze afloat while its drift carries it toward the shore.
+     * body standing on an IMPASSABLE cell (the sea a shark swims, the water a
+     * gull floats on) cannot fine-step ACROSS tiles, so the travel rungs
+     * decline for it — a task ladder that walks tiles is not the water
+     * realm's vocabulary. Without the guard a thirsty floater would mill
+     * inside its water tile forever (a busy body every minute, the birds
+     * plugin's busy gate never re-opening — pinned afloat to die of thirst).
+     * The non-travel rungs still serve the water realm: a floater FEEDS ITSELF
+     * off the water it stands on (T4 — the natural feeding path: the
+     * unlimited source underfoot, no tool, no stock) and eats from the
+     * beak-bag, a spent swimmer rests — and the sleep rung lets a tired bird
+     * doze afloat while its drift carries it toward the shore.
+     *
+     * R2 — THE GROUND GATE is the FINE cell underfoot (moverStandsOnDryGround):
+     * a body may plan ground treks only from DRY ground, resolved at the same
+     * scale the movement rules use. That one read covers both realms
+     * consistently:
+     *   * a shark in the sea or a gull afloat stands on a wet fine cell (their
+     *     tile IS water), so it declines — their own plugins own the element;
+     *   * a body on a river tile's synthesized DRY BANK stands on real dry
+     *     ground and keeps its vocabulary, so it can walk off normally instead
+     *     of freezing for hundreds of minutes (the T4 riverbank probe: entry
+     *     allowed, then 881/900 idle minutes);
+     *   * a body on a wet fine cell inside a dry tile (a shore waterline) is
+     *     likewise not dry — it may still step OUT, because fineStep validates
+     *     only the DESTINATION.
+     * Nothing here can move a body INTO water: every move is validated by
+     * fineStep, which refuses wet destinations.
      */
     const onDryGround = (actor: TaskEntity): boolean => {
-        const cell = worldOf()?.cellAt(actor.position.x, actor.position.y);
-        return cell !== undefined && cell.passable;
+        const active = worldOf();
+        return active !== null && moverStandsOnDryGround(active, actor);
     };
 
     /**
@@ -447,19 +468,21 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
      * rule in one look: dry ground underfoot, water at the body's feet
      * (cardinal only: no diagonals, no distance, no casting from afloat),
      * the water ELIGIBLE BY BIOME (isSeaWater — ocean/shallows — or
-     * isFreshBasin — lake/pond AND the passable river fords; R2: never
-     * passability alone, a ford is as fishable as a basin's shore). The
-     * water is an UNLIMITED source — no fish stock exists to read, so the
-     * read is pure terrain. Deterministic: the fixed cardinal ladder. The
-     * inventory's fish primitive re-validates everything at completion
-     * (including the spear-or-rod tool gate).
+     * isFreshBasin — lake/pond AND the river courses; R2: never passability
+     * alone, a river is as fishable as a basin's shore, and it is fished
+     * from the DRY BANK). The water is an UNLIMITED source — no fish stock
+     * exists to read, so the read is pure terrain. Deterministic: the fixed
+     * cardinal ladder. The inventory's fish primitive re-validates
+     * everything at completion (including the spear-or-rod tool gate).
      */
     const adjacentFishWater = (
         active: World,
         actor: TaskEntity,
     ): { x: number; y: number } | undefined => {
-        const here = active.cellAt(actor.position.x, actor.position.y);
-        if (!here || !here.passable) {
+        // R2 — the caster must stand on DRY GROUND (the FINE cell underfoot,
+        // moverStandsOnDryGround): a body in the river channel or on a tile's
+        // fine waterline is no more a casting position than one afloat
+        if (!moverStandsOnDryGround(active, actor)) {
             return undefined;
         }
         const reach = [
@@ -490,7 +513,10 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
 
     /**
      * T4 — whether the body stands on FISHING WATER (the sea or a fresh
-     * basin — the shared biome predicates, never passability alone).
+     * basin — the shared biome predicates, never passability alone). R2
+     * removed the only caller (the underfoot feeding gate now reads
+     * isWaterBiome + isWalkableCell directly, so a river is water there);
+     * the helper is kept as the biome-vocabulary read other rungs share.
      */
     const onFishingWater = (cell: TerrainCell): boolean =>
         isSeaWater(cell.biome) || isFreshBasin(cell.biome);
@@ -744,12 +770,12 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                         };
                     }
                     // 4) Go and find a pool — travel one fine step toward
-                    //    the nearest stocked cell. R4 — the pool targets are
-                    //    the PASSABLE water carriers (the dry shore ring
-                    //    beside the basins): the impassable lake cells stock
-                    //    water nobody can stand in to collect, and the shore
-                    //    ring beside them stocks it too, so the trek never
-                    //    aims at water behind a wall. R4-SAFETY — the trek
+                    //    the nearest stocked cell. R4/R2 — the pool targets
+                    //    are the WALKABLE water carriers (the dry shore ring
+                    //    beside the basins, and R2's dry river banks): the
+                    //    water columns stock water nobody can stand in to
+                    //    collect, and the shore ring beside them stocks it
+                    //    too, so the trek never aims at water behind a wall. R4-SAFETY — the trek
                     //    aims at the nearest basin whose tile is CLEAR of a
                     //    threat (see nearestSafeWater): a boar camped on the
                     //    only water would otherwise make the thirst trek and
@@ -766,7 +792,7 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                     const pool = nearestSafeWater(
                         world,
                         actor,
-                        inventory.cellsWithItem('water').filter((cell) => cell.passable),
+                        inventory.cellsWithItem('water').filter((cell) => isWalkableCell(cell)),
                     );
                     if (!pool || !onDryGround(actor)) {
                         return undefined;
@@ -829,10 +855,11 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                     // creature wading a ford) — it feeds itself straight
                     // from the unlimited source, the way the wilds always
                     // ate: no tool, no stock, no shore. The gate is the
-                    // WATER REALM itself — an IMPASSABLE water cell
-                    // underfoot (no human can ever stand there — the
-                    // movement rules refuse it), or a CREATURE standing in
-                    // a passable ford. A HUMAN standing in a fordable
+                    // WATER REALM itself — a NON-WALKABLE water cell
+                    // underfoot (isWalkableCell: the impassable sea and
+                    // basins, plus R2's river courses — no human can ever
+                    // stand there, the movement rules refuse it), or a
+                    // CREATURE standing on water. A HUMAN beside a fordable
                     // river is exactly the barehand loophole this closes:
                     // the shore rule + the spear-or-rod gate govern every
                     // land-agent catch. Ranks FIRST among the forages: a
@@ -841,7 +868,7 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                     const here = world.cellAt(actor.position.x, actor.position.y);
                     if (
                         here && onFishingWater(here) &&
-                        (!here.passable || actor.kind === 'creature')
+                        (!onDryGround(actor) || actor.kind === 'creature')
                     ) {
                         if (!mayForage(actor.type)) {
                             return undefined;
@@ -954,19 +981,22 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                     // Walk toward the nearest REACHABLE food-bearing cell. The
                     // targets are the loose food items PLUS the berry bushes
                     // (a bush is a food source at a distance too), filtered to
-                    // PASSABLE cells: a land body can never stand in the open
-                    // sea, so the water's foods (fish, seaweed) are not travel
-                    // targets ON the water itself — a hungry beachgoer must
-                    // trek to a land food (a meadow bush, a forest berry) or
-                    // to a FISHING SHORE (below), never mill at the waterline
-                    // aiming at the fish it cannot stand on.
+                    // WALKABLE cells (isWalkableCell — R2: passable AND not a
+                    // water biome, so a river is no travel target): a land body
+                    // can never stand in the open sea, so the water's foods
+                    // (fish, seaweed) are not travel targets ON the water
+                    // itself — a hungry beachgoer must trek to a land food (a
+                    // meadow bush, a forest berry) or to a FISHING SHORE
+                    // (below), never mill at the waterline aiming at the fish
+                    // it cannot stand on.
                     // The filter is LOCAL to the hunger rung: the thirst rung
-                    // legitimately targets the water cells (drinking pools sit in
-                    // the wetlands/sea), so the shared nearestCell stays
-                    // passability-blind and only hunger prunes the unreachable.
+                    // legitimately targets the water carriers (drinking pools
+                    // sit in the wetlands/sea, and the dry shore ring stocks
+                    // them), so the shared nearestCell stays blind and only
+                    // hunger prunes the unreachable.
                     const targets = [...FOOD_PRIORITY, 'bush']
                         .flatMap((item) => inventory.cellsWithItem(item))
-                        .filter((cell) => cell.passable);
+                        .filter((cell) => isWalkableCell(cell));
                     // R5/T4 — the FISHING SHORES join the food targets at a
                     // distance FOR TOOL-HOLDERS ONLY: every DRY tile whose
                     // cardinal neighbor is fishing water is a food source the
@@ -985,7 +1015,10 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                                 { x: water.x, y: water.y - 1 },
                             ].forEach((spot) => {
                                 const dry = world.cellAt(spot.x, spot.y);
-                                if (dry && dry.passable) {
+                                // R2 — the shore must be WALKABLE ground, so a
+                                // river cell (water, passable flag kept) is
+                                // never a "shore" the body treks onto
+                                if (dry && isWalkableCell(dry)) {
                                     targets.push(dry);
                                 }
                             });
@@ -1128,11 +1161,19 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                         return undefined;
                     }
                     // WATER REALM — the idle filler walks the GROUND: a body
-                    // standing on an impassable cell (a shark in the sea, a
-                    // gull afloat) keeps its realm's own idle minute (the
-                    // swim script's sweep, the perch's drift). Queuing fine
-                    // moves for it would pin it busy every minute — the
-                    // birds plugin's takeoff gate would never re-open.
+                    // standing on water (a shark in the sea, a gull afloat, a
+                    // body on a river cell) keeps its realm's own idle minute
+                    // (the swim script's sweep, the perch's drift). Queuing
+                    // fine moves for it would pin it busy every minute — the
+                    // birds plugin's takeoff gate would never re-open — and a
+                    // wade would drag a swimmer ashore.
+                    //
+                    // A body on a DRY tile keeps wandering: fineStep refuses
+                    // every wet DESTINATION, so a fine waterline inside its
+                    // tile (a shore rim, a river bank's channel) is stepped
+                    // around, never into — and a body already standing on such
+                    // a wet fine cell can still step OUT (fineStep validates
+                    // the destination only).
                     if (!onDryGround(subject.actor)) {
                         return undefined;
                     }
@@ -1145,7 +1186,11 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                         }
                     });
                     if (open.length === 0) {
-                        // No fine step free — the body stays idle this round
+                        // No legal step at all — the body stays idle this
+                        // round. R2: there is NO wade fallback. A body whose
+                        // derived fine spot is wet is recovered by the move
+                        // effect's settle (dryFineSpotDelta), not by walking
+                        // through water.
                         return undefined;
                     }
                     const [dx, dy] = open[Math.floor(pluginContext.random() * open.length)];
@@ -1178,8 +1223,10 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                         const ty = task.payload?.ty;
                         if (task.payload?.flee && typeof tx === 'number' && typeof ty === 'number') {
                             // Re-validate at completion: the ground may have
-                            // changed under the mid-flight actor
-                            if (world.cellAt(tx, ty)?.passable !== true) {
+                            // changed under the mid-flight actor. R2 — the
+                            // stride lands on WALKABLE ground (isWalkableCell):
+                            // a river is water, never a landing
+                            if (!isWalkableCell(world.cellAt(tx, ty))) {
                                 return;
                             }
                             world.relocate(actor.id, position3(tx, ty, actor.position.z));
@@ -1191,7 +1238,9 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                         // Re-validate at completion: the world may have
                         // shifted under a mid-travel actor (occupancy moved,
                         // terrain regenerated). A blocked move logs nothing —
-                        // the actor re-plans next minute
+                        // the actor re-plans next minute. R2: the destination
+                        // must be DRY ground (fineStep) — there is no wade
+                        // bypass, so no task can ever move a body into water.
                         const step = fineStep(world, actor, dx, dy);
                         if (!step) {
                             return;
@@ -1437,6 +1486,16 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
             // identity (taskLedger.ts TaskEntity).
             const planned = new Set<string>(active.actors.keys());
             active.actors.forEach((actor) => {
+                // R2 — INVALID-SPOT RECOVERY: a body whose DERIVED fine spot
+                // landed in water (engine/world.ts deriveFine re-derives on
+                // every coarse relocation) is settled ONCE onto the nearest
+                // DRY cell of its tile before it plans. This is a bookkeeping
+                // correction, not a move: it requires a WET source and a DRY
+                // destination, so it can never be used to enter water, and it
+                // replaces the removed walk-through-water escape.
+                if (invalidSpotRecovery(active, actor)) {
+                    settleDryFineSpot(active, actor);
+                }
                 tasks.ledger.plan(actor);
             });
             active.coordinates.all().forEach((entry) => {
@@ -1448,6 +1507,12 @@ export const behaviorPlugin = (options: BehaviorPluginOptions): WorldPlugin<Worl
                 }
                 if (!active.cellAt(entry.position.x, entry.position.y)) {
                     return;
+                }
+                // R2 — the same invalid-spot recovery for coordinate-space
+                // creatures (boars, perched birds): a derived wet spot settles
+                // once onto dry ground before planning.
+                if (invalidSpotRecovery(active, entry)) {
+                    settleDryFineSpot(active, entry);
                 }
                 planned.add(entry.id);
                 tasks.ledger.plan({

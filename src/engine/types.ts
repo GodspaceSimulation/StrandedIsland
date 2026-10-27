@@ -54,18 +54,26 @@ export type VoxelKind = 'air' | 'water' | 'sand' | 'dirt' | 'grass' | 'forest' |
  *                  fishing shore), never by crossing the water. The sea
  *                  stays the only SALT water (the vessels' element — see
  *                  isSeaWater).
- * river          — PASSABLE SHALLOW FRESH-WATER COURSES (R4): the generator
- *                  carves meandering, cardinally connected waterways from
- *                  the interior highlands down to the sea. A river cell is
- *                  a FORD — one water voxel over a lowered sand bed, but
- *                  walkable (passable true): land actors cross it and drink
- *                  from it directly, and its water is INEXHAUSTIBLE (the
- *                  flowing spring — plugins/inventory never draws a river
- *                  cell's stock down). Fresh, never salt: isSeaWater is
- *                  false and isFreshBasin is true for it, so the vessels
- *                  keep the sea alone and the thirst ladder reads the river
- *                  as a water source. The sea's sharks never swim it (they
- *                  move only through impassable columns).
+ * river          — FRESH-WATER COURSES (R4/R2-T2): the generator carves
+ *                  meandering, cardinally connected waterways from the
+ *                  interior highlands down to the sea. A river cell is
+ *                  SHALLOW WATER over a lowered sand bed — WET, never ground:
+ *                  land actors no longer wade it (see isWaterBiome /
+ *                  isWalkableCell below) and walk AROUND it; they drink from
+ *                  its DRY BANKS (the inventory's shore ring), and its water
+ *                  is INEXHAUSTIBLE (the flowing spring — plugins/inventory
+ *                  never draws a river cell's stock down). Fresh, never
+ *                  salt: isSeaWater is false and isFreshBasin is true for it,
+ *                  so the vessels keep the sea alone and the thirst ladder
+ *                  reads the river as a water source. The sea's sharks never
+ *                  swim it (they move only through impassable columns).
+ *                  COMPATIBILITY: the generator still stamps river cells
+ *                  `passable: true` — that flag is the RESOURCE/BIOME
+ *                  metadata the supply seeding and the fine interior read
+ *                  (islandTerrain's fineCellDraft inherits it), NOT a
+ *                  locomotion permission. Every ground movement, route and
+ *                  spawn decision reads isWalkableCell, which subtracts the
+ *                  water biomes.
  */
 export type Biome =
     | 'ocean'
@@ -95,12 +103,45 @@ export const isSeaWater = (biome: string | undefined): boolean =>
  * river courses (R4). Widened to string like isSeaWater. The rivers join
  * the family because their water is fresh and drinkable (the thirst
  * ladder + the inventory's fresh-water seeding read this); they stay
- * distinct from the basins by PASSABILITY — a basin drowns (impassable),
- * a river fords (passable). isSeaWater deliberately stays false for the
- * river: the vessels keep the sea alone.
+ * distinct from the basins by their INTERIOR SHAPE — a basin drowns whole,
+ * a river is a narrow wet channel between dry banks. isSeaWater
+ * deliberately stays false for the river: the vessels keep the sea alone.
  */
 export const isFreshBasin = (biome: string | undefined): boolean =>
     biome === 'lake' || biome === 'pond' || biome === 'river';
+
+/**
+ * R2 — whether a biome is WATER of any kind: the salt sea (ocean/shallows)
+ * and every fresh body (lake/pond basins and the river courses). This is the
+ * ONE water vocabulary the ground rules read: nothing walks, stands, builds
+ * or spawns on water, whatever its salt content — the sea is a shark's
+ * element, a basin is a wall, and a river is an obstacle to walk AROUND.
+ *
+ * Widened to string like its siblings so loose cell slices (the canvas view
+ * adapters, the fine terrain resolvers) can consult it without a cast.
+ * Deliberately INDEPENDENT of the cell's `passable` flag: the river's raw
+ * `passable: true` survives for resource/terrain compatibility (see the
+ * Biome 'river' note), and every locomotion decision must run through
+ * isWalkableCell instead of reading passability alone.
+ */
+export const isWaterBiome = (biome: string | undefined): boolean =>
+    isSeaWater(biome) || isFreshBasin(biome);
+
+/**
+ * R2 — whether a cell is WALKABLE GROUND: passable AND not water. The single
+ * ground-locomotion predicate: movement validation, route planning, actor
+ * spawning, wander/travel targeting and every `passable`-alone gate read this
+ * so a river (still flagged passable for resource compatibility) is refused
+ * exactly like the sea and the basins. Water-realm bodies (sharks swimming
+ * the sea, gulls afloat) never consult it — their plugins own their element.
+ *
+ * A cell slice may be partial (the fine resolvers hand back TerrainCell
+ * records; loose view adapters hand back `{ biome, passable }`), so both
+ * fields are optional here and a missing passable reads as NOT walkable
+ * (fail closed — never walk on terrain the caller could not resolve).
+ */
+export const isWalkableCell = (cell: { passable?: boolean; biome?: string } | undefined): boolean =>
+    cell !== undefined && cell.passable === true && !isWaterBiome(cell.biome);
 
 // ── Tile resources ───────────────────────────────────────────────────────────
 // Every tile carries RESOURCE DEPOSITS — the natural features standing on it

@@ -98,6 +98,8 @@ import {
     type PredatorsPlugin,
 } from '../plugins/predators/predatorsPlugin';
 import type { Actor, Sex, TerrainCell, TileResources } from '../engine/types';
+import { isWalkableCell } from '../engine/types';
+import { settleDryFineSpot } from '../plugins/movement/fineMovement';
 import { dominantVisibleType } from '../features/tileDetails';
 
 export type IslandOptions = {
@@ -873,7 +875,22 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
     // (elliptical rim metric max(|x|/halfX, |y|/halfY), 1 at the rim → 0 at
     // the center), ties keep row-major order, then a row-major stride
     // spreads the cast along the ranked shore.
+    //
+    // R2 — the spawn pool stays the COARSE land set (world.landCells: every
+    // passable cell, rivers included — their passable flag is resource
+    // metadata), so the rim ranking and the row-major stride keep the exact
+    // order they always had (the reference spawn pins). Each PICK is then
+    // checked for dry ground: a river pick advances to the next walkable cell
+    // of the ranked shore, so no castaway ever washes ashore in water.
     const land = world.landCells();
+    const dryPick = (ranked: TerrainCell[], index: number): TerrainCell | undefined => {
+        for (let cursor = index; cursor < ranked.length; cursor++) {
+            if (isWalkableCell(ranked[cursor])) {
+                return ranked[cursor];
+            }
+        }
+        return undefined;
+    };
     const count = Math.min(options.actorCount ?? 4, CAST.length, land.length);
     if (count > 0) {
         const halfX = (world.canvas.width - 1) / 2;
@@ -887,7 +904,13 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
             .sort((left, right) => rimOf(right) - rimOf(left));
         const stride = Math.max(1, Math.floor(edge.length / count));
         arrayEach(Array.from({ length: count }, (_, index) => index), ({ value: index }) => {
-            const cell = edge[index * stride];
+            // R2 — the dry pick: a river pick advances along the ranked shore
+            // to the next walkable cell (the reference pins are unchanged
+            // because no ranked pick on the reference islands is a river)
+            const cell = dryPick(edge, index * stride);
+            if (!cell) {
+                return;
+            }
             const cast = CAST[index];
             const actor: Actor = {
                 id: `actor-${index + 1}`,
@@ -905,6 +928,12 @@ export const createIslandWorld = (options: IslandOptions = {}): IslandHandle => 
                 profile: { sex: cast.sex },
             };
             world.spawn(actor);
+            // R2 — the engine derives a fine spot from the world seed, which
+            // can land inside a tile's fine water (a shore waterline, a river
+            // channel). Settle the body on the nearest DRY fine cell of its
+            // tile so nobody ever starts the simulation standing in water
+            // (the tile itself is already a walkable one — the dry pick above).
+            settleDryFineSpot(world, actor);
             inventory.spawnKit(actor.id, STARTING_KIT);
         });
     }

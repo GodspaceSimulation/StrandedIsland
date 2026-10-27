@@ -6,6 +6,9 @@ import { createIslandWorld } from './island';
 // the palette join (scenario/island.ts GRASS_TILE_PALETTE.river); this pin
 // keeps the legend swatch and the painted tiles from ever disagreeing
 import { RIVER_TILE_COLOR } from '../plugins/terrain/islandTerrain';
+// R2 — the spawn dryness read (the FINE cell underfoot), so the landing pins
+// assert the resolved ground, not only the coarse passable flag
+import { moverStandsOnDryGround } from '../plugins/movement/fineMovement';
 
 describe('createIslandWorld', () => {
     it('assembles all stock plugins in tick order (packages + environment)', () => {
@@ -81,11 +84,18 @@ describe('createIslandWorld', () => {
         ]);
         // Every landing spot is dry land, ranked from the outermost dry ring
         // inward (Ael's pick — edge[0] — IS the outermost land cell: no dry
-        // cell ranks closer to the rim on this island)
+        // cell ranks closer to the rim on this island).
+        // R2 — DRY means isWalkableCell (passable AND not a water biome), not
+        // the coarse passable flag: a river cell keeps passable true for
+        // resource compatibility but must never be a landing.
         Array.from(handle.world.actors.values()).forEach((actor) => {
-            expect(handle.world.cellAt(actor.position.x, actor.position.y)?.passable).toBe(true);
-        });
-        // The outermost dry ring's exact rim score, ranked first
+            const cell = handle.world.cellAt(actor.position.x, actor.position.y);
+            expect(cell?.passable).toBe(true);
+            expect(cell?.biome).not.toBe('river');
+            // …and the FINE spot the engine derived is dry too (a shore
+            // waterline inside a dry tile is settled away at spawn)
+            expect(moverStandsOnDryGround(handle.world, actor)).toBe(true);
+        });        // The outermost dry ring's exact rim score, ranked first
         const rimScore = (cell: { x: number; y: number }) =>
             Math.max(Math.abs(cell.x) / 12, Math.abs(cell.y) / 8);
         const land = handle.world.landCells();
@@ -238,7 +248,9 @@ describe('createIslandWorld', () => {
         // The boar roams the far shore — no castaway has met it yet. Tusk
         // is a living thing: the behavior plugin plans it through the
         // ledger (the predators plugin's own roam yields to the busy gate),
-        // so its wandered position reads from the ledger's picks
+        // so its wandered position reads from the ledger's picks. The dry-only
+        // roam rule (isWalkableCell) leaves this pick unchanged from the
+        // pre-R2 reference: the route fix keeps the walk on the same line.
         expect(handle.predators.predators()).toEqual([
             { id: 'boar-1', name: 'Tusk', marker: 'T', x: 3, y: 7 },
         ]);
@@ -865,8 +877,16 @@ describe('createIslandWorld', () => {
                 delivered: site.delivered,
             })),
         ).toEqual([
-            { id: 's-1', blueprintId: 'shelter', state: 'built', parent: [{ x: 4, y: -1 }], work: 240, delivered: { wood: 120, thatch: 120 } },
-            { id: 's-2', blueprintId: 'raft', state: 'staged', parent: [{ x: 8, y: -5 }], work: 0, delivered: {} },
+            // INTEGRATION PIN (construction fine-anchor siting + the fixed
+            // navigation): the shelter sits on its scored (-4,-1). The raft
+            // moved from (-8,-5) to (-9,3) because the march now finishes
+            // EARLIER (minute 4635 vs 5289) and the crew's standing cells at
+            // placement minute feed the vessel score's camp term. All four
+            // moored beaches tie at score -4; (-9,3) wins construction's
+            // documented tie-break (nearest fresh water 3 vs 4). It is still a
+            // beach tile moored to salt sea — the placement rule is unchanged.
+            { id: 's-1', blueprintId: 'shelter', state: 'built', parent: [{ x: -4, y: -1 }], work: 240, delivered: { wood: 120, thatch: 120 } },
+            { id: 's-2', blueprintId: 'raft', state: 'staged', parent: [{ x: -9, y: 3 }], work: 0, delivered: {} },
         ]);
         expect(handle.construction.completedBlueprints()).toEqual(['shelter']);
         expect(handle.construction.project()).toBe('raft');

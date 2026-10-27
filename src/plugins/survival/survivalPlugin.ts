@@ -45,6 +45,7 @@
 
 import { arrayEach } from '@presource/core';
 import { NEIGHBOR_OFFSETS, type WorldPlugin } from '@godspace/core';
+import { isWalkableCell } from '../../engine/types';
 import type { World } from '../../engine/world';
 import type { TasksPlugin } from '../tasks/tasksPlugin';
 import type { TaskSpec, TaskEntity } from '../tasks/taskLedger';
@@ -188,7 +189,10 @@ export const survivalPlugin = (options: SurvivalPluginOptions): SurvivalPlugin =
                     if (dx !== 0 || dy !== 0) {
                         const tx = actor.position.x + dx;
                         const ty = actor.position.y + dy;
-                        if (active.cellAt(tx, ty)?.passable === true) {
+                        // R2 — the away tile must be WALKABLE ground
+                        // (isWalkableCell): running into a river is as wet as
+                        // running into the sea
+                        if (isWalkableCell(active.cellAt(tx, ty))) {
                             return tileFleeSpec(tx, ty, travel);
                         }
                     }
@@ -287,7 +291,7 @@ const exitStep = (
         // check is what keeps the committed exit honest)
         const neighbor = world.cellAt(actor.position.x + dir.dx, actor.position.y + dir.dy);
         if (
-            neighbor?.passable !== true ||
+            !isWalkableCell(neighbor) ||
             (actor.position.x + dir.dx === threat.x && actor.position.y + dir.dy === threat.y)
         ) {
             return;
